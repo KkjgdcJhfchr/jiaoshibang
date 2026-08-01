@@ -1,0 +1,102 @@
+name: jiaoshibang
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: jiaoshibang-app:local
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 8787
+      DATA_DIR: /app/data
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_API_KEY_FILE: ${OPENAI_API_KEY_FILE:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.6}
+      OPENAI_REASONING_EFFORT: ${OPENAI_REASONING_EFFORT:-medium}
+      OPENAI_IMAGE_DETAIL: ${OPENAI_IMAGE_DETAIL:-high}
+      OPENAI_MAX_OUTPUT_TOKENS: ${OPENAI_MAX_OUTPUT_TOKENS:-24000}
+      AI_REQUEST_TIMEOUT_MS: ${AI_REQUEST_TIMEOUT_MS:-180000}
+      MAX_BODY_BYTES: ${MAX_BODY_BYTES:-26214400}
+      MAX_IMAGE_BYTES: ${MAX_IMAGE_BYTES:-8388608}
+      MAX_PDF_BYTES: ${MAX_PDF_BYTES:-16777216}
+      MAX_IMAGES: ${MAX_IMAGES:-12}
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET must be set in the production env file}
+      SAFETY_ID_SALT: ${SAFETY_ID_SALT:?SAFETY_ID_SALT must be set in the production env file}
+      DEFAULT_FREE_CREDITS: ${DEFAULT_FREE_CREDITS:-3}
+      USER_SESSION_TTL_SECONDS: ${USER_SESSION_TTL_SECONDS:-604800}
+      ADMIN_SESSION_TTL_SECONDS: ${ADMIN_SESSION_TTL_SECONDS:-28800}
+      REGISTRATION_VERIFICATION_REQUIRED: ${REGISTRATION_VERIFICATION_REQUIRED:-true}
+      PAYMENT_CHECKOUT_VERIFICATION_REQUIRED: ${PAYMENT_CHECKOUT_VERIFICATION_REQUIRED:-true}
+      VERIFICATION_CODE_TTL_SECONDS: ${VERIFICATION_CODE_TTL_SECONDS:-300}
+      VERIFICATION_CODE_RESEND_SECONDS: ${VERIFICATION_CODE_RESEND_SECONDS:-60}
+      VERIFICATION_CODE_MAX_PER_HOUR: ${VERIFICATION_CODE_MAX_PER_HOUR:-6}
+      VERIFICATION_CODE_MAX_ATTEMPTS: ${VERIFICATION_CODE_MAX_ATTEMPTS:-5}
+      AUTH_RATE_LIMIT_WINDOW_MS: ${AUTH_RATE_LIMIT_WINDOW_MS:-600000}
+      AUTH_RATE_LIMIT_IP_MAX: ${AUTH_RATE_LIMIT_IP_MAX:-20}
+      ADMIN_MFA_LOGIN_TTL_SECONDS: ${ADMIN_MFA_LOGIN_TTL_SECONDS:-300}
+      ADMIN_MFA_EMAIL_TTL_SECONDS: ${ADMIN_MFA_EMAIL_TTL_SECONDS:-600}
+      ADMIN_MFA_ENROLLMENT_TTL_SECONDS: ${ADMIN_MFA_ENROLLMENT_TTL_SECONDS:-600}
+      ADMIN_MFA_MAX_ATTEMPTS: ${ADMIN_MFA_MAX_ATTEMPTS:-5}
+      SMTP_TIMEOUT_MS: ${SMTP_TIMEOUT_MS:-15000}
+      ALLOW_INSECURE_SMTP: ${ALLOW_INSECURE_SMTP:-false}
+      AI_RATE_LIMIT_WINDOW_MS: ${AI_RATE_LIMIT_WINDOW_MS:-60000}
+      AI_RATE_LIMIT_USER_MAX: ${AI_RATE_LIMIT_USER_MAX:-6}
+      AI_RATE_LIMIT_IP_MAX: ${AI_RATE_LIMIT_IP_MAX:-20}
+      AI_MAX_CONCURRENCY: ${AI_MAX_CONCURRENCY:-4}
+      TRUST_PROXY: ${TRUST_PROXY:-true}
+      ALLOW_INSECURE_PROVIDER_URLS: ${ALLOW_INSECURE_PROVIDER_URLS:-false}
+      ALLOW_PRIVATE_PROVIDER_NETWORKS: ${ALLOW_PRIVATE_PROVIDER_NETWORKS:-false}
+    expose:
+      - "8787"
+    volumes:
+      - app_data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8787/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    ports:
+      - target: 80
+        published: "80"
+        protocol: tcp
+      - target: 443
+        published: "443"
+        protocol: tcp
+      - target: 443
+        published: "443"
+        protocol: udp
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  app_data:
+  caddy_data:
+  caddy_config:

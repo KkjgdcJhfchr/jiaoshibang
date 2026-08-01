@@ -1,0 +1,666 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.teacher-helper.local/lesson-plan.schema.json",
+  "title": "教师帮结构化教案",
+  "description": "首次生成、修订、保存和导出时统一使用的教案结构。所有对象字段均显式声明，适合严格结构化输出。",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "lesson-plan.v1"
+    },
+    "metadata": {
+      "$ref": "#/$defs/metadata"
+    },
+    "sourceSummary": {
+      "type": "string",
+      "description": "对上传章节内容的简要概括，不应大段复制教材原文。"
+    },
+    "coreCompetencies": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "learningObjectives": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/learningObjective"
+      }
+    },
+    "learnerAnalysis": {
+      "$ref": "#/$defs/learnerAnalysis"
+    },
+    "keyPoints": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "difficultPoints": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "preparation": {
+      "$ref": "#/$defs/preparation"
+    },
+    "timeline": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/timelineStage"
+      }
+    },
+    "differentiation": {
+      "$ref": "#/$defs/differentiation"
+    },
+    "assessmentPlan": {
+      "$ref": "#/$defs/assessmentPlan"
+    },
+    "exercises": {
+      "type": "array",
+      "description": "课堂练习和章节习题，不少于 10 道。",
+      "minItems": 10,
+      "maxItems": 100,
+      "items": {
+        "$ref": "#/$defs/exercise"
+      }
+    },
+    "homework": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/homeworkItem"
+      }
+    },
+    "boardDesign": {
+      "$ref": "#/$defs/boardDesign"
+    },
+    "safetyAndInclusion": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "reflectionPrompts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "generationMeta": {
+      "$ref": "#/$defs/generationMeta"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "metadata",
+    "sourceSummary",
+    "coreCompetencies",
+    "learningObjectives",
+    "learnerAnalysis",
+    "keyPoints",
+    "difficultPoints",
+    "preparation",
+    "timeline",
+    "differentiation",
+    "assessmentPlan",
+    "exercises",
+    "homework",
+    "boardDesign",
+    "safetyAndInclusion",
+    "reflectionPrompts",
+    "generationMeta"
+  ],
+  "$defs": {
+    "sourceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "assetId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "page": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "blockIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "excerpt": {
+          "type": "string",
+          "maxLength": 500
+        }
+      },
+      "required": [
+        "assetId",
+        "page",
+        "blockIds",
+        "excerpt"
+      ]
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "subject": {
+          "type": "string",
+          "minLength": 1
+        },
+        "grade": {
+          "type": "string",
+          "minLength": 1
+        },
+        "textbookEdition": {
+          "type": "string"
+        },
+        "chapterTitle": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lessonTitle": {
+          "type": "string",
+          "minLength": 1
+        },
+        "durationMinutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600
+        },
+        "classProfile": {
+          "type": "string"
+        },
+        "language": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "subject",
+        "grade",
+        "textbookEdition",
+        "chapterTitle",
+        "lessonTitle",
+        "durationMinutes",
+        "classProfile",
+        "language"
+      ]
+    },
+    "learningObjective": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "knowledge",
+            "skill",
+            "thinking",
+            "core_competency",
+            "attitude"
+          ]
+        },
+        "content": {
+          "type": "string",
+          "minLength": 1
+        },
+        "measurableEvidence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sourceRefs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sourceRef"
+          }
+        }
+      },
+      "required": [
+        "type",
+        "content",
+        "measurableEvidence",
+        "sourceRefs"
+      ]
+    },
+    "learnerAnalysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "currentKnowledge": {
+          "type": "string"
+        },
+        "commonMisconceptions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "learningNeeds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "classCharacteristics": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "currentKnowledge",
+        "commonMisconceptions",
+        "learningNeeds",
+        "classCharacteristics"
+      ]
+    },
+    "preparation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "teacher": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "students": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "materials": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "teacher",
+        "students",
+        "materials"
+      ]
+    },
+    "timelineQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "purpose": {
+          "type": "string"
+        },
+        "expectedResponse": {
+          "type": "string"
+        },
+        "followUp": {
+          "type": "string"
+        },
+        "sourceRefs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sourceRef"
+          }
+        }
+      },
+      "required": [
+        "prompt",
+        "purpose",
+        "expectedResponse",
+        "followUp",
+        "sourceRefs"
+      ]
+    },
+    "timelineStage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "startMinute": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "durationMinutes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "stage": {
+          "type": "string",
+          "minLength": 1
+        },
+        "engagementGoal": {
+          "type": "string",
+          "description": "课堂参与和氛围目标，不得采用羞辱、恐吓或操纵性表达。"
+        },
+        "teacherActions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "teacherScript": {
+          "type": "string"
+        },
+        "studentActions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "questions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/timelineQuestion"
+          }
+        },
+        "expectedResponses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "misconceptions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "fallbackStrategy": {
+          "type": "string"
+        },
+        "formativeAssessment": {
+          "type": "string"
+        },
+        "sourceRefs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sourceRef"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "startMinute",
+        "durationMinutes",
+        "stage",
+        "engagementGoal",
+        "teacherActions",
+        "teacherScript",
+        "studentActions",
+        "questions",
+        "expectedResponses",
+        "misconceptions",
+        "fallbackStrategy",
+        "formativeAssessment",
+        "sourceRefs"
+      ]
+    },
+    "differentiation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "support": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "standard": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "challenge": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "support",
+        "standard",
+        "challenge"
+      ]
+    },
+    "assessmentPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "diagnostic": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "formative": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "summative": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "successCriteria": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "diagnostic",
+        "formative",
+        "summative",
+        "successCriteria"
+      ]
+    },
+    "exercise": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "single_choice",
+            "multiple_choice",
+            "true_false",
+            "fill_blank",
+            "calculation",
+            "short_answer",
+            "essay",
+            "inquiry",
+            "practice"
+          ]
+        },
+        "difficulty": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "knowledgePoints": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "stem": {
+          "type": "string",
+          "minLength": 1
+        },
+        "answer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "explanation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scoringRubric": {
+          "type": "string"
+        },
+        "estimatedMinutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 180
+        },
+        "sourceRefs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sourceRef"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "difficulty",
+        "knowledgePoints",
+        "stem",
+        "answer",
+        "explanation",
+        "scoringRubric",
+        "estimatedMinutes",
+        "sourceRefs"
+      ]
+    },
+    "homeworkItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "purpose": {
+          "type": "string"
+        },
+        "estimatedMinutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600
+        },
+        "answerGuidance": {
+          "type": "string"
+        },
+        "sourceRefs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sourceRef"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "description",
+        "purpose",
+        "estimatedMinutes",
+        "answerGuidance",
+        "sourceRefs"
+      ]
+    },
+    "boardSection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string",
+          "minLength": 1
+        },
+        "position": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "content",
+        "position"
+      ]
+    },
+    "boardDesign": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "layoutDescription": {
+          "type": "string"
+        },
+        "sections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/boardSection"
+          }
+        }
+      },
+      "required": [
+        "layoutDescription",
+        "sections"
+      ]
+    },
+    "generationMeta": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "generatedBy": {
+          "type": "string",
+          "enum": [
+            "ai",
+            "human",
+            "mixed"
+          ]
+        },
+        "promptVersion": {
+          "type": "string"
+        },
+        "modelRouteId": {
+          "type": "string"
+        },
+        "generatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "generatedBy",
+        "promptVersion",
+        "modelRouteId",
+        "generatedAt"
+      ]
+    }
+  }
+}

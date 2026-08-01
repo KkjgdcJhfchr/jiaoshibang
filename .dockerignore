@@ -1,0 +1,54 @@
+# Strict allowlist: nothing enters the image build context unless it is needed by Dockerfile.
+# This excludes every .env variant (including .env.local/.env.production), credentials,
+# node_modules, .pnpm-store, dist, runtime data/uploads, VCS metadata, designs, screenshots
+# and logs even if new files are added later.
+**
+
+# Explicit defense-in-depth denies for sensitive or bulky local state.
+.env
+.env*
+node_modules/
+.pnpm-store/
+dist/
+data/
+uploads/
+.git/
+design/
+screenshots/
+visualizations/
+logs/
+*.log
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+
+!.dockerignore
+!Dockerfile
+!package.json
+!pnpm-lock.yaml
+!package-lock.json
+!npm-shrinkwrap.json
+!index.html
+!vite.config.js
+
+!src/
+!src/**
+!public/
+!public/**
+!server/
+!server/**
+!shared/
+!shared/**
+
+# Final overrides: never re-include common credential files, even below an allowed source tree.
+**/.env
+**/.env.*
+**/secrets/**
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/credentials*.json
+**/*service-account*.json

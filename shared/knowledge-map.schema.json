@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://teacherbang.local/schemas/knowledge-map.schema.json",
+  "title": "教师帮教学认知图谱",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "lesson", "nodes", "edges", "health"],
+  "properties": {
+    "schemaVersion": { "const": "teaching-knowledge-map.v1" },
+    "lesson": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "subject", "grade"],
+      "properties": {
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "subject": { "type": "string", "maxLength": 80 },
+        "grade": { "type": "string", "maxLength": 80 }
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "label"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "kind": { "enum": ["lesson", "knowledge_point", "question"] },
+          "label": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "cognitiveLevel": { "enum": ["记忆", "理解", "应用", "创新"] },
+          "lessonPhase": { "type": "string", "maxLength": 80 },
+          "questionCount": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "from", "to", "relation"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "from": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "to": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "relation": { "enum": ["教授", "考察于", "相似于"] }
+        }
+      }
+    },
+    "health": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["knowledgePointCount", "questionCount", "taggedQuestionRate", "isolatedNodeCount", "pendingConflicts"],
+      "properties": {
+        "knowledgePointCount": { "type": "integer", "minimum": 0 },
+        "questionCount": { "type": "integer", "minimum": 0 },
+        "taggedQuestionRate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "isolatedNodeCount": { "type": "integer", "minimum": 0 },
+        "pendingConflicts": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

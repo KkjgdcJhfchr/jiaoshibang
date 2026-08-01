@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://teacherbang.local/schemas/exam-paper.schema.json",
+  "title": "教师帮智能组卷结果",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "title", "subject", "grade", "questionCount", "totalScore", "durationMinutes", "questions", "coverage", "strategy"],
+  "properties": {
+    "schemaVersion": { "const": "recommended-paper.v1" },
+    "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "subject": { "type": "string", "maxLength": 80 },
+    "grade": { "type": "string", "maxLength": 80 },
+    "questionCount": { "type": "integer", "minimum": 10, "maximum": 30 },
+    "totalScore": { "type": "integer", "minimum": 1, "maximum": 500 },
+    "durationMinutes": { "type": "integer", "minimum": 20, "maximum": 180 },
+    "sections": { "type": "array", "items": { "type": "object" } },
+    "questions": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "required": ["id", "stem", "answer", "explanation", "type", "difficulty", "source", "knowledgePoints", "recommendationScore"],
+        "properties": {
+          "id": { "type": "string" },
+          "stem": { "type": "string", "minLength": 1 },
+          "answer": { "type": "string", "minLength": 1 },
+          "explanation": { "type": "string", "minLength": 1 },
+          "type": { "type": "string" },
+          "difficulty": { "type": "integer", "minimum": 1, "maximum": 5 },
+          "source": { "type": "string" },
+          "knowledgePoints": { "type": "array", "items": { "type": "string" } },
+          "recommendationScore": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      }
+    },
+    "coverage": { "type": "array", "items": { "type": "object" } },
+    "strategy": {
+      "type": "object",
+      "required": ["formula", "ordering", "duplicateThreshold", "humanReviewRequired"],
+      "properties": {
+        "formula": { "type": "string" },
+        "ordering": { "type": "string" },
+        "duplicateThreshold": { "type": "number", "minimum": 0, "maximum": 1 },
+        "humanReviewRequired": { "const": true }
+      }
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://teacherbang.local/schemas/question.schema.json",
+  "title": "教师帮题目",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "stem", "type", "difficulty", "source", "knowledgePoints", "answer", "explanation"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "stem": { "type": "string", "minLength": 1, "maxLength": 8000 },
+    "options": { "type": "array", "maxItems": 10, "items": { "type": "string", "maxLength": 2000 } },
+    "type": { "type": "string", "minLength": 1, "maxLength": 50 },
+    "difficulty": { "type": "integer", "minimum": 1, "maximum": 5 },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "label", "verified"],
+      "properties": {
+        "kind": { "enum": ["licensed_exam", "textbook", "school", "ai_generated"] },
+        "label": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "verified": { "type": "boolean" },
+        "licenseReference": { "type": "string", "maxLength": 500 }
+      }
+    },
+    "knowledgePoints": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 120 } },
+    "cognitiveLevel": { "enum": ["记忆", "理解", "应用", "创新"] },
+    "lessonPhase": { "enum": ["新课导入", "课堂练习", "巩固练习", "课后作业"] },
+    "answer": { "type": "string", "minLength": 1, "maxLength": 8000 },
+    "explanation": { "type": "string", "minLength": 1, "maxLength": 12000 },
+    "similarityFingerprint": { "type": "string", "maxLength": 200 }
+  }
+}

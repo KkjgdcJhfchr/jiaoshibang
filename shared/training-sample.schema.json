@@ -1,0 +1,1408 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.teacher-helper.local/training-sample.schema.json",
+  "title": "教师帮训练候选样本",
+  "description": "统一描述 SFT、修订 SFT、DPO、蒸馏和 RAG 样本，并携带授权、版权、隐私、质量与数据集血缘。",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "training-sample.v1"
+    },
+    "sampleId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "taskType": {
+      "type": "string",
+      "enum": [
+        "lesson_plan_sft",
+        "lesson_plan_revision_sft",
+        "lesson_plan_dpo",
+        "lesson_plan_distillation",
+        "rag_document"
+      ]
+    },
+    "candidateStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "rights_review",
+        "privacy_review",
+        "deidentification",
+        "quality_review",
+        "approved",
+        "released",
+        "ineligible",
+        "quarantined",
+        "revoked",
+        "superseded"
+      ]
+    },
+    "sourceCategory": {
+      "type": "string",
+      "enum": [
+        "user_interaction",
+        "admin_material",
+        "expert_authored",
+        "synthetic"
+      ]
+    },
+    "authorization": {
+      "$ref": "#/$defs/authorization"
+    },
+    "rights": {
+      "$ref": "#/$defs/rightsRecord"
+    },
+    "privacy": {
+      "$ref": "#/$defs/privacyReview"
+    },
+    "quality": {
+      "$ref": "#/$defs/qualityReview"
+    },
+    "eligibility": {
+      "$ref": "#/$defs/eligibility"
+    },
+    "payload": {
+      "type": "object"
+    },
+    "datasetMemberships": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/datasetMembership"
+      }
+    },
+    "createdAt": {
+      "type": "string"
+    },
+    "updatedAt": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "sampleId",
+    "taskType",
+    "candidateStatus",
+    "sourceCategory",
+    "authorization",
+    "rights",
+    "privacy",
+    "quality",
+    "eligibility",
+    "payload",
+    "datasetMemberships",
+    "createdAt",
+    "updatedAt"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "taskType": {
+            "const": "lesson_plan_sft"
+          }
+        },
+        "required": [
+          "taskType"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/generationSftPayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "taskType": {
+            "const": "lesson_plan_revision_sft"
+          }
+        },
+        "required": [
+          "taskType"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/revisionSftPayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "taskType": {
+            "const": "lesson_plan_dpo"
+          }
+        },
+        "required": [
+          "taskType"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/dpoPayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "taskType": {
+            "const": "lesson_plan_distillation"
+          }
+        },
+        "required": [
+          "taskType"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/distillationPayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "taskType": {
+            "const": "rag_document"
+          }
+        },
+        "required": [
+          "taskType"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/ragPayload"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "authorizationScopes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rawSource": {
+          "type": "boolean"
+        },
+        "ocrText": {
+          "type": "boolean"
+        },
+        "finalPlan": {
+          "type": "boolean"
+        },
+        "revisionHistory": {
+          "type": "boolean"
+        },
+        "explicitPreferences": {
+          "type": "boolean"
+        },
+        "syntheticDerivatives": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "rawSource",
+        "ocrText",
+        "finalPlan",
+        "revisionHistory",
+        "explicitPreferences",
+        "syntheticDerivatives"
+      ]
+    },
+    "authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "serviceProcessing": {
+          "type": "boolean"
+        },
+        "trainingAllowed": {
+          "type": "boolean"
+        },
+        "legalBasis": {
+          "type": "string",
+          "enum": [
+            "explicit_user_opt_in",
+            "explicit_organization_authorization",
+            "contractual_license",
+            "public_domain",
+            "synthetic_rights_verified"
+          ]
+        },
+        "scopes": {
+          "$ref": "#/$defs/authorizationScopes"
+        },
+        "consentEventId": {
+          "type": "string"
+        },
+        "policyVersion": {
+          "type": "string"
+        },
+        "evidenceRef": {
+          "type": "string"
+        },
+        "grantedAt": {
+          "type": "string"
+        },
+        "revokedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "serviceProcessing",
+        "trainingAllowed",
+        "legalBasis",
+        "scopes",
+        "consentEventId",
+        "policyVersion",
+        "evidenceRef",
+        "grantedAt",
+        "revokedAt"
+      ]
+    },
+    "allowedUses": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "inference": {
+          "type": "boolean"
+        },
+        "projectRag": {
+          "type": "boolean"
+        },
+        "tenantRag": {
+          "type": "boolean"
+        },
+        "globalRag": {
+          "type": "boolean"
+        },
+        "modelTraining": {
+          "type": "boolean"
+        },
+        "distillation": {
+          "type": "boolean"
+        },
+        "derivatives": {
+          "type": "boolean"
+        },
+        "redistribution": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "inference",
+        "projectRag",
+        "tenantRag",
+        "globalRag",
+        "modelTraining",
+        "distillation",
+        "derivatives",
+        "redistribution"
+      ]
+    },
+    "rightsRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rightsHolder": {
+          "type": "string"
+        },
+        "sourceTitle": {
+          "type": "string"
+        },
+        "licenseId": {
+          "type": "string"
+        },
+        "uploaderAttestation": {
+          "type": "boolean"
+        },
+        "allowedUses": {
+          "$ref": "#/$defs/allowedUses"
+        },
+        "territories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "validFrom": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "validUntil": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "attributionRequired": {
+          "type": "boolean"
+        },
+        "attributionText": {
+          "type": "string"
+        },
+        "reviewStatus": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "approved",
+            "rejected",
+            "expired",
+            "revoked"
+          ]
+        },
+        "reviewedBy": {
+          "type": "string"
+        },
+        "reviewedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "rightsHolder",
+        "sourceTitle",
+        "licenseId",
+        "uploaderAttestation",
+        "allowedUses",
+        "territories",
+        "validFrom",
+        "validUntil",
+        "attributionRequired",
+        "attributionText",
+        "reviewStatus",
+        "reviewedBy",
+        "reviewedAt"
+      ]
+    },
+    "privacyReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "containsPersonalData": {
+          "type": "boolean"
+        },
+        "containsMinorData": {
+          "type": "boolean"
+        },
+        "deidentificationStatus": {
+          "type": "string",
+          "enum": [
+            "not_required",
+            "pending",
+            "passed",
+            "failed"
+          ]
+        },
+        "rulesetVersion": {
+          "type": "string"
+        },
+        "removedCategories": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "name",
+              "student_id",
+              "government_id",
+              "phone",
+              "email",
+              "social_account",
+              "school",
+              "class",
+              "address",
+              "precise_location",
+              "grade_or_comment",
+              "health",
+              "family_or_financial",
+              "face",
+              "signature",
+              "file_metadata",
+              "other"
+            ]
+          }
+        },
+        "reversibleMappingStored": {
+          "type": "boolean"
+        },
+        "residualRisk": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "reviewStatus": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "approved",
+            "rejected"
+          ]
+        },
+        "reviewedBy": {
+          "type": "string"
+        },
+        "reviewedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "containsPersonalData",
+        "containsMinorData",
+        "deidentificationStatus",
+        "rulesetVersion",
+        "removedCategories",
+        "reversibleMappingStored",
+        "residualRisk",
+        "reviewStatus",
+        "reviewedBy",
+        "reviewedAt"
+      ]
+    },
+    "hardGate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "passed": {
+          "type": "boolean"
+        },
+        "evidence": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "passed",
+        "evidence"
+      ]
+    },
+    "qualityDimensions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sourceFaithfulness": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "objectiveAlignment": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "lessonFeasibility": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "explanationClarity": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "engagementDesign": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "exerciseQuality": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "differentiationAndAssessment": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "languageAndFormat": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        }
+      },
+      "required": [
+        "sourceFaithfulness",
+        "objectiveAlignment",
+        "lessonFeasibility",
+        "explanationClarity",
+        "engagementDesign",
+        "exerciseQuality",
+        "differentiationAndAssessment",
+        "languageAndFormat"
+      ]
+    },
+    "humanReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "not_reviewed",
+            "approved",
+            "rejected"
+          ]
+        },
+        "reviewerId": {
+          "type": "string"
+        },
+        "reviewedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notes": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "reviewerId",
+        "reviewedAt",
+        "notes"
+      ]
+    },
+    "qualityReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hardGates": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/hardGate"
+          }
+        },
+        "allHardGatesPassed": {
+          "type": "boolean"
+        },
+        "dimensions": {
+          "$ref": "#/$defs/qualityDimensions"
+        },
+        "overallScore": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "graderVersions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "humanReview": {
+          "$ref": "#/$defs/humanReview"
+        }
+      },
+      "required": [
+        "hardGates",
+        "allHardGatesPassed",
+        "dimensions",
+        "overallScore",
+        "graderVersions",
+        "humanReview"
+      ]
+    },
+    "eligibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "eligible": {
+          "type": "boolean"
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dedupeHash": {
+          "type": "string"
+        },
+        "semanticClusterId": {
+          "type": "string"
+        },
+        "splitGroupKey": {
+          "type": "string",
+          "description": "同项目、同教材章节和近似内容必须使用相同分组键，防止训练/测试泄漏。"
+        },
+        "fixedEvalExcluded": {
+          "type": "boolean"
+        },
+        "poisoningRisk": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "approvedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "eligible",
+        "reasons",
+        "dedupeHash",
+        "semanticClusterId",
+        "splitGroupKey",
+        "fixedEvalExcluded",
+        "poisoningRisk",
+        "approvedAt"
+      ]
+    },
+    "sourceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "assetId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "page": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "blockIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "assetId",
+        "page",
+        "blockIds"
+      ]
+    },
+    "chapterContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "chapterSnapshotId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 1
+        },
+        "grade": {
+          "type": "string",
+          "minLength": 1
+        },
+        "textbookEdition": {
+          "type": "string"
+        },
+        "chapterTitle": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sourceSummary": {
+          "type": "string"
+        },
+        "knowledgePoints": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "sourceRefs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sourceRef"
+          }
+        }
+      },
+      "required": [
+        "chapterSnapshotId",
+        "subject",
+        "grade",
+        "textbookEdition",
+        "chapterTitle",
+        "sourceSummary",
+        "knowledgePoints",
+        "sourceRefs"
+      ]
+    },
+    "teacherContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "durationMinutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600
+        },
+        "classProfile": {
+          "type": "string"
+        },
+        "preferences": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "language": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "durationMinutes",
+        "classProfile",
+        "preferences",
+        "language"
+      ]
+    },
+    "retrievedChunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "chunkId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "text": {
+          "type": "string"
+        },
+        "score": {
+          "type": "number",
+          "minimum": 0
+        },
+        "sourceRefs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sourceRef"
+          }
+        }
+      },
+      "required": [
+        "chunkId",
+        "text",
+        "score",
+        "sourceRefs"
+      ]
+    },
+    "generationSftInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "chapterContext": {
+          "$ref": "#/$defs/chapterContext"
+        },
+        "teacherContext": {
+          "$ref": "#/$defs/teacherContext"
+        },
+        "retrievedChunks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/retrievedChunk"
+          }
+        }
+      },
+      "required": [
+        "chapterContext",
+        "teacherContext",
+        "retrievedChunks"
+      ]
+    },
+    "generationSftPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "generation_sft"
+        },
+        "instruction": {
+          "type": "string",
+          "minLength": 1
+        },
+        "input": {
+          "$ref": "#/$defs/generationSftInput"
+        },
+        "targetLessonPlan": {
+          "$ref": "lesson-plan.schema.json"
+        }
+      },
+      "required": [
+        "kind",
+        "instruction",
+        "input",
+        "targetLessonPlan"
+      ]
+    },
+    "changeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "instruction": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "full_plan",
+            "metadata",
+            "objectives",
+            "timeline",
+            "differentiation",
+            "assessment",
+            "exercises",
+            "homework",
+            "board_design",
+            "other"
+          ]
+        },
+        "preservePaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "instruction",
+        "scope",
+        "preservePaths"
+      ]
+    },
+    "revisionSftPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "revision_sft"
+        },
+        "chapterContext": {
+          "$ref": "#/$defs/chapterContext"
+        },
+        "currentLessonPlan": {
+          "$ref": "lesson-plan.schema.json"
+        },
+        "changeRequest": {
+          "$ref": "#/$defs/changeRequest"
+        },
+        "targetLessonPlan": {
+          "$ref": "lesson-plan.schema.json"
+        }
+      },
+      "required": [
+        "kind",
+        "chapterContext",
+        "currentLessonPlan",
+        "changeRequest",
+        "targetLessonPlan"
+      ]
+    },
+    "dpoPrompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "chapterContext": {
+          "$ref": "#/$defs/chapterContext"
+        },
+        "currentLessonPlan": {
+          "$ref": "lesson-plan.schema.json"
+        },
+        "changeRequest": {
+          "$ref": "#/$defs/changeRequest"
+        }
+      },
+      "required": [
+        "chapterContext",
+        "currentLessonPlan",
+        "changeRequest"
+      ]
+    },
+    "preferenceEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "type": "string",
+          "enum": [
+            "explicit_user_choice",
+            "expert_pairwise_review"
+          ]
+        },
+        "preferredRevisionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rejectedRevisionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "reviewerIds": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "recordedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "preferredRevisionId",
+        "rejectedRevisionId",
+        "rationale",
+        "reviewerIds",
+        "recordedAt"
+      ]
+    },
+    "dpoPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "dpo"
+        },
+        "prompt": {
+          "$ref": "#/$defs/dpoPrompt"
+        },
+        "chosen": {
+          "$ref": "lesson-plan.schema.json"
+        },
+        "rejected": {
+          "$ref": "lesson-plan.schema.json"
+        },
+        "preference": {
+          "$ref": "#/$defs/preferenceEvidence"
+        }
+      },
+      "required": [
+        "kind",
+        "prompt",
+        "chosen",
+        "rejected",
+        "preference"
+      ]
+    },
+    "samplingParameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "temperature": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2
+        },
+        "topP": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "seed": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "temperature",
+        "topP",
+        "seed"
+      ]
+    },
+    "teacherModel": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "providerId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "promptVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sampling": {
+          "$ref": "#/$defs/samplingParameters"
+        },
+        "termsVerified": {
+          "type": "boolean"
+        },
+        "termsEvidenceRef": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "providerId",
+        "model",
+        "promptVersion",
+        "sampling",
+        "termsVerified",
+        "termsEvidenceRef"
+      ]
+    },
+    "distillationCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "candidateId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lessonPlan": {
+          "$ref": "lesson-plan.schema.json"
+        },
+        "hardGatesPassed": {
+          "type": "boolean"
+        },
+        "score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "selected": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "candidateId",
+        "lessonPlan",
+        "hardGatesPassed",
+        "score",
+        "selected"
+      ]
+    },
+    "distillationSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "rules_plus_model_grader",
+            "expert_review",
+            "teacher_acceptance"
+          ]
+        },
+        "selectedCandidateId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reviewerIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "rationale": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "method",
+        "selectedCandidateId",
+        "reviewerIds",
+        "rationale"
+      ]
+    },
+    "distillationPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "distillation"
+        },
+        "teacherModel": {
+          "$ref": "#/$defs/teacherModel"
+        },
+        "input": {
+          "$ref": "#/$defs/generationSftInput"
+        },
+        "candidates": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "$ref": "#/$defs/distillationCandidate"
+          }
+        },
+        "selectedOutput": {
+          "$ref": "lesson-plan.schema.json"
+        },
+        "selection": {
+          "$ref": "#/$defs/distillationSelection"
+        },
+        "hiddenReasoningStored": {
+          "type": "boolean",
+          "const": false
+        }
+      },
+      "required": [
+        "kind",
+        "teacherModel",
+        "input",
+        "candidates",
+        "selectedOutput",
+        "selection",
+        "hiddenReasoningStored"
+      ]
+    },
+    "ragChunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "chunkId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pageStart": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pageEnd": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sourceRefs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/sourceRef"
+          }
+        },
+        "contentHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "embeddingModel": {
+          "type": "string"
+        },
+        "embeddingVersion": {
+          "type": "string"
+        },
+        "vectorRef": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "chunkId",
+        "text",
+        "pageStart",
+        "pageEnd",
+        "sourceRefs",
+        "contentHash",
+        "embeddingModel",
+        "embeddingVersion",
+        "vectorRef"
+      ]
+    },
+    "ragDocument": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "documentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "materialType": {
+          "type": "string",
+          "enum": [
+            "textbook",
+            "lesson_plan",
+            "exercise_set",
+            "answer_key",
+            "rubric",
+            "activity_template"
+          ]
+        },
+        "subject": {
+          "type": "string"
+        },
+        "grade": {
+          "type": "string"
+        },
+        "textbookEdition": {
+          "type": "string"
+        },
+        "chapterTitle": {
+          "type": "string"
+        },
+        "chunks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/ragChunk"
+          }
+        }
+      },
+      "required": [
+        "documentId",
+        "title",
+        "materialType",
+        "subject",
+        "grade",
+        "textbookEdition",
+        "chapterTitle",
+        "chunks"
+      ]
+    },
+    "ragAccessControl": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "scope": {
+          "type": "string",
+          "enum": [
+            "project",
+            "tenant",
+            "global_licensed"
+          ]
+        },
+        "projectIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tenantIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "expiresAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "scope",
+        "projectIds",
+        "tenantIds",
+        "expiresAt"
+      ]
+    },
+    "ragPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "rag_document"
+        },
+        "document": {
+          "$ref": "#/$defs/ragDocument"
+        },
+        "accessControl": {
+          "$ref": "#/$defs/ragAccessControl"
+        }
+      },
+      "required": [
+        "kind",
+        "document",
+        "accessControl"
+      ]
+    },
+    "datasetMembership": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "datasetId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^lessonplan-[a-z0-9_-]+-[0-9]{4}\\.[0-9]{2}\\.[0-9]+$"
+        },
+        "split": {
+          "type": "string",
+          "enum": [
+            "train",
+            "validation",
+            "test"
+          ]
+        },
+        "manifestHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "addedAt": {
+          "type": "string"
+        },
+        "revokedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "datasetId",
+        "version",
+        "split",
+        "manifestHash",
+        "addedAt",
+        "revokedAt"
+      ]
+    }
+  }
+}
