@@ -9,6 +9,7 @@ const required = [
   'src/main.jsx',
   'src/admin-main.jsx',
   'src/App.jsx',
+  'src/data/sampleLesson.js',
   'src/teacher/WorkflowPages.jsx',
   'src/admin/DomainManagementPages.jsx',
   'server/index.mjs',
@@ -50,6 +51,11 @@ if (!/allowBuilds:\s*[\r\n]+\s+esbuild@0\.25\.12:\s*true/.test(pnpmWorkspace)) {
 const dockerfile = fs.readFileSync(path.resolve('Dockerfile'), 'utf8');
 if (!dockerfile.includes('COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./')) {
   throw new Error('Docker 依赖安装阶段必须复制 pnpm-workspace.yaml');
+}
+
+const gitIgnore = fs.readFileSync(path.resolve('.gitignore'), 'utf8');
+if (/(^|\r?\n)data\/(\r?\n|$)/.test(gitIgnore)) {
+  throw new Error('运行时数据目录必须写成 /data/，否则会误排除 src/data');
 }
 
 const bootstrap = fs.readFileSync(path.resolve('scripts/bootstrap.sh'), 'utf8');

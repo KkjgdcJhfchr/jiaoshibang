@@ -4,8 +4,8 @@ dist/
 .env
 .env.*
 !.env.example
-data/
-uploads/
+/data/
+/uploads/
 *.log
 .gh-auth-tmp/
 .gh-auth-*.tmp*
