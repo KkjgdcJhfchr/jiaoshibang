@@ -12,10 +12,11 @@ import {
   X,
 } from 'lucide-react';
 import { api } from '../lib/api.js';
+import { useSiteConfig } from '../lib/site-config.jsx';
 import './admin-system-settings.css';
 
 const EMPTY_SETTINGS = {
-  siteName: '教师帮',
+  siteName: '',
   supportEmail: '',
   registrationOpen: true,
   registrationVerificationRequired: true,
@@ -25,6 +26,7 @@ const EMPTY_SETTINGS = {
 };
 
 export function SystemSettingsPage({ onNotice = () => {} }) {
+  const { applySiteConfig } = useSiteConfig();
   const [settings, setSettings] = useState(EMPTY_SETTINGS);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -70,6 +72,7 @@ export function SystemSettingsPage({ onNotice = () => {} }) {
         privacyPolicyContent: settings.privacyPolicyContent,
       });
       setSettings({ ...EMPTY_SETTINGS, ...(response.data?.settings || response.data || {}) });
+      applySiteConfig(response.data?.settings || response.data || {});
       setDirty(false);
       onNotice('系统设置已保存并立即生效');
     } catch (requestError) {
@@ -107,7 +110,7 @@ export function SystemSettingsPage({ onNotice = () => {} }) {
 
       <div className="admin-system-grid">
         <section className="admin-panel admin-system-card">
-          <header><span><Settings size={20} /></span><div><h2>站点基础信息</h2><p>客服邮箱会显示在公开页面，站点名称会用于规则文本与页脚。</p></div></header>
+          <header><span><Settings size={20} /></span><div><h2>站点基础信息</h2><p>站点名称保存后会同步更新前台、后台、页面标题、邮件与支付订单品牌。</p></div></header>
           <div className="admin-system-fields">
             <label><span>站点名称</span><input value={settings.siteName} onChange={(event) => update('siteName', event.target.value)} minLength={2} maxLength={40} required disabled={loading || saving} /></label>
             <label><span>客服邮箱</span><input type="email" value={settings.supportEmail} onChange={(event) => update('supportEmail', event.target.value)} placeholder="support@example.com" disabled={loading || saving} /></label>

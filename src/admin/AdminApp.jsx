@@ -12,9 +12,11 @@ import {
   ChevronLeft,
   ChevronRight,
   Database,
+  CreditCard,
   GraduationCap,
   KeyRound,
   ListChecks,
+  LoaderCircle,
   Menu,
   Network,
   Plus,
@@ -29,23 +31,28 @@ import {
   X,
 } from 'lucide-react'
 import { api } from '../lib/api.js'
+import { useSiteConfig } from '../lib/site-config.jsx'
 import { KnowledgeGraphAdminPage, OrganizationsAdminPage, QuestionBankAdminPage } from './DomainManagementPages.jsx'
 import { SecuritySettingsPage } from './SecuritySettingsPage.jsx'
-import { PaymentSettingsPage } from './PaymentSettingsPage.jsx'
+import { MembershipPlansPage, OrdersPage, PaymentChannelsPage, PromotionsPage } from './PaymentSettingsPage.jsx'
 import { SystemSettingsPage } from './SystemSettingsPage.jsx'
 import { UserManagementPage } from './UserManagementPage.jsx'
+import { ContentManagementPage } from './ContentManagementPage.jsx'
 import './admin.css'
 
 const navigationItems = [
   { id: 'users', label: '用户管理', icon: Users },
   { id: 'organizations', label: '学校与组织', icon: Building2 },
-  { id: 'memberships', label: '会员与套餐', icon: GraduationCap },
+  { id: 'plans', label: '套餐设置', icon: GraduationCap },
   { id: 'promotions', label: '优惠活动', icon: BadgePercent },
+  { id: 'announcements', label: '公告管理', icon: Bell },
+  { id: 'tutorial', label: '使用教程', icon: BookOpenCheck },
   { id: 'knowledgeGraph', label: '教学认知图谱', icon: Network },
   { id: 'questionBank', label: '题库管理', icon: ListChecks },
   { id: 'models', label: 'AI模型通道', icon: Bot },
   { id: 'training', label: '训练素材', icon: Database },
-  { id: 'orders', label: '支付与订单', icon: ReceiptText },
+  { id: 'paymentChannels', label: '支付通道', icon: CreditCard },
+  { id: 'orders', label: '订单管理', icon: ReceiptText },
   { id: 'securitySettings', label: '安全与通信', icon: KeyRound },
   { id: 'settings', label: '系统设置', icon: Settings },
 ]
@@ -54,17 +61,26 @@ function providerToChannel(provider, index = 0) {
   const health = provider.health || provider.healthCheck?.status || 'unknown'
   const normalizedHealth = health === 'unhealthy' ? 'abnormal' : health
   const model = provider.model || provider.models?.generation?.modelId || provider.models?.generation || provider.models?.revision?.modelId || '未配置'
+  const capabilityLabels = {
+    lesson_generation: '教案生成',
+    lesson_revision: '对话修改',
+    multimodal_input: '图片/PDF识别',
+  }
+  const capabilities = Array.isArray(provider.capabilities) ? provider.capabilities : []
   return {
     id: provider.id || provider.providerId,
     name: provider.displayName || provider.name || `模型通道 ${index + 1}`,
     model,
-    purpose: provider.purpose || '教案生成',
+    purpose: capabilities.length ? capabilities.map((item) => capabilityLabels[item] || item).join('、') : provider.purpose || '教案生成、对话修改、图片/PDF识别',
+    capabilities,
     priority: Number(provider.priority ?? provider.routing?.taskPriority?.generation ?? index + 1),
     latency: provider.latency || provider.averageLatency || '待检测',
     success: provider.success || provider.successRate || '—',
     health: normalizedHealth,
     enabled: provider.enabled === true,
     keyLastFour: provider.keyLastFour || provider.auth?.keyLastFour || '',
+    readonly: provider.readonly === true,
+    managedBy: provider.managedBy || 'admin',
   }
 }
 
@@ -96,7 +112,7 @@ function PanelHeader({ title, action, onAction, children }) {
   )
 }
 
-function ChannelHealthTable({ channels, onToggle, query, busyIds }) {
+function ChannelHealthTable({ channels, onToggle, onTest, query, busyIds }) {
   const normalizedQuery = query.trim().toLowerCase()
   const filteredChannels = channels.filter((channel) => !normalizedQuery || Object.values(channel).join(' ').toLowerCase().includes(normalizedQuery))
 
@@ -106,11 +122,11 @@ function ChannelHealthTable({ channels, onToggle, query, busyIds }) {
       <div className="admin-table-wrap">
         <table className="admin-table admin-channel-table">
           <caption className="admin-sr-only">AI 模型通道健康状态</caption>
-          <thead><tr><th>通道名称</th><th>模型</th><th>用途</th><th>优先级</th><th>平均延迟</th><th>成功率</th><th>状态</th><th>启用</th></tr></thead>
+          <thead><tr><th>通道名称</th><th>模型</th><th>用途</th><th>优先级</th><th>平均延迟</th><th>成功率</th><th>状态</th><th>连接测试</th><th>启用</th></tr></thead>
           <tbody>
             {filteredChannels.map((channel) => (
               <tr key={channel.id}>
-                <td><span className={`admin-health-dot admin-health-dot-${channel.health}`} />{channel.name}</td>
+                <td><span className={`admin-health-dot admin-health-dot-${channel.health}`} /><span className="admin-channel-identity"><b>{channel.name}</b><small>{channel.managedBy === 'environment' ? `服务器安全配置${channel.keyLastFour ? ` · 密钥尾号 ••••${channel.keyLastFour}` : ''}` : channel.keyLastFour ? `密钥尾号 ••••${channel.keyLastFour}` : '密钥已加密保存'}</small></span></td>
                 <td>{channel.model}</td>
                 <td>{channel.purpose}</td>
                 <td>{channel.priority}</td>
@@ -121,14 +137,15 @@ function ChannelHealthTable({ channels, onToggle, query, busyIds }) {
                     {channel.health === 'healthy' ? '健康' : channel.health === 'degraded' ? '降级' : channel.health === 'unknown' ? '待检测' : channel.health === 'disabled' ? '已停用' : '异常'}
                   </StatusPill>
                 </td>
+                <td><button className="admin-channel-test" type="button" disabled={busyIds.has(channel.id)} onClick={() => onTest(channel)}>{busyIds.has(channel.id) ? <LoaderCircle className="spin" size={14} /> : <Activity size={14} />}测试</button></td>
                 <td>
-                  <button className={`admin-toggle ${channel.enabled ? 'admin-toggle-on' : ''}`} type="button" aria-label={`${channel.enabled ? '停用' : '启用'}${channel.name}`} aria-pressed={channel.enabled} disabled={busyIds.has(channel.id)} onClick={() => onToggle(channel)}>
+                  <button className={`admin-toggle ${channel.enabled ? 'admin-toggle-on' : ''}`} type="button" aria-label={channel.readonly ? `${channel.name}由服务器配置管理` : `${channel.enabled ? '停用' : '启用'}${channel.name}`} aria-pressed={channel.enabled} disabled={channel.readonly || busyIds.has(channel.id)} onClick={() => onToggle(channel)}>
                     <span className="admin-toggle-knob" />
                   </button>
                 </td>
               </tr>
             ))}
-            {filteredChannels.length === 0 ? <tr><td className="admin-empty-cell" colSpan="8">没有匹配的模型通道</td></tr> : null}
+            {filteredChannels.length === 0 ? <tr><td className="admin-empty-cell" colSpan="9">没有匹配的模型通道</td></tr> : null}
           </tbody>
         </table>
       </div>
@@ -353,7 +370,8 @@ function TrainingMaterialsPage({ query }) {
 }
 
 function AddChannelModal({ open, onClose, onAdd }) {
-  const [form, setForm] = useState({ name: '', provider: 'OpenAI Compatible', baseUrl: 'https://api.openai.com/v1', apiKey: '', model: '', purpose: '教案生成', priority: '7' })
+  const emptyForm = () => ({ name: '', provider: 'OpenAI Compatible', baseUrl: 'https://api.openai.com/v1', apiKey: '', model: '', capabilities: ['lesson_generation', 'lesson_revision', 'multimodal_input'], priority: '7' })
+  const [form, setForm] = useState(emptyForm)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
@@ -377,19 +395,30 @@ function AddChannelModal({ open, onClose, onAdd }) {
   const handleSubmit = async (event) => {
     event.preventDefault()
     if (saving) return
+    if (form.capabilities.length === 0) {
+      setError('请至少选择一种支持用途。')
+      return
+    }
     setSaving(true)
     setError('')
     const submitted = { ...form }
     setForm((current) => ({ ...current, apiKey: '' }))
     try {
       await onAdd(submitted)
-      setForm({ name: '', provider: 'OpenAI Compatible', baseUrl: 'https://api.openai.com/v1', apiKey: '', model: '', purpose: '教案生成', priority: '7' })
+      setForm(emptyForm())
     } catch (requestError) {
       setError(requestError.message || '模型通道保存失败，请检查配置后重试。')
     } finally {
       setSaving(false)
     }
   }
+
+  const toggleCapability = (capability) => setForm((current) => ({
+    ...current,
+    capabilities: current.capabilities.includes(capability)
+      ? current.capabilities.filter((item) => item !== capability)
+      : [...current.capabilities, capability],
+  }))
 
   return (
     <div className="admin-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
@@ -402,10 +431,18 @@ function AddChannelModal({ open, onClose, onAdd }) {
           </div>
           <label><span>API Base URL</span><input value={form.baseUrl} onChange={updateField('baseUrl')} placeholder="https://api.example.com/v1" required disabled={saving} /></label>
           <label><span>API Key</span><input value={form.apiKey} onChange={updateField('apiKey')} type="password" autoComplete="new-password" placeholder="密钥保存后仅显示末四位" required disabled={saving} /></label>
-          <div className="admin-form-grid">
-            <label><span>模型名称</span><input value={form.model} onChange={updateField('model')} placeholder="例如：gpt-4.1-mini" required disabled={saving} /></label>
-            <label><span>主要用途</span><select value={form.purpose} onChange={updateField('purpose')} disabled={saving}><option>教案生成</option><option>视觉识别</option><option>对话修改</option><option>向量嵌入</option></select></label>
-          </div>
+          <label><span>模型名称</span><input value={form.model} onChange={updateField('model')} placeholder="例如：gpt-5.6" required disabled={saving} /></label>
+          <fieldset className="admin-capability-fieldset">
+            <legend>支持用途（可多选）</legend>
+            <div className="admin-capability-options">
+              {[
+                ['lesson_generation', '教案生成'],
+                ['lesson_revision', '对话修改'],
+                ['multimodal_input', '图片/PDF识别'],
+              ].map(([value, label]) => <label key={value}><input type="checkbox" checked={form.capabilities.includes(value)} onChange={() => toggleCapability(value)} disabled={saving} /><span>{label}</span></label>)}
+            </div>
+            <small>同一个 API 通道可以同时承担全部用途。</small>
+          </fieldset>
           <label><span>路由优先级</span><input value={form.priority} onChange={updateField('priority')} type="number" min="1" max="99" required disabled={saving} /><small>数字越小，调用优先级越高。</small></label>
           <div className="admin-modal-callout"><ShieldCheck size={18} /><p>密钥将以加密形式保存，页面、日志和任务响应中不会返回完整内容。</p></div>
           {error ? <p className="admin-form-error" role="alert">{error}</p> : null}
@@ -459,6 +496,28 @@ function ModelChannelsPage({ query, onNotice }) {
       })
     }
   }
+  const testChannel = async (channel) => {
+    setBusyIds((current) => new Set(current).add(channel.id))
+    try {
+      const response = await api.testProvider(channel.id)
+      const result = response.data?.result || response.data || {}
+      setChannels((current) => current.map((item) => item.id === channel.id ? {
+        ...item,
+        health: 'healthy',
+        latency: Number.isFinite(Number(result.latencyMs)) ? `${result.latencyMs} ms` : item.latency,
+      } : item))
+      onNotice(`${channel.name}连接成功${result.modelAvailable === false ? '，但当前模型不在服务商模型列表中' : ''}`)
+    } catch (requestError) {
+      setChannels((current) => current.map((item) => item.id === channel.id ? { ...item, health: 'abnormal' } : item))
+      onNotice(`连接测试失败：${requestError.message}`)
+    } finally {
+      setBusyIds((current) => {
+        const next = new Set(current)
+        next.delete(channel.id)
+        return next
+      })
+    }
+  }
   const addChannel = async (form) => {
     const response = await api.createProvider({
       name: form.name,
@@ -467,7 +526,7 @@ function ModelChannelsPage({ query, onNotice }) {
       baseUrl: form.baseUrl,
       apiKey: form.apiKey,
       model: form.model,
-      purpose: form.purpose,
+      capabilities: form.capabilities,
       priority: Number(form.priority),
       enabled: true,
     })
@@ -502,7 +561,7 @@ function ModelChannelsPage({ query, onNotice }) {
             <PanelHeader title="调用量与预估成本" />
             <div className="admin-empty-metric"><Activity size={22} /><div><b>尚无可核验的用量日志</b><p>当前没有可用于计算调用量、延迟和成本的数据。</p></div></div>
           </section>
-          <ChannelHealthTable channels={channels} onToggle={toggleChannel} query={query} busyIds={busyIds} />
+          <ChannelHealthTable channels={channels} onToggle={toggleChannel} onTest={testChannel} query={query} busyIds={busyIds} />
         </div>
         <div className="admin-model-side-column">
           <RecentTasksPanel query={query} />
@@ -515,9 +574,10 @@ function ModelChannelsPage({ query, onNotice }) {
 }
 
 function Sidebar({ activePage, collapsed, mobileOpen, onNavigate, onCollapse, onMobileClose }) {
+  const { siteName } = useSiteConfig()
   return (
     <aside className={`admin-sidebar ${collapsed ? 'admin-sidebar-collapsed' : ''} ${mobileOpen ? 'admin-sidebar-mobile-open' : ''}`}>
-      <div className="admin-brand"><span className="admin-brand-mark"><BookOpenCheck size={23} /></span><div className="admin-brand-copy"><strong>教师帮</strong><span>管理后台</span></div><button className="admin-mobile-close" type="button" onClick={onMobileClose} aria-label="关闭导航"><X size={20} /></button></div>
+      <div className="admin-brand"><span className="admin-brand-mark"><BookOpenCheck size={23} /></span><div className="admin-brand-copy"><strong>{siteName}</strong><span>管理后台</span></div><button className="admin-mobile-close" type="button" onClick={onMobileClose} aria-label="关闭导航"><X size={20} /></button></div>
       <nav className="admin-nav" aria-label="管理员导航">
         {navigationItems.map((item) => {
           const Icon = item.icon
@@ -549,6 +609,7 @@ function Topbar({ query, onQueryChange, onMenuOpen, alertOpen, onAlertToggle, pr
 }
 
 function AdminAccessPage({ mode, onAuthenticated }) {
+  const { siteName } = useSiteConfig()
   const [form, setForm] = useState({ username: '', password: '', confirmPassword: '', code: '' })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -624,7 +685,7 @@ function AdminAccessPage({ mode, onAuthenticated }) {
   return (
     <div className="admin-access-page">
       <main className="admin-access-card">
-        <div className="admin-access-brand"><span className="admin-brand-mark"><BookOpenCheck size={25} /></span><div><strong>教师帮</strong><span>管理后台</span></div></div>
+        <div className="admin-access-brand"><span className="admin-brand-mark"><BookOpenCheck size={25} /></span><div><strong>{siteName}</strong><span>管理后台</span></div></div>
         {mode === 'checking' ? <div className="admin-access-state" role="status"><Activity className="spin" size={28} /><h1>正在验证管理员会话</h1><p>请稍候，系统正在确认当前浏览器的登录状态。</p></div> : null}
         {mode === 'uninitialized' ? <>
           <div className="admin-access-heading"><ShieldCheck size={24} /><div><h1>首次设置管理后台</h1><p>创建唯一的超级管理员。完成后本入口会自动关闭，并直接进入控制台。</p></div></div>
@@ -744,7 +805,12 @@ export default function AdminApp() {
   else if (activePage === 'knowledgeGraph') pageContent = <KnowledgeGraphAdminPage onNotice={setNotice} />
   else if (activePage === 'questionBank') pageContent = <QuestionBankAdminPage onNotice={setNotice} />
   else if (activePage === 'organizations') pageContent = <OrganizationsAdminPage onNotice={setNotice} />
-  else if (['orders', 'memberships', 'promotions'].includes(activePage)) pageContent = <PaymentSettingsPage onNotice={setNotice} />
+  else if (activePage === 'plans') pageContent = <MembershipPlansPage onNotice={setNotice} />
+  else if (activePage === 'promotions') pageContent = <PromotionsPage onNotice={setNotice} />
+  else if (activePage === 'announcements') pageContent = <ContentManagementPage initialSection="announcements" onNotice={setNotice} />
+  else if (activePage === 'tutorial') pageContent = <ContentManagementPage initialSection="tutorial" onNotice={setNotice} />
+  else if (activePage === 'paymentChannels') pageContent = <PaymentChannelsPage onNotice={setNotice} />
+  else if (activePage === 'orders') pageContent = <OrdersPage query={query} onNotice={setNotice} />
   else if (activePage === 'securitySettings') pageContent = <SecuritySettingsPage onNotice={setNotice} />
   else if (activePage === 'settings') pageContent = <SystemSettingsPage onNotice={setNotice} />
   else pageContent = <ModelChannelsPage query={query} onNotice={setNotice} />

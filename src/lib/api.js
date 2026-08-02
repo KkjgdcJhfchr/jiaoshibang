@@ -83,14 +83,41 @@ export const api = {
   testSms: (body) => request('/api/admin/communication/sms/test', { method: 'POST', body, timeout: 20_000 }),
   getSystemSettings: () => request('/api/admin/system/settings', { timeout: 10_000 }),
   saveSystemSettings: (body) => request('/api/admin/system/settings', { method: 'PUT', body, timeout: 20_000 }),
+  getAdminContent: () => request('/api/admin/content', { timeout: 15_000 }),
+  createAnnouncement: (body) => request('/api/admin/announcements', { method: 'POST', body, timeout: 20_000 }),
+  updateAnnouncement: (announcementId, body) => request(`/api/admin/announcements/${encodeURIComponent(announcementId)}`, { method: 'PUT', body, timeout: 20_000 }),
+  deleteAnnouncement: (announcementId, body = {}) => request(`/api/admin/announcements/${encodeURIComponent(announcementId)}`, { method: 'DELETE', body, timeout: 20_000 }),
+  saveTutorial: (body) => request('/api/admin/tutorial', { method: 'PUT', body, timeout: 20_000 }),
+  getAppContentBootstrap: () => request('/api/app/content/bootstrap', { timeout: 15_000 }),
+  acknowledgeAnnouncement: (announcementId, body) => request(`/api/app/announcements/${encodeURIComponent(announcementId)}/acknowledge`, { method: 'POST', body, timeout: 15_000 }),
+  saveTutorialProgress: (body) => request('/api/app/tutorial/progress', { method: 'PUT', body, timeout: 15_000 }),
   getAdminUsers: ({ query = '', offset = 0, limit = 25 } = {}) => {
     const search = new URLSearchParams({ offset: String(offset), limit: String(limit) });
     if (String(query).trim()) search.set('query', String(query).trim());
     return request(`/api/admin/users?${search}`, { timeout: 15_000 });
   },
+  getAdminPaymentConfigs: () => request('/api/admin/payments/configs', { timeout: 15_000 }),
+  saveAdminPaymentConfig: (provider, body) => request(`/api/admin/payments/configs/${encodeURIComponent(provider)}`, { method: 'PUT', body, timeout: 30_000 }),
+  testAdminPaymentConfig: (provider) => request(`/api/admin/payments/configs/${encodeURIComponent(provider)}/test`, { method: 'POST', body: {}, timeout: 20_000 }),
+  setAdminPaymentConfigEnabled: (provider, enabled) => request(`/api/admin/payments/configs/${encodeURIComponent(provider)}/enabled`, { method: 'PATCH', body: { enabled }, timeout: 20_000 }),
+  getAdminPaymentPlans: () => request('/api/admin/payments/plans', { timeout: 15_000 }),
+  saveAdminPaymentPlan: (planId, body) => request(`/api/admin/payments/plans/${encodeURIComponent(planId)}`, { method: 'PUT', body, timeout: 20_000 }),
+  deleteAdminPaymentPlan: (planId) => request(`/api/admin/payments/plans/${encodeURIComponent(planId)}`, { method: 'DELETE', body: {}, timeout: 20_000 }),
+  getAdminPromotions: () => request('/api/admin/promotions', { timeout: 15_000 }),
+  createAdminPromotion: (body) => request('/api/admin/promotions', { method: 'POST', body, timeout: 20_000 }),
+  updateAdminPromotion: (promotionId, body) => request(`/api/admin/promotions/${encodeURIComponent(promotionId)}`, { method: 'PUT', body, timeout: 20_000 }),
+  deleteAdminPromotion: (promotionId) => request(`/api/admin/promotions/${encodeURIComponent(promotionId)}`, { method: 'DELETE', body: {}, timeout: 20_000 }),
+  getAdminPaymentOrders: ({ provider = '', status = '', offset = 0, limit = 25, query = '' } = {}) => {
+    const search = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+    if (provider) search.set('provider', provider);
+    if (status) search.set('status', status);
+    if (String(query).trim()) search.set('query', String(query).trim());
+    return request(`/api/admin/payments/orders?${search}`, { timeout: 15_000 });
+  },
   getProviders: () => request('/api/admin/providers', { timeout: 15_000 }),
   createProvider: (body) => request('/api/admin/providers', { method: 'POST', body, timeout: 30_000 }),
   updateProvider: (providerId, body) => request(`/api/admin/providers/${encodeURIComponent(providerId)}`, { method: 'PATCH', body, timeout: 20_000 }),
+  testProvider: (providerId) => request(`/api/admin/providers/${encodeURIComponent(providerId)}/test`, { method: 'POST', body: {}, timeout: 20_000 }),
   getTrainingStats: () => request('/api/admin/training/stats', { timeout: 10_000 }),
   getTrainingCandidates: (query = '') => request(`/api/admin/training/candidates${query ? `?${query}` : ''}`, { timeout: 15_000 }),
   generateLesson: (body) => request('/api/ai/generate', { method: 'POST', body }),

@@ -30,6 +30,7 @@ import { sampleLesson } from '../data/sampleLesson.js';
 import { api } from '../lib/api.js';
 import { normalizeLesson } from '../lib/lessonAdapter.js';
 import { navigate } from '../lib/navigation.jsx';
+import { useSiteConfig } from '../lib/site-config.jsx';
 import { toCanonicalLesson } from '../lib/trainingAdapter.js';
 import { Button, Modal, Toast } from './components.jsx';
 
@@ -76,6 +77,7 @@ function downloadBlob(contents, type, name) {
 }
 
 export function LessonEditor({ path }) {
+  const { siteName } = useSiteConfig();
   const isDemo = path === '/app/lesson/lesson-spring-001';
   const [lesson, setLesson] = useState(() => loadLesson(isDemo));
   const [selected, setSelected] = useState('timeline');
@@ -218,7 +220,7 @@ export function LessonEditor({ path }) {
   return (
     <div className="editor-shell">
       <header className="editor-topbar">
-        <div className="editor-top-left"><button className="icon-button" onClick={() => navigate('/app')} aria-label="返回工作台"><ArrowLeft size={18} /></button><span className="editor-brand"><BookOpen size={18} /> 教师帮</span><i /></div>
+        <div className="editor-top-left"><button className="icon-button" onClick={() => navigate('/app')} aria-label="返回工作台"><ArrowLeft size={18} /></button><span className="editor-brand"><BookOpen size={18} /> {siteName}</span><i /></div>
         <div className="save-state">{isDemo ? <><CheckCircle2 size={16} /> 参考教案 · 修改仅保留在当前页面</> : dirty ? <><span className="unsaved-dot" /> 有未保存修改</> : <><CheckCircle2 size={16} /> 已保存到当前浏览器</>}</div>
         <div className="editor-history-tools"><button title="撤销" onClick={undo} disabled={!historyRef.current.length}><Undo2 size={17} /><span>撤销</span></button><button title="重做" onClick={redo} disabled={!redoRef.current.length}><Redo2 size={17} /><span>重做</span></button></div>
         <div className="editor-top-actions"><button onClick={() => setVersionsOpen(true)}><History size={17} /><span>版本历史</span></button><button onClick={finalize} disabled={finalized}><CheckCircle2 size={17} /><span>{finalized ? '已定稿' : '定稿'}</span></button><Button icon={Download} onClick={() => setExportOpen(true)}>导出教案</Button></div>

@@ -19,6 +19,7 @@ import { KnowledgeMapPage, PaperBuilderPage, TeamWorkspacePage } from './Workflo
 import { api } from '../lib/api.js';
 import { navigate } from '../lib/navigation.jsx';
 import { AccountProvider, Logo } from './components.jsx';
+import { PostLoginExperience } from './PostLoginExperience.jsx';
 import './teacher-workflows.css';
 
 export default function TeacherApp({ path }) {
@@ -59,7 +60,7 @@ function AuthenticatedTeacherRoutes({ path }) {
     );
   }
 
-  return <AccountProvider user={session.user}><TeacherRoutes path={path} /></AccountProvider>;
+  return <AccountProvider user={session.user}><PostLoginExperience /><TeacherRoutes path={path} /></AccountProvider>;
 }
 
 function TeacherRoutes({ path }) {

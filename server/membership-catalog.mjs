@@ -6,6 +6,8 @@ const DEFAULT_CATALOG_DATE = '2026-08-01T00:00:00.000Z';
 const MAX_PRODUCTS = 50;
 
 const DEFAULT_PRODUCTS = Object.freeze([
+  defaultFreeProduct('free', '免费版', 3,
+    ['基础教案生成', 'AI 修改与结构化导出', '点数余额查询']),
   defaultProduct('pro-monthly', '专业版月卡', 'pro', 10, 'month', 3_900, 30, 20,
     ['20 次教案生成点数', 'AI 教案修改', 'DOC / 打印-PDF / JSON 导出', '历史版本长期保存']),
   defaultProduct('pro-quarterly', '专业版季卡', 'pro', 10, 'quarter', 10_500, 90, 60,
@@ -24,21 +26,33 @@ const DEFAULT_PRODUCTS = Object.freeze([
     ['960 次教案生成点数', '共享教案模板库', '模型质量报告', '优先客服支持']),
 ]);
 
-export function createMembershipCatalog({ dataDir, now = () => new Date() }) {
+export function createMembershipCatalog({ dataDir, now = () => new Date(), getSiteName = () => '在线教育平台' }) {
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const filename = join(dataDir, 'membership-products.json');
   const state = readCatalog(filename);
 
-  function listProducts({ includeInactive = false } = {}) {
+  function listProducts({ includeInactive = false, includeArchived = false, includeFree = true } = {}) {
     return state.products
+      .filter((product) => includeArchived || !product.archivedAt)
+      .filter((product) => includeFree || product.kind !== 'free')
       .filter((product) => includeInactive || product.saleable)
       .sort((left, right) => left.tierRank - right.tierRank || left.amountCents - right.amountCents)
-      .map((product) => publicMembershipProduct(product, { at: now() }));
+      .map((product) => publicMembershipProduct(product, { at: now(), getSiteName }));
+  }
+
+  function getFreeProduct() {
+    const product = state.products.find((item) => item.kind === 'free' && !item.archivedAt);
+    return product ? publicMembershipProduct(product, { at: now(), getSiteName }) : null;
   }
 
   function resolveProduct({ planId }) {
-    const product = state.products.find((item) => item.planId === String(planId || '') && item.saleable);
-    return product ? buildPaymentProduct(product, now()) : null;
+    const product = state.products.find((item) => (
+      item.planId === String(planId || '')
+      && item.saleable
+      && item.purchasable
+      && !item.archivedAt
+    ));
+    return product ? buildPaymentProduct(product, now(), getSiteName) : null;
   }
 
   function saveProduct(planId, input, actor = 'admin') {
@@ -46,6 +60,7 @@ export function createMembershipCatalog({ dataDir, now = () => new Date() }) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw catalogError(400, 'MEMBERSHIP_PRODUCT_INVALID', '套餐配置必须是对象');
     const index = state.products.findIndex((product) => product.planId === normalizedPlanId);
     const existing = index >= 0 ? state.products[index] : null;
+    if (existing?.archivedAt) throw catalogError(409, 'MEMBERSHIP_PRODUCT_ARCHIVED', '套餐已经归档，不能继续修改');
     if (!existing && state.products.length >= MAX_PRODUCTS) throw catalogError(409, 'MEMBERSHIP_PRODUCT_LIMIT', `套餐数量不能超过 ${MAX_PRODUCTS} 个`);
     if (existing && input.expectedUpdatedAt && input.expectedUpdatedAt !== existing.updatedAt) {
       throw catalogError(409, 'MEMBERSHIP_PRODUCT_CONFLICT', '套餐已被其他管理员修改，请刷新后重试');
@@ -56,29 +71,63 @@ export function createMembershipCatalog({ dataDir, now = () => new Date() }) {
     else state.products.push(product);
     state.updatedAt = timestamp;
     writeCatalog(filename, state);
-    return publicMembershipProduct(product, { at: now() });
+    return publicMembershipProduct(product, { at: now(), getSiteName });
   }
 
-  return { listProducts, resolveProduct, saveProduct };
+  function archiveProduct(planId, actor = 'admin') {
+    const normalizedPlanId = normalizePlanId(planId);
+    const index = state.products.findIndex((product) => product.planId === normalizedPlanId);
+    if (index < 0) throw catalogError(404, 'MEMBERSHIP_PRODUCT_NOT_FOUND', '套餐不存在');
+    const existing = state.products[index];
+    if (existing.kind === 'free') throw catalogError(409, 'MEMBERSHIP_FREE_PRODUCT_REQUIRED', '免费版是基础账户权益，不能删除');
+    if (existing.archivedAt) return publicMembershipProduct(existing, { at: now(), getSiteName });
+    const timestamp = toIso(now());
+    const archived = {
+      ...existing,
+      saleable: false,
+      archivedAt: timestamp,
+      updatedAt: timestamp,
+      updatedBy: String(actor || 'admin').trim().slice(0, 100) || 'admin',
+    };
+    state.products[index] = archived;
+    state.updatedAt = timestamp;
+    writeCatalog(filename, state);
+    return publicMembershipProduct(archived, { at: now(), getSiteName });
+  }
+
+  // `saveProduct` is already injected into the payment router by the host.
+  // Exposing the archive operation on that function keeps older host wiring
+  // compatible while allowing DELETE support without a second injection.
+  saveProduct.archiveProduct = archiveProduct;
+
+  return { listProducts, getFreeProduct, resolveProduct, saveProduct, archiveProduct };
 }
 
 // Stateless exports keep unit tests and isolated payment-service consumers simple.
-export function listMembershipProducts() {
-  return DEFAULT_PRODUCTS.map((product) => publicMembershipProduct(product));
+export function listMembershipProducts({ includeFree = true, getSiteName } = {}) {
+  return DEFAULT_PRODUCTS
+    .filter((product) => includeFree || product.kind !== 'free')
+    .map((product) => publicMembershipProduct(product, { getSiteName }));
 }
 
-export function resolveMembershipProduct({ planId }) {
-  const product = DEFAULT_PRODUCTS.find((item) => item.planId === String(planId || '') && item.saleable);
-  return product ? buildPaymentProduct(product) : null;
+export function resolveMembershipProduct({ planId, getSiteName }) {
+  const product = DEFAULT_PRODUCTS.find((item) => (
+    item.planId === String(planId || '')
+    && item.saleable
+    && item.purchasable
+    && !item.archivedAt
+  ));
+  return product ? buildPaymentProduct(product, new Date(), getSiteName) : null;
 }
 
-export function publicMembershipProduct(product, { at = new Date() } = {}) {
+export function publicMembershipProduct(product, { at = new Date(), getSiteName } = {}) {
   const promotion = activePromotion(product, at);
   const effectiveAmountCents = promotion?.amountCents ?? product.amountCents;
+  const siteName = resolveSiteName(getSiteName);
   return {
     planId: product.planId,
     name: product.name,
-    subject: `教师帮${product.name}`,
+    subject: `${siteName} · ${product.name}`,
     amountCents: effectiveAmountCents,
     regularAmountCents: product.amountCents,
     currency: 'CNY',
@@ -87,6 +136,8 @@ export function publicMembershipProduct(product, { at = new Date() } = {}) {
     credits: product.credits,
     tier: product.tier,
     tierRank: product.tierRank,
+    kind: product.kind,
+    purchasable: Boolean(product.purchasable),
     features: [...product.features],
     saleable: Boolean(product.saleable),
     autoRenew: false,
@@ -99,22 +150,27 @@ export function publicMembershipProduct(product, { at = new Date() } = {}) {
     } : null,
     updatedAt: product.updatedAt,
     updatedBy: product.updatedBy,
+    archivedAt: product.archivedAt || null,
   };
 }
 
-function buildPaymentProduct(product, at = new Date()) {
+function buildPaymentProduct(product, at = new Date(), getSiteName) {
   const promotion = activePromotion(product, at);
   const amountCents = promotion?.amountCents ?? product.amountCents;
   const catalogVersion = productFingerprint(product, amountCents);
   const quoteId = `${catalogVersion}:${product.planId}:${amountCents}`;
+  const siteName = resolveSiteName(getSiteName);
   return {
     planId: product.planId,
     name: product.name,
-    subject: `教师帮${product.name}`,
+    subject: `${siteName} · ${product.name}`,
     amountCents,
+    regularAmountCents: product.amountCents,
     currency: 'CNY',
     quoteId,
     saleable: product.saleable,
+    kind: product.kind,
+    purchasable: Boolean(product.purchasable),
     promotion: promotion ? { ...promotion } : null,
     features: [...product.features],
     entitlement: {
@@ -134,6 +190,8 @@ function defaultProduct(planId, name, tier, tierRank, billingPeriod, amountCents
   return Object.freeze({
     planId,
     name,
+    kind: 'paid',
+    purchasable: true,
     tier,
     tierRank,
     billingPeriod,
@@ -146,28 +204,54 @@ function defaultProduct(planId, name, tier, tierRank, billingPeriod, amountCents
     createdAt: DEFAULT_CATALOG_DATE,
     updatedAt: DEFAULT_CATALOG_DATE,
     updatedBy: 'system-default',
+    archivedAt: null,
+  });
+}
+
+function defaultFreeProduct(planId, name, credits, features) {
+  return Object.freeze({
+    planId,
+    name,
+    kind: 'free',
+    purchasable: false,
+    tier: 'free',
+    tierRank: 0,
+    billingPeriod: 'free',
+    amountCents: 0,
+    durationDays: 0,
+    credits,
+    features: Object.freeze(features),
+    promotion: null,
+    saleable: true,
+    createdAt: DEFAULT_CATALOG_DATE,
+    updatedAt: DEFAULT_CATALOG_DATE,
+    updatedBy: 'system-default',
+    archivedAt: null,
   });
 }
 
 function normalizeProduct(planId, input, existing, timestamp, actor) {
   const value = (field, fallback = '') => input[field] === undefined ? (existing?.[field] ?? fallback) : input[field];
+  const kind = String(value('kind', planId === 'free' ? 'free' : 'paid')).trim().toLowerCase();
+  if (existing && kind !== existing.kind) throw catalogError(409, 'MEMBERSHIP_PRODUCT_KIND_IMMUTABLE', '套餐类型创建后不能修改');
+  if (!['free', 'paid'].includes(kind)) throw catalogError(422, 'MEMBERSHIP_PRODUCT_KIND_INVALID', '套餐类型只能是免费版或付费版');
   const name = String(value('name')).trim().slice(0, 60);
   const tier = String(value('tier')).trim().toLowerCase();
   const tierRank = Number(value('tierRank'));
-  const billingPeriod = String(value('billingPeriod')).trim().toLowerCase();
-  const amountCents = Number(value('amountCents'));
-  const durationDays = Number(value('durationDays'));
+  const billingPeriod = kind === 'free' ? 'free' : String(value('billingPeriod')).trim().toLowerCase();
+  const amountCents = kind === 'free' ? 0 : Number(value('amountCents'));
+  const durationDays = kind === 'free' ? 0 : Number(value('durationDays'));
   const credits = Number(value('credits'));
   const rawFeatures = value('features', []);
-  const promotion = normalizePromotion(value('promotion', null), amountCents);
+  const promotion = kind === 'free' ? null : normalizePromotion(value('promotion', null), amountCents);
   if (name.length < 2) throw catalogError(422, 'MEMBERSHIP_PRODUCT_NAME_INVALID', '套餐名称至少需要 2 个字符');
   if (!/^[a-z0-9_.:-]{2,40}$/.test(tier)) throw catalogError(422, 'MEMBERSHIP_PRODUCT_TIER_INVALID', '会员等级标识格式无效');
-  if (!Number.isSafeInteger(tierRank) || tierRank < 1 || tierRank > 10_000) throw catalogError(422, 'MEMBERSHIP_PRODUCT_TIER_RANK_INVALID', '会员等级权重需为 1-10000 的整数');
-  if (!['month', 'quarter', 'half_year', 'year'].includes(billingPeriod)) {
+  if (!Number.isSafeInteger(tierRank) || tierRank < (kind === 'free' ? 0 : 1) || tierRank > 10_000) throw catalogError(422, 'MEMBERSHIP_PRODUCT_TIER_RANK_INVALID', `会员等级权重需为 ${kind === 'free' ? '0' : '1'}-10000 的整数`);
+  if (kind === 'paid' && !['month', 'quarter', 'half_year', 'year'].includes(billingPeriod)) {
     throw catalogError(422, 'MEMBERSHIP_PRODUCT_PERIOD_INVALID', '计费周期只能是月付、季付、半年付或年付');
   }
-  if (!Number.isSafeInteger(amountCents) || amountCents < 1 || amountCents > 100_000_000) throw catalogError(422, 'MEMBERSHIP_PRODUCT_PRICE_INVALID', '套餐价格需为 1-100000000 分的整数');
-  if (!Number.isSafeInteger(durationDays) || durationDays < 1 || durationDays > 3_660) throw catalogError(422, 'MEMBERSHIP_PRODUCT_DURATION_INVALID', '套餐有效期需为 1-3660 天');
+  if (kind === 'paid' && (!Number.isSafeInteger(amountCents) || amountCents < 1 || amountCents > 100_000_000)) throw catalogError(422, 'MEMBERSHIP_PRODUCT_PRICE_INVALID', '套餐价格需为 1-100000000 分的整数');
+  if (kind === 'paid' && (!Number.isSafeInteger(durationDays) || durationDays < 1 || durationDays > 3_660)) throw catalogError(422, 'MEMBERSHIP_PRODUCT_DURATION_INVALID', '套餐有效期需为 1-3660 天');
   if (!Number.isSafeInteger(credits) || credits < 0 || credits > 1_000_000) throw catalogError(422, 'MEMBERSHIP_PRODUCT_CREDITS_INVALID', '套餐点数需为 0-1000000 的整数');
   if (!Array.isArray(rawFeatures) || rawFeatures.length > 12) throw catalogError(422, 'MEMBERSHIP_PRODUCT_FEATURES_INVALID', '套餐权益说明最多 12 项');
   const features = rawFeatures.map((item) => String(item || '').trim().slice(0, 100)).filter(Boolean);
@@ -175,6 +259,8 @@ function normalizeProduct(planId, input, existing, timestamp, actor) {
   return {
     planId,
     name,
+    kind,
+    purchasable: kind === 'paid',
     tier,
     tierRank,
     billingPeriod,
@@ -187,6 +273,7 @@ function normalizeProduct(planId, input, existing, timestamp, actor) {
     createdAt: existing?.createdAt || timestamp,
     updatedAt: timestamp,
     updatedBy: String(actor || 'admin').trim().slice(0, 100) || 'admin',
+    archivedAt: value('archivedAt', null) ? toIso(value('archivedAt')) : null,
   };
 }
 
@@ -267,6 +354,12 @@ function toIso(value) {
   const date = value instanceof Date ? value : new Date(value);
   if (!Number.isFinite(date.getTime())) throw new Error('系统时间无效');
   return date.toISOString();
+}
+
+function resolveSiteName(getSiteName) {
+  let value = '';
+  try { value = typeof getSiteName === 'function' ? getSiteName() : getSiteName; } catch { value = ''; }
+  return String(value || '').trim().slice(0, 60) || '在线教育平台';
 }
 
 function catalogError(status, code, message) {

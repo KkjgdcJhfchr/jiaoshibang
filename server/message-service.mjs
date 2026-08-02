@@ -38,7 +38,8 @@ export function buildStoredSmtpConfig(input, options = {}) {
   }
   const username = cleanHeaderValue(input.username, 320);
   const fromEmail = normalizeEmail(input.fromEmail ?? input.senderEmail);
-  const fromName = cleanHeaderValue(input.fromName ?? input.senderName ?? '教师帮', 100) || '教师帮';
+  const defaultFromName = cleanHeaderValue(options.defaultFromName, 100) || '教师帮';
+  const fromName = cleanHeaderValue(input.fromName ?? input.senderName ?? defaultFromName, 100) || defaultFromName;
   if (!fromEmail) throw new MessageServiceError(400, 'INVALID_SMTP_FROM_EMAIL', '请填写有效的发件邮箱');
 
   let encryptedPassword = existing?.encryptedPassword || null;
@@ -80,7 +81,8 @@ export function buildStoredSmtpConfig(input, options = {}) {
   };
 }
 
-export function publicSmtpConfig(config) {
+export function publicSmtpConfig(config, options = {}) {
+  const defaultFromName = cleanHeaderValue(options.defaultFromName, 100) || '教师帮';
   if (!config) {
     return {
       configured: false,
@@ -89,7 +91,7 @@ export function publicSmtpConfig(config) {
       security: 'starttls',
       username: '',
       passwordConfigured: false,
-      fromName: '教师帮',
+      fromName: defaultFromName,
       fromEmail: '',
       updatedAt: null,
       testedAt: null,
@@ -102,7 +104,7 @@ export function publicSmtpConfig(config) {
     security: config.security,
     username: config.username || '',
     passwordConfigured: Boolean(config.encryptedPassword),
-    fromName: config.fromName,
+    fromName: config.fromName || defaultFromName,
     fromEmail: config.fromEmail,
     updatedAt: config.updatedAt || null,
     testedAt: config.testedAt || null,
@@ -113,6 +115,9 @@ export function createMessageService(options = {}) {
   const loadSmtpConfig = options.loadSmtpConfig;
   const openPassword = options.openPassword;
   const allowInsecure = options.allowInsecure === true;
+  const getSiteName = typeof options.getSiteName === 'function'
+    ? options.getSiteName
+    : () => '教师帮';
   const timeoutMs = positiveInteger(options.timeoutMs, 15_000);
   if (typeof loadSmtpConfig !== 'function' || typeof openPassword !== 'function') {
     throw new Error('loadSmtpConfig and openPassword are required');
@@ -148,11 +153,12 @@ export function createMessageService(options = {}) {
   }
 
   async function sendVerificationCode({ to, code, purpose = '登录', expiresMinutes = 10 }) {
+    const siteName = cleanHeaderValue(getSiteName(), 100) || '教师帮';
     return sendEmail({
       to,
-      subject: `教师帮${purpose}验证码`,
+      subject: `${siteName}${purpose}验证码`,
       text: [
-        `您的教师帮${purpose}验证码是：${code}`,
+        `您的${siteName}${purpose}验证码是：${code}`,
         '',
         `验证码将在 ${expiresMinutes} 分钟后失效，且只能使用一次。`,
         '如果不是您本人操作，请忽略本邮件并及时检查管理员账号安全。',
@@ -161,11 +167,12 @@ export function createMessageService(options = {}) {
   }
 
   async function sendTestEmail({ to }) {
+    const siteName = cleanHeaderValue(getSiteName(), 100) || '教师帮';
     return sendEmail({
       to,
-      subject: '教师帮发信验证邮件',
+      subject: `${siteName}发信验证邮件`,
       text: [
-        '这是一封来自教师帮管理端的发信验证邮件。',
+        `这是一封来自${siteName}管理端的发信验证邮件。`,
         '',
         `发送时间：${new Date().toISOString()}`,
         '收到此邮件说明当前通信配置可以正常发信。',

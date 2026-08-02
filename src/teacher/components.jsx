@@ -17,16 +17,18 @@ import {
   X,
 } from 'lucide-react';
 import { Link, navigate } from '../lib/navigation.jsx';
+import { useSiteConfig } from '../lib/site-config.jsx';
 
 export function Logo({ compact = false }) {
+  const { siteName } = useSiteConfig();
   return (
-    <Link to="/" className={`brand ${compact ? 'brand-compact' : ''}`} aria-label="教师帮首页">
+    <Link to="/" className={`brand ${compact ? 'brand-compact' : ''}`} aria-label={`${siteName}首页`}>
       <span className="brand-mark" aria-hidden="true">
         <BookOpen size={22} strokeWidth={2.2} />
         <i />
       </span>
       {compact ? null : (
-        <span className="brand-name">教师帮</span>
+        <span className="brand-name">{siteName}</span>
       )}
     </Link>
   );

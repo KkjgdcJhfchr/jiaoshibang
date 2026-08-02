@@ -31,6 +31,7 @@ export function createSiteSettingsStore({
         content: state.privacyPolicyContent,
         updatedAt: state.privacyPolicyUpdatedAt,
       },
+      updatedAt: state.updatedAt,
     };
   }
 
@@ -57,10 +58,20 @@ export function createSiteSettingsStore({
       throw settingsError(409, 'SITE_SETTINGS_CONFLICT', '系统设置已被其他管理员修改，请刷新后重试');
     }
 
-    const siteName = cleanText(input.siteName ?? state.siteName, 40);
+    const previousSiteName = state.siteName;
+    const siteName = cleanText(input.siteName ?? previousSiteName, 40);
     const supportEmail = cleanText(input.supportEmail ?? state.supportEmail, 254).toLowerCase();
-    const privacyPolicyTitle = cleanText(input.privacyPolicyTitle ?? state.privacyPolicyTitle, 80);
-    const privacyPolicyContent = normalizeMultiline(input.privacyPolicyContent ?? state.privacyPolicyContent, 20_000);
+    const siteNameChanged = siteName !== previousSiteName;
+    const rawPrivacyPolicyTitle = input.privacyPolicyTitle ?? state.privacyPolicyTitle;
+    const rawPrivacyPolicyContent = input.privacyPolicyContent ?? state.privacyPolicyContent;
+    const privacyPolicyTitleSource = siteNameChanged
+      ? replaceBrand(rawPrivacyPolicyTitle, previousSiteName, siteName)
+      : rawPrivacyPolicyTitle;
+    const privacyPolicyContentSource = siteNameChanged
+      ? replaceBrand(rawPrivacyPolicyContent, previousSiteName, siteName)
+      : rawPrivacyPolicyContent;
+    const privacyPolicyTitle = cleanText(privacyPolicyTitleSource, 80);
+    const privacyPolicyContent = normalizeMultiline(privacyPolicyContentSource, 20_000);
     if (siteName.length < 2) throw settingsError(422, 'SITE_NAME_INVALID', '站点名称至少需要 2 个字符');
     if (supportEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(supportEmail)) {
       throw settingsError(422, 'SUPPORT_EMAIL_INVALID', '客服邮箱格式无效');
@@ -135,6 +146,11 @@ function cleanText(value, maximum) {
 
 function normalizeMultiline(value, maximum) {
   return String(value ?? '').replace(/\0/g, '').replace(/\r\n?/g, '\n').trim().slice(0, maximum);
+}
+
+function replaceBrand(value, previousSiteName, siteName) {
+  if (!previousSiteName || previousSiteName === siteName) return value;
+  return String(value ?? '').split(previousSiteName).join(siteName);
 }
 
 function toIso(value) {

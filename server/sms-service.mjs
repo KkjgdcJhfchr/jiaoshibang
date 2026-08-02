@@ -98,7 +98,7 @@ export function createSmsService({ dataDir, encryptionSecret, fetchImpl = global
     const now = new Date().toISOString();
     const next = {
       version: SETTINGS_VERSION,
-      enabled: input.enabled === true,
+      enabled: true,
       provider,
       accessKeyId,
       secretEnvelope,

@@ -1,0 +1,65 @@
+.post-login-layer { position: fixed; z-index: 150; inset: 0; display: grid; place-items: center; padding: 22px; font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; }
+.post-login-backdrop { position: absolute; inset: 0; background: rgba(17, 29, 25, .58); backdrop-filter: blur(4px); }
+.post-login-dialog { position: relative; width: min(620px, 100%); max-height: calc(100vh - 44px); display: flex; flex-direction: column; overflow: hidden; border: 1px solid rgba(255,255,255,.72); border-radius: 16px; background: #fff; box-shadow: 0 30px 90px rgba(13, 31, 24, .3); color: #1c2a25; animation: post-login-enter .2s ease-out; }
+.post-login-announcement > header { padding: 27px 28px 20px; display: flex; align-items: flex-start; gap: 14px; border-bottom: 1px solid var(--line); }
+.post-login-icon { width: 44px; height: 44px; flex: 0 0 44px; display: grid; place-items: center; border-radius: 12px; background: var(--brand-soft); color: var(--brand); }
+.post-login-announcement header small { display: block; margin: 1px 0 6px; color: var(--brand); font-size: 10px; font-weight: 700; }
+.post-login-announcement h2 { margin: 0; font: 700 23px/1.4 'Noto Serif SC', 'Songti SC', serif; }
+.post-login-announcement-content { min-height: 170px; padding: 27px 30px 12px; overflow-y: auto; color: #4e5d57; font-size: 13px; line-height: 1.9; white-space: pre-wrap; }
+.post-login-announcement-content p { margin: 0 0 16px; }
+.post-login-dialog > footer { padding: 16px 28px 22px; display: flex; align-items: center; justify-content: space-between; gap: 14px; border-top: 1px solid var(--line); }
+.post-login-announcement > footer > span { color: var(--muted); font-size: 10px; }
+.post-login-primary, .post-login-secondary { min-height: 42px; padding: 0 18px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border-radius: 8px; font-size: 12px; font-weight: 700; cursor: pointer; }
+.post-login-primary { border: 1px solid var(--brand); background: var(--brand); color: #fff; box-shadow: 0 8px 20px rgba(8, 127, 115, .16); }
+.post-login-primary:hover { background: var(--brand-dark); border-color: var(--brand-dark); }
+.post-login-secondary { border: 1px solid var(--line-strong); background: #fff; color: #53615c; }
+.post-login-secondary:hover { border-color: #9ab8b0; color: var(--brand-dark); }
+.post-login-primary:disabled, .post-login-secondary:disabled { opacity: .52; cursor: not-allowed; box-shadow: none; }
+.post-login-inline-error { margin: 0 28px 12px; padding: 10px 12px; display: flex; align-items: flex-start; gap: 8px; border: 1px solid #efc8bd; border-radius: 8px; background: #fff7f4; color: #9c3e28; font-size: 11px; line-height: 1.55; }
+.post-login-inline-error svg { flex: 0 0 auto; margin-top: 1px; }
+
+.post-login-tutorial { width: min(680px, 100%); }
+.post-login-tutorial-header { min-height: 91px; padding: 22px 28px 18px; display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.post-login-tutorial-header span { display: inline-flex; align-items: center; gap: 6px; color: var(--brand); font-size: 10px; font-weight: 700; }
+.post-login-tutorial-header h2 { margin: 7px 0 0; font: 700 23px/1.4 'Noto Serif SC', 'Songti SC', serif; }
+.post-login-tutorial-header > button { min-height: 34px; padding: 0 8px; border: 0; background: transparent; color: var(--muted); font-size: 11px; cursor: pointer; }
+.post-login-tutorial-header > button:hover { color: var(--brand-dark); text-decoration: underline; text-underline-offset: 3px; }
+.post-login-progress { min-height: 36px; padding: 0 28px 13px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--line); }
+.post-login-progress > div { height: 5px; flex: 1; overflow: hidden; border-radius: 999px; background: #e4ece8; }
+.post-login-progress > div span { height: 100%; display: block; border-radius: inherit; background: var(--brand); transition: width .22s ease; }
+.post-login-progress small { min-width: 38px; color: var(--muted); text-align: right; font-size: 10px; }
+.post-login-tutorial-body { min-height: 300px; padding: 44px 42px; display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 24px; align-items: start; overflow-y: auto; }
+.post-login-step-number { width: 58px; height: 58px; display: grid; place-items: center; border-radius: 50%; background: var(--brand); color: #fff; font: 700 17px/1 ui-monospace, SFMono-Regular, Consolas, monospace; box-shadow: 0 10px 24px rgba(8, 127, 115, .18); }
+.post-login-tutorial-body small { display: block; margin-top: 3px; color: var(--brand); font-size: 10px; font-weight: 700; }
+.post-login-tutorial-body h3 { margin: 10px 0 15px; font: 700 25px/1.4 'Noto Serif SC', 'Songti SC', serif; }
+.post-login-tutorial-body p { margin: 0; color: #54625d; font-size: 13px; line-height: 1.9; white-space: pre-wrap; }
+.post-login-tutorial-footer { justify-content: space-between !important; }
+
+.post-login-load-error { width: min(440px, 100%); padding: 30px; align-items: center; text-align: center; }
+.post-login-load-error > span { width: 52px; height: 52px; display: grid; place-items: center; border-radius: 50%; background: #fff3e6; color: #b36c1d; }
+.post-login-load-error h2 { margin: 16px 0 7px; font-size: 20px; }
+.post-login-load-error > p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.65; }
+.post-login-load-error > footer { width: 100%; margin-top: 24px; padding: 0; border: 0; }
+
+@keyframes post-login-enter { from { opacity: 0; transform: translateY(10px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@media (max-width: 620px) {
+  .post-login-layer { padding: 0; align-items: end; }
+  .post-login-dialog { width: 100%; max-height: 92vh; border-radius: 18px 18px 0 0; }
+  .post-login-announcement > header, .post-login-tutorial-header { padding-inline: 20px; }
+  .post-login-announcement-content { padding-inline: 22px; }
+  .post-login-dialog > footer { padding-inline: 20px; }
+  .post-login-tutorial-body { min-height: 280px; padding: 34px 24px; grid-template-columns: 48px minmax(0, 1fr); gap: 17px; }
+  .post-login-step-number { width: 46px; height: 46px; font-size: 14px; }
+  .post-login-tutorial-body h3 { font-size: 21px; }
+  .post-login-progress { padding-inline: 20px; }
+  .post-login-inline-error { margin-inline: 20px; }
+  .post-login-load-error { padding: 28px 22px 24px; }
+}
+@media (max-width: 430px) {
+  .post-login-announcement > footer { align-items: stretch; flex-direction: column; }
+  .post-login-announcement > footer > span { text-align: center; }
+  .post-login-primary, .post-login-secondary { width: 100%; }
+  .post-login-tutorial-footer { flex-direction: column-reverse; }
+  .post-login-load-error > footer { flex-direction: column-reverse; }
+}
+@media (prefers-reduced-motion: reduce) { .post-login-dialog { animation: none; } .post-login-progress > div span { transition: none; } }

@@ -17,7 +17,7 @@ const SECRET_FIELDS = Object.freeze({
 
 const PUBLIC_FIELDS = Object.freeze({
   wechat: ['displayName', 'appId', 'merchantId', 'merchantCertificateSerial', 'verifierSerial', 'notifyUrl'],
-  alipay: ['displayName', 'appId', 'sellerId', 'notifyUrl', 'returnUrl', 'environment'],
+  alipay: ['displayName', 'appId', 'sellerId', 'notifyUrl', 'returnUrl'],
 });
 
 export function createPaymentStore({ dataDir, encryptionSecret, now = () => new Date() }) {
@@ -45,7 +45,13 @@ export function createPaymentStore({ dataDir, encryptionSecret, now = () => new 
     } catch {
       throw new PaymentError(503, 'PAYMENT_CREDENTIAL_DECRYPT_FAILED', `${providerLabel(provider)}凭据无法解密，请管理员重新保存配置`);
     }
-    return { ...record.settings, ...secrets, enabled: Boolean(record.enabled), provider };
+    return {
+      ...record.settings,
+      ...(provider === 'alipay' ? { environment: 'production' } : {}),
+      ...secrets,
+      enabled: Boolean(record.enabled),
+      provider,
+    };
   }
 
   function saveConfig(provider, input, updatedBy = 'admin') {
@@ -61,7 +67,12 @@ export function createPaymentStore({ dataDir, encryptionSecret, now = () => new 
       const fallback = existing?.settings?.[field] ?? defaultPublicValue(provider, field);
       settings[field] = cleanSetting(input[field] ?? fallback, field === 'notifyUrl' || field === 'returnUrl' ? 2000 : 200);
     }
-    if (provider === 'alipay') settings.environment = ['sandbox', 'production'].includes(settings.environment) ? settings.environment : 'production';
+    if (provider === 'alipay') {
+      if (input.environment && input.environment !== 'production') {
+        throw new PaymentError(422, 'ALIPAY_PRODUCTION_ENVIRONMENT_REQUIRED', '支付宝支付只能使用生产环境');
+      }
+      settings.environment = 'production';
+    }
 
     const secrets = {};
     for (const field of SECRET_FIELDS[provider]) {
@@ -233,6 +244,7 @@ export function publicPaymentConfig(provider, record) {
     return {
       provider,
       displayName: providerLabel(provider),
+      ...(provider === 'alipay' ? { environment: 'production' } : {}),
       configured: false,
       enabled: false,
       validation: { ok: false, checkedAt: null, errors: ['尚未配置'] },
@@ -242,6 +254,7 @@ export function publicPaymentConfig(provider, record) {
   return {
     provider,
     ...record.settings,
+    ...(provider === 'alipay' ? { environment: 'production' } : {}),
     configured: true,
     enabled: Boolean(record.enabled),
     validation: record.validation || { ok: false, checkedAt: null, errors: ['尚未校验'] },
@@ -254,6 +267,8 @@ export function publicPaymentConfig(provider, record) {
 }
 
 export function publicPaymentOrder(order) {
+  const statusHistory = Array.isArray(order.statusHistory) ? order.statusHistory : [];
+  const failureReason = [...statusHistory].reverse().find((event) => String(event?.reason || '').trim())?.reason || '';
   return {
     id: order.id,
     merchantOrderNo: order.merchantOrderNo,
@@ -272,7 +287,8 @@ export function publicPaymentOrder(order) {
     updatedAt: order.updatedAt,
     paidAt: order.paidAt || null,
     closedAt: order.closedAt || null,
-    statusHistory: order.statusHistory || [],
+    statusHistory,
+    failureReason,
     checkout: order.checkout || null,
     fulfillment: order.fulfillment ? {
       status: order.fulfillment.status || 'PENDING',
@@ -282,7 +298,8 @@ export function publicPaymentOrder(order) {
       membershipExpiresAt: order.fulfillment.membershipExpiresAt || null,
       fulfilledAt: order.fulfillment.fulfilledAt || null,
       updatedAt: order.fulfillment.updatedAt || null,
-    } : { status: order.status === 'PAID' ? 'RETRY_REQUIRED' : 'PENDING', attempts: 0 },
+      lastError: order.fulfillment.lastError || '',
+    } : { status: order.status === 'PAID' ? 'RETRY_REQUIRED' : 'PENDING', attempts: 0, lastError: '' },
   };
 }
 

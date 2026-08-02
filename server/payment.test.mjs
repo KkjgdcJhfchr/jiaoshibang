@@ -20,7 +20,7 @@ import {
   transitionPayment,
 } from './payment-core.mjs';
 import { createPaymentService } from './payment-service.mjs';
-import { createPaymentStore } from './payment-store.mjs';
+import { createPaymentStore, publicPaymentOrder } from './payment-store.mjs';
 import { createDataStore } from './data-store.mjs';
 import { createMembershipCatalog, listMembershipProducts, resolveMembershipProduct } from './membership-catalog.mjs';
 
@@ -101,6 +101,7 @@ test('支付宝金额和待签名参数使用确定性规范化', () => {
 test('服务端会员目录提供固定人民币报价和不可由浏览器覆盖的权益快照', () => {
   const plans = listMembershipProducts();
   assert.deepEqual(plans.map((plan) => plan.planId), [
+    'free',
     'pro-monthly',
     'pro-quarterly',
     'pro-half-yearly',
@@ -111,9 +112,13 @@ test('服务端会员目录提供固定人民币报价和不可由浏览器覆�
     'research-yearly',
   ]);
   assert.deepEqual(
-    [...new Set(plans.map((plan) => plan.billingPeriod))].sort(),
+    [...new Set(plans.filter((plan) => plan.purchasable).map((plan) => plan.billingPeriod))].sort(),
     ['half_year', 'month', 'quarter', 'year'],
   );
+  const free = plans.find((plan) => plan.planId === 'free');
+  assert.equal(free.amountCents, 0);
+  assert.equal(free.purchasable, false);
+  assert.equal(resolveMembershipProduct({ planId: 'free' }), null);
   assert.equal(plans.find((plan) => plan.planId === 'pro-monthly').amountCents, 3900);
   const product = resolveMembershipProduct({ planId: 'pro-monthly' });
   const selection = normalizeCreateOrderInput({ provider: 'alipay', planId: 'pro-monthly', amountCents: 3900 });
@@ -147,6 +152,105 @@ test('管理员维护的套餐与限时优惠持久化，且仅在有效期内�
   assert.equal(expired.amountCents, 3900);
   assert.equal(expired.promotion.active, false);
   assert.equal(expiredCatalog.resolveProduct({ planId: 'pro-monthly' }).amountCents, 3900);
+});
+
+test('免费版可编辑但不可购买或删除，付费套餐归档后不会被默认目录复活', (context) => {
+  const dataDir = temporaryDataDir();
+  context.after(() => removeTemporaryDataDir(dataDir));
+  let siteName = '备课星';
+  const catalog = createMembershipCatalog({ dataDir, now: () => FIXED_DATE, getSiteName: () => siteName });
+  const originalFree = catalog.getFreeProduct();
+  const savedFree = catalog.saveProduct('free', {
+    expectedUpdatedAt: originalFree.updatedAt,
+    name: '基础免费版',
+    credits: 5,
+    features: ['免费教案生成', '结构化导出'],
+  }, 'catalog-admin');
+  assert.equal(savedFree.amountCents, 0);
+  assert.equal(savedFree.credits, 5);
+  assert.equal(savedFree.purchasable, false);
+  assert.match(savedFree.subject, /^备课星/);
+  siteName = '课堂星';
+  assert.match(catalog.getFreeProduct().subject, /^课堂星/);
+  assert.equal(catalog.resolveProduct({ planId: 'free' }), null);
+  assert.throws(
+    () => catalog.archiveProduct('free', 'catalog-admin'),
+    (error) => error.code === 'MEMBERSHIP_FREE_PRODUCT_REQUIRED',
+  );
+
+  const archived = catalog.archiveProduct('pro-monthly', 'catalog-admin');
+  assert.equal(archived.archivedAt, FIXED_DATE.toISOString());
+  assert.equal(catalog.resolveProduct({ planId: 'pro-monthly' }), null);
+  assert.equal(catalog.listProducts({ includeInactive: true }).some((plan) => plan.planId === 'pro-monthly'), false);
+  assert.equal(catalog.listProducts({ includeInactive: true, includeArchived: true }).find((plan) => plan.planId === 'pro-monthly').archivedAt, FIXED_DATE.toISOString());
+
+  const reloaded = createMembershipCatalog({ dataDir, now: () => FIXED_DATE });
+  assert.equal(reloaded.listProducts({ includeInactive: true }).some((plan) => plan.planId === 'pro-monthly'), false);
+  assert.equal(reloaded.listProducts({ includeInactive: true, includeArchived: true }).filter((plan) => plan.planId === 'pro-monthly').length, 1);
+});
+
+test('月付、季付、半年付和年付权益都能通过报价校验并幂等落库', (context) => {
+  const dataDir = temporaryDataDir();
+  context.after(() => removeTemporaryDataDir(dataDir));
+  const store = createDataStore(dataDir, { now: () => FIXED_DATE });
+  const user = store.registerUser({
+    account: 'period-user@example.test',
+    accountKey: 'period-user@example.test',
+    displayName: '周期测试用户',
+    subject: '数学',
+    password: 'test-hash',
+    credits: 0,
+    trainingConsent: false,
+  });
+  const planIds = ['pro-monthly', 'pro-quarterly', 'pro-half-yearly', 'pro-yearly'];
+  planIds.forEach((planId, index) => {
+    const product = resolveMembershipProduct({ planId });
+    const quote = applyAuthoritativeProductQuote(
+      normalizeCreateOrderInput({ provider: 'alipay', planId, amountCents: product.amountCents }),
+      product,
+    );
+    const suffix = String(index + 1).padStart(12, '0');
+    const result = store.grantMembershipPurchase({
+      orderId: `pay_00000000-0000-4000-8000-${suffix}`,
+      userId: user.id,
+      planId,
+      entitlement: quote.productSnapshot,
+      paidAt: FIXED_DATE,
+    });
+    assert.equal(result.grant.billingPeriod, product.entitlement.billingPeriod);
+  });
+  assert.deepEqual(
+    store.findUserById(user.id).membershipGrants.map((grant) => grant.billingPeriod),
+    ['month', 'quarter', 'half_year', 'year'],
+  );
+});
+
+test('支付宝配置拒绝沙箱，公开订单包含失败原因和权益发放错误', (context) => {
+  const dataDir = temporaryDataDir();
+  context.after(() => removeTemporaryDataDir(dataDir));
+  const paymentStore = createPaymentStore({ dataDir, encryptionSecret: ENCRYPTION_SECRET, now: () => FIXED_DATE });
+  assert.throws(
+    () => paymentStore.saveConfig('alipay', { ...ALIPAY_CONFIG, environment: 'sandbox' }, 'admin'),
+    (error) => error.code === 'ALIPAY_PRODUCTION_ENVIRONMENT_REQUIRED',
+  );
+  assert.equal(paymentStore.saveConfig('alipay', ALIPAY_CONFIG, 'admin').environment, 'production');
+  const order = publicPaymentOrder({
+    id: 'pay_00000000-0000-4000-8000-000000000201',
+    merchantOrderNo: 'JSH202608010000000000000201',
+    provider: 'alipay',
+    userId: 'usr_test',
+    planId: 'pro-monthly',
+    subject: '备课星专业版',
+    amountCents: 3900,
+    currency: 'CNY',
+    status: 'FAILED',
+    statusHistory: [{ from: 'PENDING', to: 'FAILED', at: FIXED_DATE.toISOString(), source: 'alipay', reason: '商户签约状态无效' }],
+    fulfillment: { status: 'RETRY_REQUIRED', attempts: 2, lastError: '权益写入失败' },
+    createdAt: FIXED_DATE.toISOString(),
+    updatedAt: FIXED_DATE.toISOString(),
+  });
+  assert.equal(order.failureReason, '商户签约状态无效');
+  assert.equal(order.fulfillment.lastError, '权益写入失败');
 });
 
 test('微信 Native 下单请求按 API v3 规范签名', () => {

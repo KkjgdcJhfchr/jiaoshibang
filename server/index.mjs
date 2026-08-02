@@ -41,6 +41,7 @@ import {
 } from './message-service.mjs';
 import { createPaymentRouter } from './payment-routes.mjs';
 import { createMembershipCatalog } from './membership-catalog.mjs';
+import { createContentManagementStore } from './content-management.mjs';
 import { createSiteSettingsStore } from './site-settings.mjs';
 import { createSmsService, SmsServiceError } from './sms-service.mjs';
 import {
@@ -118,6 +119,7 @@ const AI_MAX_CONCURRENCY = parsePositiveInteger(process.env.AI_MAX_CONCURRENCY, 
 const TRUST_PROXY = parseBoolean(process.env.TRUST_PROXY, IS_PRODUCTION);
 const ALLOW_INSECURE_PROVIDER_URLS = parseBoolean(process.env.ALLOW_INSECURE_PROVIDER_URLS, false);
 const ALLOW_PRIVATE_PROVIDER_NETWORKS = parseBoolean(process.env.ALLOW_PRIVATE_PROVIDER_NETWORKS, false);
+const MODEL_CAPABILITIES = new Set(['lesson_generation', 'lesson_revision', 'multimodal_input']);
 const USER_COOKIE = 'teacher_helper_session';
 const ADMIN_COOKIE = 'teacher_helper_admin_session';
 const ADMIN_ENTRY_COOKIE = 'teacher_helper_admin_entry';
@@ -129,7 +131,11 @@ const siteSettings = createSiteSettingsStore({
   dataDir: DATA_DIR,
   registrationVerificationRequired: REGISTRATION_VERIFICATION_REQUIRED,
 });
-const membershipCatalog = createMembershipCatalog({ dataDir: DATA_DIR });
+const membershipCatalog = createMembershipCatalog({
+  dataDir: DATA_DIR,
+  getSiteName: () => siteSettings.getPublicSettings().siteName,
+});
+const contentManagement = createContentManagementStore({ dataDir: DATA_DIR });
 const DUMMY_PASSWORD = hashPassword(randomBytes(32).toString('hex'));
 const authRateBuckets = new Map();
 const aiUserRateBuckets = new Map();
@@ -146,6 +152,7 @@ const adminRecoveryPepper = stablePrivateHash('admin-mfa-recovery-codes', SESSIO
 const messageService = createMessageService({
   loadSmtpConfig: () => store.readSmtpConfig(),
   openPassword: (config) => decryptSecret(config.encryptedPassword, SESSION_SECRET, 'smtp-config:password:v1'),
+  getSiteName: () => siteSettings.getPublicSettings().siteName,
   allowInsecure: ALLOW_INSECURE_SMTP,
   timeoutMs: SMTP_TIMEOUT_MS,
 });
@@ -162,7 +169,17 @@ const paymentRouter = createPaymentRouter({
   listProducts: membershipCatalog.listProducts,
   listAdminProducts: () => membershipCatalog.listProducts({ includeInactive: true }),
   saveProduct: membershipCatalog.saveProduct,
+  archiveProduct: membershipCatalog.archiveProduct,
   publicBaseUrl: PUBLIC_BASE_URL,
+  getSiteName: () => siteSettings.getPublicSettings().siteName,
+  getUserForAdmin: (userId) => {
+    const user = store.findUserById(userId);
+    return user ? {
+      id: user.id,
+      account: user.account,
+      displayName: user.displayName || '',
+    } : null;
+  },
   confirmCheckout: ({ user, rawInput }) => {
     const code = cleanText(rawInput?.verificationCode ?? rawInput?.code, 20);
     const verificationId = cleanText(rawInput?.verificationId, 200);
@@ -326,6 +343,33 @@ async function handleRequest(request, response) {
       return;
     }
 
+    if (request.method === 'GET' && url.pathname === '/api/app/content/bootstrap') {
+      const session = requireUserSession(request);
+      sendJson(response, 200, { ok: true, data: contentManagement.getBootstrap(session.user.id) });
+      return;
+    }
+
+    const announcementAcknowledgeMatch = url.pathname.match(/^\/api\/app\/announcements\/([^/]+)\/acknowledge$/);
+    if (request.method === 'POST' && announcementAcknowledgeMatch) {
+      const session = requireUserSession(request);
+      const body = await readJsonBody(request, 16 * 1024);
+      const receipt = contentManagement.acknowledgeAnnouncement(
+        session.user.id,
+        decodeURIComponent(announcementAcknowledgeMatch[1]),
+        body,
+      );
+      sendJson(response, 200, { ok: true, data: { receipt } });
+      return;
+    }
+
+    if (request.method === 'PUT' && url.pathname === '/api/app/tutorial/progress') {
+      const session = requireUserSession(request);
+      const body = await readJsonBody(request, 16 * 1024);
+      const progress = contentManagement.saveTutorialProgress(session.user.id, body);
+      sendJson(response, 200, { ok: true, data: { progress } });
+      return;
+    }
+
     if (request.method === 'POST' && isAdminPath(url.pathname, 'bootstrap')) {
       await handleAdminBootstrap(request, response);
       return;
@@ -369,14 +413,88 @@ async function handleRequest(request, response) {
       const offset = parseBoundedInteger(url.searchParams.get('offset'), 0, 0, 1_000_000);
       const limit = parseBoundedInteger(url.searchParams.get('limit'), 25, 1, 200);
       const result = store.listUsersForAdmin({ query, offset, limit });
+      const productNames = new Map(
+        membershipCatalog.listProducts({ includeInactive: true }).map((product) => [product.planId, product.name]),
+      );
+      result.items = result.items.map((user) => ({
+        ...user,
+        membership: user.membership ? {
+          ...user.membership,
+          planName: productNames.get(user.membership.planId) || user.membership.planId,
+        } : null,
+      }));
       sendJson(response, 200, { ok: true, data: result });
+      return;
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/admin/content') {
+      requireAdminSession(request);
+      sendJson(response, 200, {
+        ok: true,
+        data: {
+          announcements: contentManagement.listAnnouncements(),
+          tutorial: contentManagement.getTutorial(),
+        },
+      });
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/admin/announcements') {
+      const session = requireAdminSession(request);
+      const body = await readJsonBody(request, 64 * 1024);
+      const announcement = contentManagement.createAnnouncement(body, session.admin.username);
+      sendJson(response, 201, { ok: true, data: { announcement } });
+      return;
+    }
+
+    const adminAnnouncementMatch = url.pathname.match(/^\/api\/admin\/announcements\/([^/]+)$/);
+    if (request.method === 'PUT' && adminAnnouncementMatch) {
+      const session = requireAdminSession(request);
+      const body = await readJsonBody(request, 64 * 1024);
+      const announcement = contentManagement.updateAnnouncement(
+        decodeURIComponent(adminAnnouncementMatch[1]),
+        body,
+        session.admin.username,
+      );
+      sendJson(response, 200, { ok: true, data: { announcement } });
+      return;
+    }
+
+    if (request.method === 'DELETE' && adminAnnouncementMatch) {
+      const session = requireAdminSession(request);
+      const body = await readJsonBody(request, 16 * 1024);
+      const announcement = contentManagement.deleteAnnouncement(
+        decodeURIComponent(adminAnnouncementMatch[1]),
+        body,
+        session.admin.username,
+      );
+      sendJson(response, 200, { ok: true, data: { announcement } });
+      return;
+    }
+
+    if (request.method === 'PUT' && url.pathname === '/api/admin/tutorial') {
+      const session = requireAdminSession(request);
+      const body = await readJsonBody(request, 256 * 1024);
+      const tutorial = contentManagement.saveTutorial(body, session.admin.username);
+      sendJson(response, 200, { ok: true, data: { tutorial } });
       return;
     }
 
     if (request.method === 'PUT' && url.pathname === '/api/admin/system/settings') {
       const session = requireAdminSession(request);
       const body = await readJsonBody(request, 64 * 1024);
+      const previousSettings = siteSettings.getAdminSettings();
       const settings = siteSettings.saveSettings(body, session.admin.username);
+      const smtp = store.readSmtpConfig();
+      if (smtp && settings.siteName !== previousSettings.siteName
+        && (!smtp.fromName || smtp.fromName === previousSettings.siteName || smtp.fromName === '教师帮')) {
+        store.saveSmtpConfig({
+          ...smtp,
+          fromName: settings.siteName,
+          updatedAt: new Date().toISOString(),
+          updatedBy: session.admin.username,
+        });
+      }
       sendJson(response, 200, { ok: true, data: { settings } });
       return;
     }
@@ -423,7 +541,10 @@ async function handleRequest(request, response) {
 
     if (request.method === 'GET' && url.pathname === '/api/admin/communication/smtp') {
       requireAdminSession(request);
-      sendJson(response, 200, { ok: true, data: { smtp: publicSmtpConfig(store.readSmtpConfig()) } });
+      sendJson(response, 200, {
+        ok: true,
+        data: { smtp: publicSmtpConfig(store.readSmtpConfig(), { defaultFromName: currentSiteName() }) },
+      });
       return;
     }
 
@@ -456,6 +577,8 @@ async function handleRequest(request, response) {
     if (request.method === 'GET' && isProviderCollectionPath(url.pathname)) {
       requireAdminSession(request);
       const channels = store.listChannels().map(publicChannel);
+      const environmentChannel = publicEnvironmentChannel();
+      if (environmentChannel) channels.push(environmentChannel);
       sendJson(response, 200, { ok: true, data: { providers: channels, channels } });
       return;
     }
@@ -466,6 +589,14 @@ async function handleRequest(request, response) {
       const channel = createModelChannel(body, session.admin.username);
       const visible = publicChannel(channel);
       sendJson(response, 201, { ok: true, data: { provider: visible, channel: visible } });
+      return;
+    }
+
+    const providerTestId = providerTestIdFromPath(url.pathname);
+    if (request.method === 'POST' && providerTestId) {
+      requireAdminSession(request);
+      const result = await testModelChannel(providerTestId);
+      sendJson(response, 200, { ok: true, data: { result } });
       return;
     }
 
@@ -648,7 +779,7 @@ async function handleUserRegister(request, response) {
     displayName,
     subject,
     password: hashPassword(password),
-    credits: DEFAULT_FREE_CREDITS,
+    credits: membershipCatalog.getFreeProduct()?.credits ?? DEFAULT_FREE_CREDITS,
     trainingConsent: true,
     privacyAcceptedAt: new Date().toISOString(),
     privacyPolicyUpdatedAt: currentSiteSettings.privacyPolicyUpdatedAt,
@@ -656,7 +787,7 @@ async function handleUserRegister(request, response) {
     verifiedChannel,
   });
   if (!user) throw new HttpError(409, 'ACCOUNT_EXISTS', '该账号已注册，请直接登录');
-  sendUserSession(response, request, user, 201);
+  sendUserSession(response, request, user, 201, { recordLogin: true });
 }
 
 async function handleUserVerificationCodeRequest(request, response) {
@@ -707,7 +838,7 @@ async function handleUserCodeLogin(request, response) {
   const user = store.findUserByAccountKey(normalizeAccount(identifier));
   if (!user) throw new HttpError(401, 'VERIFICATION_CODE_INVALID', '验证码无效或已使用');
   const verifiedUser = user.verifiedAt ? user : store.markUserVerified(user.id, verification.channel);
-  sendUserSession(response, request, verifiedUser);
+  sendUserSession(response, request, verifiedUser, 200, { recordLogin: true });
 }
 
 async function handlePasswordResetRequest(request, response) {
@@ -803,14 +934,14 @@ async function handleUserLogin(request, response) {
         account: admin.username,
         accountKey: normalizeAccount(admin.username),
         password: admin.password,
-        credits: DEFAULT_FREE_CREDITS,
+        credits: membershipCatalog.getFreeProduct()?.credits ?? DEFAULT_FREE_CREDITS,
       });
       passwordValid = Boolean(user);
     }
   }
   if (!user) verifyPassword(password, DUMMY_PASSWORD);
   if (!user || !passwordValid) throw new HttpError(401, 'INVALID_CREDENTIALS', '账号或密码错误');
-  sendUserSession(response, request, user);
+  sendUserSession(response, request, user, 200, { recordLogin: true });
 }
 
 function handleUserLogout(request, response) {
@@ -819,7 +950,8 @@ function handleUserLogout(request, response) {
   });
 }
 
-function sendUserSession(response, request, user, status = 200) {
+function sendUserSession(response, request, user, status = 200, { recordLogin = false } = {}) {
+  if (recordLogin) user = store.recordUserLogin(user.id) || user;
   const session = createSessionToken({
     subject: user.id,
     role: 'user',
@@ -850,7 +982,7 @@ function requireUserSession(request) {
   if (Number.isFinite(passwordChangedAt) && sessionStartedAt <= passwordChangedAt) {
     throw new HttpError(401, 'AUTH_REQUIRED', '密码已更新，请重新登录');
   }
-  return { payload, user };
+  return { payload, user: store.touchUserActivity(user.id) || user };
 }
 
 async function handleAdminLogin(request, response) {
@@ -991,7 +1123,7 @@ async function handleAdminTotpEnroll(request, response) {
   const enrollment = await adminMfaCoordinator.issueTotpEnrollment({
     username: session.admin.username,
     binding: adminMfaClientBinding(request),
-    issuer: '教师帮',
+    issuer: currentSiteName(),
   });
   sendJson(response, 201, { ok: true, data: { enrollment } });
 }
@@ -1052,7 +1184,7 @@ async function handleAdminEmailMfaEnroll(request, response) {
   requireCurrentAdminPassword(request, session.admin, body.currentPassword);
   const email = normalizeEmailAddress(body.email);
   if (!email) throw new HttpError(400, 'INVALID_MFA_EMAIL', '请填写有效的管理员验证邮箱');
-  if (!publicSmtpConfig(store.readSmtpConfig()).configured) {
+  if (!publicSmtpConfig(store.readSmtpConfig(), { defaultFromName: currentSiteName() }).configured) {
     throw new HttpError(503, 'SMTP_NOT_CONFIGURED', '请先保存并验证 SMTP 通信配置');
   }
   const result = adminMfaCoordinator.issueEmailCode({
@@ -1233,10 +1365,14 @@ async function handleAdminSmtpSave(request, response) {
     existing: store.readSmtpConfig(),
     allowInsecure: ALLOW_INSECURE_SMTP,
     updatedBy: session.admin.username,
+    defaultFromName: currentSiteName(),
     sealPassword: (password) => encryptSecret(password, SESSION_SECRET, 'smtp-config:password:v1'),
   });
   store.saveSmtpConfig(config);
-  sendJson(response, 200, { ok: true, data: { smtp: publicSmtpConfig(config) } });
+  sendJson(response, 200, {
+    ok: true,
+    data: { smtp: publicSmtpConfig(config, { defaultFromName: currentSiteName() }) },
+  });
 }
 
 async function handleAdminSmtpTest(request, response) {
@@ -1249,7 +1385,14 @@ async function handleAdminSmtpTest(request, response) {
   const result = await messageService.sendTestEmail({ to: recipient });
   const updated = { ...config, testedAt: new Date().toISOString() };
   store.saveSmtpConfig(updated);
-  sendJson(response, 200, { ok: true, data: { sent: true, messageId: result.messageId, smtp: publicSmtpConfig(updated) } });
+  sendJson(response, 200, {
+    ok: true,
+    data: {
+      sent: true,
+      messageId: result.messageId,
+      smtp: publicSmtpConfig(updated, { defaultFromName: currentSiteName() }),
+    },
+  });
 }
 
 async function handleAdminSmsSave(request, response) {
@@ -1513,6 +1656,71 @@ function providerIdFromPath(pathname) {
   }
 }
 
+function providerTestIdFromPath(pathname) {
+  const match = pathname.match(/^\/api\/admin\/(?:providers|model-channels)\/([^/]+)\/test$/);
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    throw new HttpError(400, 'INVALID_PROVIDER_ID', '模型通道编号无效');
+  }
+}
+
+async function testModelChannel(channelId) {
+  let baseUrl;
+  let model;
+  let apiKey;
+  let displayName;
+  if (channelId === 'environment-fallback') {
+    apiKey = getApiKey();
+    if (!apiKey) throw new HttpError(404, 'PROVIDER_NOT_FOUND', '服务器安全配置的模型通道不存在');
+    baseUrl = OPENAI_BASE_URL;
+    model = OPENAI_MODEL;
+    displayName = 'OpenAI（服务器安全配置）';
+  } else {
+    const channel = store.findChannel(channelId);
+    if (!channel) throw new HttpError(404, 'PROVIDER_NOT_FOUND', '模型通道不存在');
+    try {
+      apiKey = decryptSecret(channel.encryptedApiKey, SESSION_SECRET, `model-channel:${channel.id}`);
+    } catch {
+      throw new HttpError(503, 'AI_PROVIDER_SECRET_ERROR', `模型通道“${channel.displayName}”的密钥无法解密`);
+    }
+    baseUrl = channel.baseUrl;
+    model = channel.models?.generation || channel.models?.revision || '';
+    displayName = channel.displayName;
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Math.min(AI_TIMEOUT_MS, 15_000));
+  const startedAt = Date.now();
+  let upstream;
+  try {
+    upstream = await fetch(`${baseUrl}/models`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: controller.signal,
+    });
+  } catch (error) {
+    const message = error?.name === 'AbortError' ? '连接测试超时' : `无法连接模型服务：${safeMessage(error?.message)}`;
+    throw new HttpError(502, 'AI_PROVIDER_TEST_FAILED', message);
+  } finally {
+    clearTimeout(timeout);
+  }
+  const body = await upstream.json().catch(() => ({}));
+  if (!upstream.ok) {
+    throw new HttpError(502, 'AI_PROVIDER_TEST_FAILED', safeMessage(body?.error?.message || `模型服务返回 HTTP ${upstream.status}`), {
+      upstreamStatus: upstream.status,
+    });
+  }
+  const availableModels = Array.isArray(body?.data) ? body.data.map((item) => item?.id).filter(Boolean) : [];
+  return {
+    providerId: channelId,
+    displayName,
+    model,
+    modelAvailable: availableModels.length ? availableModels.includes(model) : null,
+    latencyMs: Date.now() - startedAt,
+    checkedAt: new Date().toISOString(),
+  };
+}
+
 function createModelChannel(body, updatedBy) {
   assertPlainObject(body, '模型通道配置必须是 JSON 对象');
   requirePersistentSessionSecret();
@@ -1531,6 +1739,7 @@ function createModelChannel(body, updatedBy) {
     enabled: body.enabled !== false,
     baseUrl,
     models,
+    capabilities: normalizeProviderCapabilities(body),
     priority: parseBoundedInteger(body.priority, 100, 1, 1000),
     encryptedApiKey: encryptSecret(apiKey, SESSION_SECRET, `model-channel:${id}`),
     keyLastFour: apiKey.slice(-4),
@@ -1562,6 +1771,9 @@ function patchModelChannel(channelId, body, updatedBy) {
     if (body.model !== undefined || body.modelId !== undefined || body.models !== undefined) {
       next.models = normalizeProviderModels(body, next.models);
     }
+    if (body.capabilities !== undefined || body.purposes !== undefined || body.purpose !== undefined) {
+      next.capabilities = normalizeProviderCapabilities(body, next.capabilities);
+    }
     if (body.apiKey !== undefined || body.key !== undefined) {
       requirePersistentSessionSecret();
       const apiKey = normalizeProviderApiKey(body.apiKey ?? body.key);
@@ -1589,12 +1801,41 @@ function publicChannel(channel) {
     baseUrl: channel.baseUrl,
     model,
     models: { generation: channel.models?.generation || '', revision: channel.models?.revision || '' },
+    capabilities: normalizeStoredProviderCapabilities(channel.capabilities),
     priority: Number(channel.priority || 100),
     keyLastFour: channel.keyLastFour || '',
     apiKeyMasked: channel.keyLastFour ? `••••${channel.keyLastFour}` : '',
     configVersion: Number(channel.configVersion || 1),
     createdAt: channel.createdAt,
     updatedAt: channel.updatedAt,
+    readonly: false,
+    managedBy: 'admin',
+  };
+}
+
+function publicEnvironmentChannel() {
+  const apiKey = getApiKey();
+  if (!apiKey) return null;
+  return {
+    id: 'environment-fallback',
+    providerId: 'environment-fallback',
+    name: 'OpenAI（服务器安全配置）',
+    displayName: 'OpenAI（服务器安全配置）',
+    provider: 'OpenAI',
+    adapter: 'openai_responses',
+    enabled: true,
+    baseUrl: OPENAI_BASE_URL,
+    model: OPENAI_MODEL,
+    models: { generation: OPENAI_MODEL, revision: OPENAI_MODEL },
+    capabilities: [...MODEL_CAPABILITIES],
+    priority: 1000,
+    keyLastFour: apiKey.slice(-4),
+    apiKeyMasked: `••••${apiKey.slice(-4)}`,
+    configVersion: 1,
+    createdAt: null,
+    updatedAt: null,
+    readonly: true,
+    managedBy: 'environment',
   };
 }
 
@@ -1617,6 +1858,36 @@ function normalizeProviderModels(body, current = null) {
   );
   if (!generation && !revision) throw new HttpError(400, 'PROVIDER_MODEL_REQUIRED', '请填写模型名称');
   return { generation: generation || revision, revision: revision || generation };
+}
+
+function normalizeProviderCapabilities(body, current = null) {
+  const raw = body.capabilities ?? body.purposes;
+  if (raw === undefined && body.purpose === undefined) {
+    return normalizeStoredProviderCapabilities(current);
+  }
+  let values = raw;
+  if (values === undefined) {
+    const legacyPurpose = cleanText(body.purpose, 100);
+    values = ({
+      教案生成: ['lesson_generation'],
+      对话修改: ['lesson_revision'],
+      视觉识别: ['multimodal_input'],
+    })[legacyPurpose] || [...MODEL_CAPABILITIES];
+  }
+  if (!Array.isArray(values) || values.length === 0) {
+    throw new HttpError(400, 'PROVIDER_CAPABILITIES_REQUIRED', '请至少选择一种模型用途');
+  }
+  const normalized = [...new Set(values.map((value) => cleanText(value, 80)))];
+  if (normalized.some((value) => !MODEL_CAPABILITIES.has(value))) {
+    throw new HttpError(400, 'PROVIDER_CAPABILITY_INVALID', '模型用途包含不支持的选项');
+  }
+  return normalized;
+}
+
+function normalizeStoredProviderCapabilities(capabilities) {
+  if (!Array.isArray(capabilities) || capabilities.length === 0) return [...MODEL_CAPABILITIES];
+  const normalized = [...new Set(capabilities.filter((value) => MODEL_CAPABILITIES.has(value)))];
+  return normalized.length ? normalized : [...MODEL_CAPABILITIES];
 }
 
 function normalizeProviderApiKey(value) {
@@ -1661,9 +1932,13 @@ function isPrivateHostname(hostname) {
     || (parts[0] === 192 && parts[1] === 168);
 }
 
-function resolveProviderRoute(taskType) {
+function resolveProviderRoute(taskType, { requiresMultimodal = false } = {}) {
+  const requiredCapability = taskType === 'revision' ? 'lesson_revision' : 'lesson_generation';
   const channel = store.listChannels().find((item) => (
-    item.enabled && (taskType === 'revision' ? item.models?.revision : item.models?.generation)
+    item.enabled
+    && normalizeStoredProviderCapabilities(item.capabilities).includes(requiredCapability)
+    && (!requiresMultimodal || normalizeStoredProviderCapabilities(item.capabilities).includes('multimodal_input'))
+    && (taskType === 'revision' ? item.models?.revision : item.models?.generation)
   ));
   if (channel) {
     let apiKey;
@@ -1901,7 +2176,7 @@ async function reviseLesson(input, requestId, user) {
 }
 
 async function callOpenAI({ inputText, sources, requestId, taskType, user, expectedDuration }) {
-  const provider = resolveProviderRoute(taskType);
+  const provider = resolveProviderRoute(taskType, { requiresMultimodal: sources.length > 0 });
   const content = [{ type: 'input_text', text: inputText }];
   for (const source of sources) {
     if (source.kind === 'image') {
@@ -2219,11 +2494,14 @@ async function serveStatic(request, response, pathname) {
   if (!fileStat?.isFile()) throw new HttpError(404, 'NOT_FOUND', '页面不存在');
 
   const extension = extname(filePath).toLowerCase();
+  const htmlBody = extension === '.html'
+    ? Buffer.from(createBrandedHtml(readFileSync(filePath, 'utf8')), 'utf8')
+    : null;
   const immutable = /[/\\]assets[/\\].+\.[a-f0-9]{8,}\./i.test(filePath);
   const headers = {
     'Content-Type': MIME_TYPES.get(extension) || 'application/octet-stream',
-    'Content-Length': fileStat.size,
-    'Cache-Control': isAdminEntry ? 'no-store' : immutable ? 'public, max-age=31536000, immutable' : 'no-cache',
+    'Content-Length': htmlBody?.byteLength ?? fileStat.size,
+    'Cache-Control': isAdminEntry || htmlBody ? 'no-store' : immutable ? 'public, max-age=31536000, immutable' : 'no-cache',
     ...(isAdminEntry ? {
       'Referrer-Policy': 'no-referrer',
       'X-Robots-Tag': 'noindex, nofollow, noarchive',
@@ -2233,6 +2511,10 @@ async function serveStatic(request, response, pathname) {
   response.writeHead(200, headers);
   if (request.method === 'HEAD') {
     response.end();
+    return;
+  }
+  if (htmlBody) {
+    response.end(htmlBody);
     return;
   }
   createReadStream(filePath).pipe(response);
@@ -2280,6 +2562,32 @@ function getApiKey() {
   } catch {
     return '';
   }
+}
+
+function currentSiteName() {
+  return cleanText(siteSettings.getPublicSettings().siteName, 100) || '教师帮';
+}
+
+function createBrandedHtml(source) {
+  const publicSettings = siteSettings.getPublicSettings();
+  const siteName = cleanText(publicSettings.siteName, 100) || currentSiteName();
+  const bootstrap = JSON.stringify({ ...publicSettings, siteName })
+    .replaceAll('<', '\\u003c')
+    .replaceAll('>', '\\u003e')
+    .replaceAll('&', '\\u0026')
+    .replaceAll('\u2028', '\\u2028')
+    .replaceAll('\u2029', '\\u2029');
+  const branded = source.split('教师帮').join(escapeHtml(siteName));
+  return branded.replace('</head>', `<script>window.__SITE_CONFIG__=${bootstrap};</script></head>`);
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
 }
 
 function requireApiKey() {
@@ -2344,7 +2652,7 @@ function corsHeaders(request) {
     : 'null';
   return {
     'Access-Control-Allow-Origin': allowed,
-    'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,OPTIONS',
+    'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type,X-Request-Id',
     'Access-Control-Max-Age': '600',
     Vary: 'Origin',

@@ -451,7 +451,8 @@ export function MembershipPage({ path }) {
     return () => { active = false; window.clearInterval(timer); };
   }, [checkout?.order?.id, checkout?.order?.status]);
 
-  const paidPlans = catalog.plans.filter((plan) => plan.billingPeriod === period && plan.saleable);
+  const freePlan = catalog.plans.find((plan) => plan.kind === 'free' || plan.purchasable === false || Number(plan.amountCents) === 0);
+  const paidPlans = catalog.plans.filter((plan) => plan.billingPeriod === period && plan.saleable && plan !== freePlan && plan.purchasable !== false);
   const enabledProviders = catalog.providers.filter((provider) => provider.enabled);
   const currentMembership = account?.membership;
   const activePromotion = paidPlans.find((plan) => plan.promotion?.active)?.promotion;
@@ -527,7 +528,7 @@ export function MembershipPage({ path }) {
       <div className="plans-heading"><div><h2>在售会员套餐</h2><p>{catalog.loading ? '正在读取套餐…' : enabledProviders.length ? '所有价格均为本次实际支付总额，一次性购买，不会自动续费。' : '套餐可以正常查看，支付方式暂不可用。'}</p></div><div className="billing-switch" aria-label="选择付费周期">{MEMBERSHIP_PERIODS.map(([value, label]) => <button type="button" aria-pressed={period === value} className={period === value ? 'active' : ''} onClick={() => setPeriod(value)} key={value}>{label}</button>)}</div></div>
       {catalog.error ? <div className="membership-payment-error" role="alert">{catalog.error}</div> : null}
       <div className="member-plan-grid">
-        <article className={!currentMembership ? 'active' : ''}><header><h3>免费版</h3>{!currentMembership ? <span>当前账户</span> : null}</header><div className="member-price"><b>¥0</b><span>长期</span></div><p>注册赠送体验点数</p><ul>{['基础教案生成', 'AI 修改与结构化导出', '点数余额查询'].map((item) => <li key={item}><Check size={15} />{item}</li>)}</ul><Button variant="secondary" disabled>{!currentMembership ? '当前账户' : '基础权益保留'}</Button></article>
+        <article className={!currentMembership ? 'active' : ''}><header><h3>{freePlan?.name || '免费版'}</h3>{!currentMembership ? <span>当前账户</span> : null}</header><div className="member-price"><b>¥0</b><span>长期</span></div><p>{freePlan ? `注册赠送 ${freePlan.credits} 次教案生成点数` : '注册赠送体验点数'}</p><ul>{(freePlan?.features?.length ? freePlan.features : ['基础教案生成', 'AI 修改与结构化导出', '点数余额查询']).map((item) => <li key={item}><Check size={15} />{item}</li>)}</ul><Button variant="secondary" disabled>{!currentMembership ? '当前账户' : '基础权益保留'}</Button></article>
         {paidPlans.map((plan) => {
           const isCurrent = currentMembership?.planId === plan.planId;
           return <article key={plan.planId} className={isCurrent ? 'active' : ''}><header><h3>{plan.name}</h3>{isCurrent ? <span>当前套餐</span> : plan.promotion?.active ? <span>{plan.promotion.label}</span> : null}</header><div className="member-price"><b>{formatCny(plan.amountCents)}</b><span>本次支付</span>{plan.promotion?.active ? <del>{formatCny(plan.regularAmountCents)}</del> : null}</div><p>{plan.credits} 次教案生成点数 · 有效 {plan.durationDays} 天</p><ul>{plan.features.map((item) => <li key={item}><Check size={15} />{item}</li>)}</ul><Button variant={isCurrent ? 'secondary' : 'primary'} disabled={!enabledProviders.length || catalog.loading} title={!enabledProviders.length ? '当前暂不可支付' : ''} onClick={() => openCheckout(plan)}>{!enabledProviders.length ? '暂不可购买' : isCurrent ? '继续购买并顺延' : `购买${plan.name}`}</Button></article>;

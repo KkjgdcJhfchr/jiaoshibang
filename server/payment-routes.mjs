@@ -1,5 +1,6 @@
 import { PaymentError, PAYMENT_PROVIDERS, PAYMENT_STATES } from './payment-core.mjs';
 import { createPaymentService } from './payment-service.mjs';
+import { createPromotionsStore } from './promotions-store.mjs';
 
 /**
  * `resolveProduct` is deliberately injected by the host application. It must
@@ -19,32 +20,48 @@ export function createPaymentRouter({
   listProducts,
   listAdminProducts,
   saveProduct,
+  archiveProduct,
   publicBaseUrl = '',
   fulfillPaidOrder,
   confirmCheckout,
   checkoutVerificationRequired = false,
+  getSiteName,
+  getUserForAdmin,
   logger = console,
 }) {
   if (typeof requireAdminSession !== 'function' || typeof requireUserSession !== 'function') {
     throw new TypeError('payment router requires admin and user session guards');
   }
+  const promotions = createPromotionsStore({ dataDir, now });
+  const resolvePromotedProduct = async (selection) => {
+    const product = typeof resolveProduct === 'function' ? await resolveProduct(selection) : null;
+    return product ? promotions.resolveEffectiveProduct(product) : null;
+  };
   const service = createPaymentService({
     dataDir,
     encryptionSecret,
     fetchImpl,
     now,
     gatewayTimeoutMs,
-    resolveProduct,
+    resolveProduct: resolvePromotedProduct,
     publicBaseUrl,
     fulfillPaidOrder,
     confirmCheckout,
+    getSiteName,
   });
 
   async function handle(request, response, url) {
-    if (!url.pathname.startsWith('/api/payments/') && !url.pathname.startsWith('/api/admin/payments/')) return false;
+    if (
+      !url.pathname.startsWith('/api/payments/')
+      && !url.pathname.startsWith('/api/admin/payments/')
+      && !url.pathname.startsWith('/api/promotions/')
+      && !url.pathname.startsWith('/api/admin/promotions')
+    ) return false;
     try {
       if (request.method === 'GET' && url.pathname === '/api/payments/plans') {
-        const plans = typeof listProducts === 'function' ? await listProducts() : [];
+        const basePlans = typeof listProducts === 'function' ? await listProducts() : [];
+        const plans = basePlans.map((plan) => promotions.resolveEffectiveProduct(plan));
+        const freePlan = plans.find((plan) => plan.kind === 'free') || null;
         const providers = service.listConfigs().map((config) => ({
           provider: config.provider,
           displayName: config.displayName,
@@ -53,14 +70,15 @@ export function createPaymentRouter({
         }));
         sendJson(response, 200, {
           ok: true,
-          data: { plans, providers, checkoutVerificationRequired: Boolean(checkoutVerificationRequired) },
+          data: { plans, freePlan, providers, checkoutVerificationRequired: Boolean(checkoutVerificationRequired) },
         });
         return true;
       }
 
       if (request.method === 'GET' && url.pathname === '/api/admin/payments/plans') {
         requireAdminSession(request);
-        const plans = typeof listAdminProducts === 'function' ? await listAdminProducts() : [];
+        const basePlans = typeof listAdminProducts === 'function' ? await listAdminProducts() : [];
+        const plans = basePlans.map((plan) => promotions.resolveEffectiveProduct(plan));
         sendJson(response, 200, { ok: true, data: { plans } });
         return true;
       }
@@ -73,6 +91,58 @@ export function createPaymentRouter({
         const body = await readJsonBody(request, 64 * 1024);
         const plan = await saveProduct(planMatch[1], body, session.admin?.username || 'admin');
         sendJson(response, 200, { ok: true, data: { plan } });
+        return true;
+      }
+
+      if (request.method === 'DELETE' && planMatch) {
+        assertSameOriginMutation(request);
+        const session = requireAdminSession(request);
+        const archive = typeof archiveProduct === 'function' ? archiveProduct : saveProduct?.archiveProduct;
+        if (typeof archive !== 'function') throw new PaymentError(503, 'MEMBERSHIP_CATALOG_UNAVAILABLE', '会员套餐目录暂不可删除');
+        const plan = await archive(planMatch[1], session.admin?.username || 'admin');
+        sendJson(response, 200, { ok: true, data: { plan } });
+        return true;
+      }
+
+      if (request.method === 'GET' && url.pathname === '/api/admin/promotions') {
+        requireAdminSession(request);
+        sendJson(response, 200, { ok: true, data: { promotions: promotions.listPromotions() } });
+        return true;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/admin/promotions') {
+        assertSameOriginMutation(request);
+        const session = requireAdminSession(request);
+        const body = await readJsonBody(request, 64 * 1024);
+        const promotion = promotions.createPromotion(body, session.admin?.username || 'admin');
+        sendJson(response, 201, { ok: true, data: { promotion } });
+        return true;
+      }
+
+      const promotionMatch = url.pathname.match(/^\/api\/admin\/promotions\/([A-Za-z0-9_.:-]{2,80})$/);
+      if (request.method === 'PUT' && promotionMatch) {
+        assertSameOriginMutation(request);
+        const session = requireAdminSession(request);
+        const body = await readJsonBody(request, 64 * 1024);
+        const promotion = promotions.updatePromotion(promotionMatch[1], body, session.admin?.username || 'admin');
+        sendJson(response, 200, { ok: true, data: { promotion } });
+        return true;
+      }
+
+      if (request.method === 'DELETE' && promotionMatch) {
+        assertSameOriginMutation(request);
+        requireAdminSession(request);
+        const promotion = promotions.deletePromotion(promotionMatch[1]);
+        sendJson(response, 200, { ok: true, data: { promotion } });
+        return true;
+      }
+
+      if (request.method === 'GET' && url.pathname === '/api/promotions/effective') {
+        const planId = String(url.searchParams.get('planId') || '').trim();
+        const plans = typeof listProducts === 'function' ? await listProducts() : [];
+        const product = plans.find((plan) => plan.planId === planId);
+        if (!product) throw new PaymentError(404, 'PAYMENT_PRODUCT_NOT_FOUND', '所选会员套餐不存在或已停止展示');
+        sendJson(response, 200, { ok: true, data: { plan: promotions.resolveEffectiveProduct(product) } });
         return true;
       }
 
@@ -124,13 +194,37 @@ export function createPaymentRouter({
         const status = url.searchParams.get('status') || '';
         if (provider && !PAYMENT_PROVIDERS.includes(provider)) throw new PaymentError(400, 'PAYMENT_PROVIDER_INVALID', '支付渠道筛选无效');
         if (status && !PAYMENT_STATES.includes(status)) throw new PaymentError(400, 'PAYMENT_STATUS_INVALID', '订单状态筛选无效');
-        const data = service.listOrders({
-          offset: boundedInteger(url.searchParams.get('offset'), 0, 0, 1_000_000),
-          limit: boundedInteger(url.searchParams.get('limit'), 50, 1, 200),
+        const offset = boundedInteger(url.searchParams.get('offset'), 0, 0, 1_000_000);
+        const limit = boundedInteger(url.searchParams.get('limit'), 50, 1, 200);
+        const query = String(url.searchParams.get('query') || '').trim().toLocaleLowerCase('zh-CN').slice(0, 100);
+        const raw = service.listOrders({
+          offset: query ? 0 : offset,
+          limit: query ? 100_000 : limit,
           provider,
           status,
         });
-        sendJson(response, 200, { ok: true, data });
+        const products = typeof listAdminProducts === 'function' ? await listAdminProducts() : [];
+        const productNames = new Map(products.map((product) => [product.planId, product.name]));
+        const enrichedItems = raw.items.map((order) => ({
+          ...order,
+          planName: productNames.get(order.planId) || '',
+          user: typeof getUserForAdmin === 'function' ? getUserForAdmin(order.userId) : null,
+        }));
+        const filteredItems = query ? enrichedItems.filter((order) => [
+          order.id,
+          order.merchantOrderNo,
+          order.providerTradeNo,
+          order.planId,
+          order.planName,
+          order.subject,
+          order.user?.account,
+          order.user?.displayName,
+        ].some((value) => String(value || '').toLocaleLowerCase('zh-CN').includes(query))) : enrichedItems;
+        const items = query ? filteredItems.slice(offset, offset + limit) : filteredItems;
+        sendJson(response, 200, {
+          ok: true,
+          data: { items, total: query ? filteredItems.length : raw.total, offset, limit },
+        });
         return true;
       }
 

@@ -135,11 +135,11 @@ export function UserManagementPage({ query: controlledQuery, onQueryChange }) {
         <div className="admin-table-wrap admin-users-table-wrap">
           <table className="admin-table admin-users-table">
             <caption className="admin-sr-only">平台注册用户列表</caption>
-            <thead><tr><th>用户</th><th>任教学科</th><th>账号验证</th><th>会员</th><th>剩余额度</th><th>累计生成</th><th>注册时间</th></tr></thead>
+            <thead><tr><th>用户</th><th>任教学科</th><th>账号验证</th><th>会员套餐</th><th>剩余额度</th><th>累计生成</th><th>最后登录</th><th>累计在线</th><th>注册时间</th></tr></thead>
             <tbody>
               {!loading ? items.map((user) => <UserRow key={user.id} user={user} />) : null}
-              {loading ? <tr><td className="admin-users-state" colSpan="7"><LoaderCircle className="spin" size={20} />正在读取用户数据…</td></tr> : null}
-              {!loading && !error && items.length === 0 ? <tr><td className="admin-users-empty" colSpan="7"><Users size={25} /><b>{query ? '没有匹配的用户' : '尚无注册用户'}</b><span>{query ? '请更换账号、姓名或学科关键词后再搜索。' : '用户完成注册后会自动显示在这里。'}</span></td></tr> : null}
+              {loading ? <tr><td className="admin-users-state" colSpan="9"><LoaderCircle className="spin" size={20} />正在读取用户数据…</td></tr> : null}
+              {!loading && !error && items.length === 0 ? <tr><td className="admin-users-empty" colSpan="9"><Users size={25} /><b>{query ? '没有匹配的用户' : '尚无注册用户'}</b><span>{query ? '请更换账号、姓名或学科关键词后再搜索。' : '用户完成注册后会自动显示在这里。'}</span></td></tr> : null}
             </tbody>
           </table>
         </div>
@@ -166,7 +166,7 @@ function SummaryCard({ icon: Icon, label, value, note }) {
 function UserRow({ user }) {
   const displayName = user.displayName || '未设置姓名';
   const verifyChannel = VERIFY_CHANNEL_LABELS[user.verifiedChannel] || '已验证';
-  const membershipLabel = user.membership ? (TIER_LABELS[user.membership.tier] || user.membership.tier || '有效会员') : '普通用户';
+  const membershipLabel = user.membership ? (user.membership.planName || TIER_LABELS[user.membership.tier] || user.membership.tier || '有效会员') : '免费版';
   return (
     <tr>
       <td><div className="admin-users-identity"><span>{displayName.slice(0, 1).toUpperCase()}</span><div><b>{displayName}</b><small>{user.account}</small></div></div></td>
@@ -175,6 +175,8 @@ function UserRow({ user }) {
       <td>{user.membership ? <div className="admin-users-membership"><b>{membershipLabel}</b><small>至 {formatDate(user.membership.expiresAt, true)}</small></div> : <span className="admin-users-ordinary">{membershipLabel}</span>}</td>
       <td><span className="admin-users-number"><CircleDollarSign size={14} />{formatNumber(user.credits)}</span></td>
       <td>{formatNumber(user.generationCount)}</td>
+      <td><div className="admin-users-membership"><b>{user.lastLoginAt ? formatDate(user.lastLoginAt) : '尚未登录'}</b><small>{user.loginCount ? `累计登录 ${formatNumber(user.loginCount)} 次` : '暂无登录记录'}</small></div></td>
+      <td>{formatDuration(user.onlineSeconds)}</td>
       <td>{formatDate(user.createdAt)}</td>
     </tr>
   );
@@ -188,4 +190,14 @@ function formatDate(value, dateOnly = false) {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return '—';
   return (dateOnly ? DATE_FORMATTER : DATE_TIME_FORMATTER).format(date);
+}
+
+function formatDuration(value) {
+  const seconds = Math.max(0, Number(value) || 0);
+  if (seconds < 60) return `${Math.round(seconds)} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder ? `${hours} 小时 ${remainder} 分钟` : `${hours} 小时`;
 }

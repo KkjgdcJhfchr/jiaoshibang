@@ -165,6 +165,32 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
     return user;
   }
 
+  function recordUserLogin(userId) {
+    const user = findUserById(userId);
+    if (!user) return null;
+    const timestamp = activityTimestamp(now);
+    accrueOnlineSeconds(user, timestamp);
+    user.lastLoginAt = timestamp.toISOString();
+    user.lastSeenAt = timestamp.toISOString();
+    user.loginCount = nonNegativeNumber(user.loginCount) + 1;
+    user.updatedAt = timestamp.toISOString();
+    writeState(usersFile, usersState);
+    return user;
+  }
+
+  function touchUserActivity(userId) {
+    const user = findUserById(userId);
+    if (!user) return null;
+    const timestamp = activityTimestamp(now);
+    const lastSeen = validDate(user.lastSeenAt);
+    if (lastSeen && timestamp.getTime() - lastSeen.getTime() < 60_000) return user;
+    accrueOnlineSeconds(user, timestamp);
+    user.lastSeenAt = timestamp.toISOString();
+    user.updatedAt = timestamp.toISOString();
+    writeState(usersFile, usersState);
+    return user;
+  }
+
   function grantMembershipPurchase({ orderId, userId, planId, entitlement, paidAt }) {
     const normalizedOrderId = String(orderId || '').trim();
     const normalizedPlanId = String(planId || '').trim();
@@ -424,12 +450,14 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
     markUserVerified,
     readAdmin,
     readSmtpConfig,
+    recordUserLogin,
     registerUser,
     releaseGeneration,
     reserveGeneration,
     revokeTrainingCandidates,
     saveSmtpConfig,
     trainingSummary,
+    touchUserActivity,
     updateChannel,
     updateAdmin,
     updateUserPassword,
@@ -456,6 +484,10 @@ function toAdminUserListItem(user) {
       expiresAt: membership.expiresAt,
       status: membership.status,
     } : null,
+    lastLoginAt: user?.lastLoginAt || null,
+    lastSeenAt: user?.lastSeenAt || null,
+    loginCount: nonNegativeNumber(user?.loginCount),
+    onlineSeconds: nonNegativeNumber(user?.onlineSeconds),
     createdAt: user?.createdAt || null,
     updatedAt: user?.updatedAt || null,
   };
@@ -464,6 +496,21 @@ function toAdminUserListItem(user) {
 function nonNegativeNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.max(0, number) : 0;
+}
+
+function activityTimestamp(now) {
+  const date = validDate(now());
+  if (!date) throw new Error('用户活跃时间无效');
+  return date;
+}
+
+function accrueOnlineSeconds(user, timestamp) {
+  const lastSeen = validDate(user.lastSeenAt);
+  const elapsedSeconds = lastSeen
+    ? Math.floor((timestamp.getTime() - lastSeen.getTime()) / 1000)
+    : 0;
+  const activeSeconds = elapsedSeconds > 0 && elapsedSeconds <= 15 * 60 ? elapsedSeconds : 0;
+  user.onlineSeconds = nonNegativeNumber(user.onlineSeconds) + activeSeconds;
 }
 
 export function publicUser(user) {
@@ -528,7 +575,7 @@ function normalizeMembershipEntitlement(entitlement, planId) {
   if (normalized.type !== 'membership' || normalized.planId !== planId) throw new Error('支付订单权益快照与套餐不一致');
   if (!/^[A-Za-z0-9_.:-]{2,40}$/.test(normalized.tier)) throw new Error('支付订单会员等级无效');
   if (!Number.isSafeInteger(normalized.tierRank) || normalized.tierRank < 1) throw new Error('支付订单会员等级权重无效');
-  if (!['month', 'year'].includes(normalized.billingPeriod)) throw new Error('支付订单会员周期无效');
+  if (!['month', 'quarter', 'half_year', 'year'].includes(normalized.billingPeriod)) throw new Error('支付订单会员周期无效');
   if (!Number.isSafeInteger(normalized.durationDays) || normalized.durationDays < 1 || normalized.durationDays > 3_660) throw new Error('支付订单会员有效期无效');
   if (!Number.isSafeInteger(normalized.credits) || normalized.credits < 0 || normalized.credits > 1_000_000) throw new Error('支付订单点数权益无效');
   return normalized;

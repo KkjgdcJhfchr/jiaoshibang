@@ -17,6 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import { api } from '../lib/api.js';
+import { useSiteConfig } from '../lib/site-config.jsx';
 import './admin-security.css';
 
 const emptySmtp = {
@@ -25,7 +26,7 @@ const emptySmtp = {
   security: 'tls',
   username: '',
   password: '',
-  fromName: '教师帮',
+  fromName: '',
   fromEmail: '',
 };
 
@@ -103,6 +104,7 @@ function normalizeMfa(payload) {
 }
 
 export function SecuritySettingsPage({ onNotice }) {
+  const { siteName } = useSiteConfig();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [mfa, setMfa] = useState({ enabled: false, preferred: '', methods: [], email: '', recoveryCodesRemaining: 0 });
@@ -133,7 +135,7 @@ export function SecuritySettingsPage({ onNotice }) {
         port: Number(value.port || 465),
         security: value.security || 'starttls',
         username: value.username || '',
-        fromName: value.fromName || '教师帮',
+        fromName: value.fromName || siteName,
         fromEmail: value.fromEmail || '',
         configured: value.configured === true,
         passwordConfigured: value.passwordConfigured === true,
@@ -176,10 +178,12 @@ export function SecuritySettingsPage({ onNotice }) {
     setSmtpProvider(providerId);
     setSmtp((current) => ({
       ...current,
-      host: provider.host || current.host,
+      host: provider.host || '',
       port: provider.port,
       security: provider.security,
-      username: provider.username || current.username,
+      username: provider.username || '',
+      password: '',
+      passwordConfigured: provider.host === current.host ? current.passwordConfigured : false,
       testedAt: null,
     }));
     setSmtpDirty(true);
@@ -194,7 +198,7 @@ export function SecuritySettingsPage({ onNotice }) {
     setSms((current) => ({
       ...current,
       provider,
-      enabled: false,
+      enabled: true,
       configured: false,
       accessKeyId: '',
       accessKeyIdMasked: '',
@@ -252,6 +256,7 @@ export function SecuritySettingsPage({ onNotice }) {
     try {
       const response = await api.saveSmsSettings({
         ...sms,
+        enabled: true,
         accessKeyId: sms.accessKeyId || undefined,
         accessKeySecret: sms.accessKeySecret || undefined,
       });
@@ -288,7 +293,7 @@ export function SecuritySettingsPage({ onNotice }) {
   return (
     <>
       <div className="admin-page-heading admin-security-heading">
-        <div><h1>安全与通信</h1><p>配置管理员登录验证码、域名邮箱和用户手机验证码通道</p></div>
+        <div><h1>安全与通信</h1><p>分别管理管理员登录保护、全站邮件发送和用户手机验证码服务</p></div>
         <button className="admin-button admin-button-secondary" type="button" onClick={reload} disabled={loading || Boolean(busy)}><RefreshCw size={17} className={loading ? 'spin' : ''} />刷新状态</button>
       </div>
       {error ? <div className="admin-security-error" role="alert"><AlertTriangle size={18} /><span>{error}</span><button type="button" onClick={() => setError('')} aria-label="关闭"><X size={16} /></button></div> : null}
@@ -298,7 +303,7 @@ export function SecuritySettingsPage({ onNotice }) {
         <div><small>管理员登录验证码</small><h2>{mfa.enabled ? '已启用' : '未启用'}</h2><p>{mfa.enabled ? `账号密码通过后，还需输入${mfaMethodLabels.join('或') || '验证码'}。` : '首次登录仍只使用账号密码；管理员可在这里主动开启。'}</p></div>
         <div className="admin-security-actions">
           <button className="admin-button admin-button-secondary" type="button" disabled={loading || Boolean(busy)} onClick={() => setDialog({ type: 'totp', step: 'credentials', password: '', code: '' })}><QrCode size={17} />配置身份验证器</button>
-          <button className="admin-button admin-button-primary" type="button" disabled={loading || Boolean(busy)} onClick={() => setDialog({ type: 'email', step: 'credentials', password: '', email: '', code: '' })}><Mail size={17} />{mfa.methods.includes('email') ? '更换验证邮箱' : '启用邮箱登录验证'}</button>
+          <button className="admin-button admin-button-primary" type="button" disabled={loading || Boolean(busy)} onClick={() => setDialog({ type: 'email', step: 'credentials', password: '', email: '', code: '' })}><Mail size={17} />{mfa.methods.includes('email') ? '更换管理员验证邮箱' : '添加管理员邮箱验证码'}</button>
         </div>
       </section>
 
@@ -310,7 +315,7 @@ export function SecuritySettingsPage({ onNotice }) {
 
       <div className="admin-communications-grid">
         <form className="admin-panel admin-communication-card" onSubmit={saveSmtp}>
-          <header><span><Mail size={21} /></span><div><h2>邮件发送服务（SMTP）</h2><p>这是全站发信通道；上方邮箱登录验证只是选择管理员接收验证码的地址，两者用途不同。</p></div><i className={!smtpDirty && smtp.testedAt ? 'ready' : ''}>{smtpDirty ? '有未保存更改' : smtp.testedAt ? '已验证' : smtp.configured ? '已保存待验证' : '未配置'}</i></header>
+          <header><span><Mail size={21} /></span><div><h2>邮件发送服务（SMTP）</h2><p>保存完整配置后即成为全站邮件通道；上方设置只负责保护管理员登录，两者互不重复。</p></div><i className={!smtpDirty && smtp.testedAt ? 'ready' : ''}>{smtpDirty ? '有未保存更改' : smtp.testedAt ? '已验证' : smtp.configured ? '已启用待验证' : '未配置'}</i></header>
           <fieldset className="admin-form-grid" disabled={loading || Boolean(busy)}>
             <label className="wide"><span>选择邮箱平台</span><select value={smtpProvider} onChange={(event) => updateSmtpProvider(event.target.value)}>{Object.entries(SMTP_PROVIDERS).map(([id, provider]) => <option value={id} key={id}>{provider.label}</option>)}</select></label>
             <label className="wide"><span>SMTP 主机</span><input value={smtp.host} onChange={(event) => updateSmtpField('host', event.target.value)} placeholder="smtp.example.com" required /></label>
@@ -326,7 +331,7 @@ export function SecuritySettingsPage({ onNotice }) {
         </form>
 
         <form className="admin-panel admin-communication-card" onSubmit={saveSms}>
-          <header><span><MessageSquareText size={21} /></span><div><h2>手机验证码</h2><p>支持阿里云短信和腾讯云短信正式接口，密钥只在服务端加密保存。</p></div><i className={!smsDirty && sms.configured && sms.enabled ? 'ready' : ''}>{smsDirty ? '有未保存更改' : sms.configured ? (sms.enabled ? '已启用' : '已保存未启用') : '未配置'}</i></header>
+          <header><span><MessageSquareText size={21} /></span><div><h2>手机验证码</h2><p>保存完整配置后自动启用，无需再次操作开关；密钥只在服务端加密保存。</p></div><i className={!smsDirty && sms.configured ? 'ready' : ''}>{smsDirty ? '有未保存更改' : sms.configured ? '已启用' : '未配置'}</i></header>
           <fieldset className="admin-form-grid" disabled={loading || Boolean(busy)}>
             <label className="wide"><span>短信服务商</span><select value={sms.provider} onChange={(event) => updateSmsProvider(event.target.value)}><option value="aliyun">阿里云短信</option><option value="tencent">腾讯云短信</option></select></label>
             <label className="wide"><span>AccessKey ID / SecretId</span><input value={sms.accessKeyId} onChange={(event) => updateSmsField('accessKeyId', event.target.value)} placeholder={sms.accessKeyIdMasked || '使用仅短信发送权限的子账号密钥'} required={!sms.configured} /></label>
@@ -336,8 +341,7 @@ export function SecuritySettingsPage({ onNotice }) {
             {sms.provider === 'tencent' ? <><label><span>短信应用 SDK AppID</span><input value={sms.sdkAppId} onChange={(event) => updateSmsField('sdkAppId', event.target.value)} required /></label><label><span>地域</span><input value={sms.region} onChange={(event) => updateSmsField('region', event.target.value)} /></label></> : null}
           </fieldset>
           <ProviderGuide guide={SMS_GUIDES[sms.provider]} />
-          <label className="admin-enable-row"><input type="checkbox" checked={sms.enabled} disabled={loading || Boolean(busy)} onChange={(event) => updateSmsField('enabled', event.target.checked)} /><span><b>启用手机验证码通道</b><small>需要企业实名认证、短信资质、已报备签名及审核通过的模板。</small></span></label>
-          <footer><button className="admin-button admin-button-primary" type="submit" disabled={loading || Boolean(busy)}>{busy === 'sms-save' ? <LoaderCircle className="spin" size={17} /> : <Save size={17} />}保存短信设置</button><div><input inputMode="numeric" value={smsTestPhone} onChange={(event) => setSmsTestPhone(event.target.value.replace(/\D/g, '').slice(0, 11))} placeholder="接收验证短信的手机号" disabled={loading || Boolean(busy)} /><button className="admin-button admin-button-secondary" type="button" onClick={testSms} disabled={loading || Boolean(busy) || smsDirty || !sms.configured || !sms.enabled} title={smsDirty ? '请先保存当前更改' : !sms.enabled ? '请先启用并保存短信通道' : ''}><Send size={16} />验证通道</button></div></footer>
+          <footer><button className="admin-button admin-button-primary" type="submit" disabled={loading || Boolean(busy)}>{busy === 'sms-save' ? <LoaderCircle className="spin" size={17} /> : <Save size={17} />}保存并启用</button><div><input inputMode="numeric" value={smsTestPhone} onChange={(event) => setSmsTestPhone(event.target.value.replace(/\D/g, '').slice(0, 11))} placeholder="接收验证短信的手机号" disabled={loading || Boolean(busy)} /><button className="admin-button admin-button-secondary" type="button" onClick={testSms} disabled={loading || Boolean(busy) || smsDirty || !sms.configured} title={smsDirty ? '请先保存当前更改' : ''}><Send size={16} />验证通道</button></div></footer>
         </form>
       </div>
 

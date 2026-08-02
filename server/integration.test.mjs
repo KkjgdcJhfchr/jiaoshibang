@@ -104,6 +104,12 @@ const mockSmtp = createNetServer((socket) => {
 });
 
 const mockUpstream = createServer(async (request, response) => {
+  if (request.method === 'GET' && request.url?.endsWith('/models')) {
+    upstreamRequests.push({ authorization: request.headers.authorization, model: 'models-list', safetyIdentifier: null });
+    response.writeHead(200, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify({ data: [{ id: 'environment-test-model' }, { id: 'stored-provider-model' }] }));
+    return;
+  }
   const chunks = [];
   for await (const chunk of request) chunks.push(chunk);
   const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
@@ -253,13 +259,16 @@ try {
   let currentPrivacyPolicyUpdatedAt = initialSiteConfig.body.data.privacyPolicy.updatedAt;
   const publicPaymentPlans = await client.json('/api/payments/plans');
   assert.equal(publicPaymentPlans.status, 200);
-  assert.equal(publicPaymentPlans.body.data.plans.length, 8);
+  assert.equal(publicPaymentPlans.body.data.plans.length, 9);
   assert.deepEqual(
-    [...new Set(publicPaymentPlans.body.data.plans.map((plan) => plan.billingPeriod))].sort(),
+    [...new Set(publicPaymentPlans.body.data.plans.filter((plan) => plan.purchasable).map((plan) => plan.billingPeriod))].sort(),
     ['half_year', 'month', 'quarter', 'year'],
   );
   assert.equal(publicPaymentPlans.body.data.plans.filter((plan) => plan.tier === 'pro').length, 4);
   assert.equal(publicPaymentPlans.body.data.plans.filter((plan) => plan.tier === 'research').length, 4);
+  assert.equal(publicPaymentPlans.body.data.freePlan.kind, 'free');
+  assert.equal(publicPaymentPlans.body.data.freePlan.purchasable, false);
+  assert.equal(publicPaymentPlans.body.data.freePlan.credits, 3);
   assert.equal(publicPaymentPlans.body.data.providers.every((provider) => provider.enabled === false), true);
   assert.equal(publicPaymentPlans.body.data.checkoutVerificationRequired, false);
   const unauthenticatedGeneration = await client.json('/api/ai/generate', {
@@ -383,6 +392,83 @@ try {
   assert.equal(adminLogin.status, 200);
   const adminCookie = cookiePair(adminLogin.headers.get('set-cookie'));
 
+  const initialManagedContent = await client.json('/api/admin/content', { cookie: adminCookie });
+  assert.equal(initialManagedContent.status, 200);
+  assert.deepEqual(initialManagedContent.body.data.announcements, []);
+  assert.equal(initialManagedContent.body.data.tutorial.enabled, false);
+
+  const announcementCreated = await client.json('/api/admin/announcements', {
+    method: 'POST',
+    cookie: adminCookie,
+    body: {
+      title: '欢迎公告',
+      content: '欢迎使用完整的备课工作台。',
+      enabled: true,
+      startsAt: null,
+      endsAt: null,
+      priority: 80,
+      displayPolicy: 'once_per_revision',
+    },
+  });
+  assert.equal(announcementCreated.status, 201);
+  const announcement = announcementCreated.body.data.announcement;
+  assert.equal(announcement.revision, 1);
+
+  const tutorialSaved = await client.json('/api/admin/tutorial', {
+    method: 'PUT',
+    cookie: adminCookie,
+    body: {
+      expectedUpdatedAt: null,
+      title: '首次使用教程',
+      enabled: true,
+      steps: [
+        { id: 'step_upload', title: '上传教材', content: '上传本章节图片或 PDF。', order: 1 },
+        { id: 'step_generate', title: '生成教案', content: '确认学情后开始生成。', order: 2 },
+      ],
+    },
+  });
+  assert.equal(tutorialSaved.status, 200);
+  const tutorial = tutorialSaved.body.data.tutorial;
+  assert.equal(tutorial.enabled, true);
+  assert.equal(tutorial.version, 1);
+
+  const contentBootstrap = await client.json('/api/app/content/bootstrap', { cookie: userCookie });
+  assert.equal(contentBootstrap.status, 200);
+  assert.equal(contentBootstrap.body.data.announcements[0].id, announcement.id);
+  assert.equal(contentBootstrap.body.data.tutorial.enabled, true);
+  assert.equal(contentBootstrap.body.data.tutorial.progress.currentStepId, 'step_upload');
+
+  const announcementAcknowledged = await client.json(`/api/app/announcements/${encodeURIComponent(announcement.id)}/acknowledge`, {
+    method: 'POST',
+    cookie: userCookie,
+    body: { revision: announcement.revision },
+  });
+  assert.equal(announcementAcknowledged.status, 200);
+  const tutorialProgress = await client.json('/api/app/tutorial/progress', {
+    method: 'PUT',
+    cookie: userCookie,
+    body: { tutorialId: tutorial.id, version: tutorial.version, status: 'active', currentStepId: 'step_generate' },
+  });
+  assert.equal(tutorialProgress.status, 200);
+  const resumedContent = await client.json('/api/app/content/bootstrap', { cookie: userCookie });
+  assert.deepEqual(resumedContent.body.data.announcements, []);
+  assert.equal(resumedContent.body.data.tutorial.progress.currentStepId, 'step_generate');
+  const tutorialCompleted = await client.json('/api/app/tutorial/progress', {
+    method: 'PUT',
+    cookie: userCookie,
+    body: { tutorialId: tutorial.id, version: tutorial.version, status: 'completed', currentStepId: 'step_generate' },
+  });
+  assert.equal(tutorialCompleted.status, 200);
+  const completedContent = await client.json('/api/app/content/bootstrap', { cookie: userCookie });
+  assert.equal(completedContent.body.data.tutorial, null);
+
+  const announcementDeleted = await client.json(`/api/admin/announcements/${encodeURIComponent(announcement.id)}`, {
+    method: 'DELETE',
+    cookie: adminCookie,
+    body: { expectedUpdatedAt: announcement.updatedAt },
+  });
+  assert.equal(announcementDeleted.status, 200);
+
   const adminTeacherLogin = await client.json('/api/auth/login', {
     method: 'POST',
     body: { identifier: 'admin', password: adminPassword },
@@ -432,6 +518,9 @@ try {
   assert.equal(searchedAdminUsers.body.data.items[0].account, 'teacher@example.com');
   assert.equal(searchedAdminUsers.body.data.items[0].generationCount, 1);
   assert.equal(searchedAdminUsers.body.data.items[0].verified, false);
+  assert.ok(searchedAdminUsers.body.data.items[0].lastLoginAt);
+  assert.equal(searchedAdminUsers.body.data.items[0].loginCount, 1);
+  assert.equal(searchedAdminUsers.body.data.items[0].onlineSeconds >= 0, true);
 
   const unauthenticatedSystemSettings = await client.json('/api/admin/system/settings');
   assert.equal(unauthenticatedSystemSettings.status, 401);
@@ -451,7 +540,7 @@ try {
     cookie: adminCookie,
     body: {
       expectedUpdatedAt: adminSystemSettings.body.data.settings.updatedAt,
-      siteName: '教师帮集成测试站点',
+      siteName: '备课星集成测试站点',
       supportEmail: 'support@example.com',
       registrationOpen: false,
       registrationVerificationRequired: false,
@@ -471,7 +560,15 @@ try {
   assert.equal(closedPublicSettings.status, 200);
   assert.equal(closedPublicSettings.body.data.registrationOpen, false);
   assert.equal(closedPublicSettings.body.data.supportEmail, 'support@example.com');
-  assert.equal(closedPublicSettings.body.data.privacyPolicy.content, updatedPrivacyPolicyContent);
+  const brandedPrivacyPolicyContent = updatedPrivacyPolicyContent.replaceAll('教师帮', '备课星集成测试站点');
+  assert.equal(closedPublicSettings.body.data.siteName, '备课星集成测试站点');
+  assert.equal(closedPublicSettings.body.data.privacyPolicy.content, brandedPrivacyPolicyContent);
+  assert.equal(closedPublicSettings.body.data.privacyPolicy.content.includes('教师帮'), false);
+  const brandedHomePage = await client.text('/');
+  assert.equal(brandedHomePage.status, 200);
+  assert.match(brandedHomePage.body, /window\.__SITE_CONFIG__=/);
+  assert.match(brandedHomePage.body, /备课星集成测试站点/);
+  assert.equal(brandedHomePage.body.includes('教师帮'), false);
   assert.equal(
     closedPublicSettings.body.data.privacyPolicy.updatedAt,
     closedSystemSettings.body.data.settings.privacyPolicyUpdatedAt,
@@ -570,7 +667,7 @@ try {
       security: 'plain',
       username: 'smtp-user',
       password: smtpPassword,
-      fromName: '教师帮集成测试',
+      fromName: '备课星集成测试',
       fromEmail: 'noreply@example.com',
     },
   });
@@ -595,7 +692,7 @@ try {
   assert.equal(smtpTest.body.data.sent, true);
   assert.ok(smtpTest.body.data.smtp.testedAt);
   assert.equal(smtpMessages.length, 1);
-  assert.equal(extractEmailSubject(smtpMessages[0]), '教师帮发信验证邮件');
+  assert.equal(extractEmailSubject(smtpMessages[0]), '备课星集成测试站点发信验证邮件');
   assert.match(smtpMessages[0], /发信验证邮件/);
   assert.equal(smtpAuthentications.at(-1), `\0smtp-user\0${smtpPassword}`);
 
@@ -604,7 +701,7 @@ try {
     cookie: adminCookie,
     body: {
       host: '127.0.0.1', port: smtpPort, security: 'plain', username: 'smtp-user',
-      fromName: '教师帮集成测试', fromEmail: 'noreply@example.com',
+      fromName: '备课星集成测试', fromEmail: 'noreply@example.com',
     },
   });
   assert.ok(unchangedSmtp.body.data.smtp.testedAt, '未改动 SMTP 参数时应保留真实测试状态');
@@ -633,7 +730,7 @@ try {
   });
   assert.equal(smsSaved.status, 200);
   assert.equal(smsSaved.body.data.sms.configured, true);
-  assert.equal(smsSaved.body.data.sms.enabled, false);
+  assert.equal(smsSaved.body.data.sms.enabled, true);
   assert.equal(JSON.stringify(smsSaved.body).includes(smsSecret), false);
   const smsFile = readFileSync(join(dataDir, 'sms-settings.json'), 'utf8');
   assert.equal(smsFile.includes(smsSecret), false, '短信访问密钥不得明文落盘');
@@ -641,21 +738,13 @@ try {
   const smsPublic = await client.json('/api/admin/communication/sms', { cookie: adminCookie });
   assert.equal(smsPublic.status, 200);
   assert.equal(Object.hasOwn(smsPublic.body.data.sms, 'accessKeySecret'), false);
-  const disabledSmsTest = await client.json('/api/admin/communication/sms/test', {
-    method: 'POST',
-    cookie: adminCookie,
-    body: { phone: '13800138000' },
-  });
-  assert.equal(disabledSmsTest.status, 503);
-  assert.equal(disabledSmsTest.body.error.code, 'SMS_NOT_CONFIGURED');
-
   const registrationCodeRequest = await client.json('/api/auth/verification-codes', {
     method: 'POST',
     body: { identifier: 'verified@example.com', purpose: 'register' },
   });
   assert.equal(registrationCodeRequest.status, 202);
   assert.match(registrationCodeRequest.body.data.verificationId, /^vfy_/);
-  assert.equal(extractEmailSubject(smtpMessages.at(-1)), '教师帮注册账号验证码');
+  assert.equal(extractEmailSubject(smtpMessages.at(-1)), '备课星集成测试站点注册账号验证码');
   const registrationCode = extractEmailCode(smtpMessages.at(-1));
   const verifiedRegistration = await client.json('/api/auth/register', {
     method: 'POST',
@@ -928,6 +1017,21 @@ try {
   assert.equal(providerDenied.status, 401);
   assert.equal(providerDenied.body.error.code, 'ADMIN_AUTH_REQUIRED');
 
+  const configuredProviders = await client.json('/api/admin/providers', { cookie: adminCookie });
+  assert.equal(configuredProviders.status, 200);
+  const environmentProvider = configuredProviders.body.data.providers.find((provider) => provider.id === 'environment-fallback');
+  assert.equal(environmentProvider.readonly, true);
+  assert.deepEqual(environmentProvider.capabilities, ['lesson_generation', 'lesson_revision', 'multimodal_input']);
+  assert.equal(environmentProvider.apiKeyMasked.startsWith('••••'), true);
+  assert.equal(JSON.stringify(environmentProvider).includes('integration-environment-key'), false);
+  const environmentProviderTest = await client.json('/api/admin/providers/environment-fallback/test', {
+    method: 'POST',
+    cookie: adminCookie,
+    body: {},
+  });
+  assert.equal(environmentProviderTest.status, 200);
+  assert.equal(environmentProviderTest.body.data.result.modelAvailable, true);
+
   const providerKey = 'integration-provider-key';
   const providerCreated = await client.json('/api/admin/providers', {
     method: 'POST',
@@ -937,11 +1041,13 @@ try {
       baseUrl: `http://127.0.0.1:${mockPort}/v1`,
       apiKey: providerKey,
       model: 'stored-provider-model',
+      capabilities: ['lesson_generation', 'lesson_revision', 'multimodal_input'],
       priority: 1,
     },
   });
   assert.equal(providerCreated.status, 201);
   assert.equal(providerCreated.body.data.provider.keyLastFour, '-key');
+  assert.deepEqual(providerCreated.body.data.provider.capabilities, ['lesson_generation', 'lesson_revision', 'multimodal_input']);
   assert.equal(JSON.stringify(providerCreated.body).includes(providerKey), false);
   const providerId = providerCreated.body.data.provider.id;
   const channelFile = readFileSync(join(dataDir, 'model-channels.json'), 'utf8');
@@ -1127,6 +1233,15 @@ function extractEmailSubject(message) {
 
 function createClient(port) {
   return {
+    async text(path, options = {}) {
+      const headers = { ...(options.headers || {}) };
+      if (options.cookie) headers.Cookie = options.cookie;
+      const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+        method: options.method || 'GET',
+        headers,
+      });
+      return { status: response.status, headers: response.headers, body: await response.text() };
+    },
     async json(path, options = {}) {
       const headers = {
         ...(options.body !== undefined ? { 'Content-Type': 'application/json' } : {}),

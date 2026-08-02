@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api.js';
 import { Link, navigate } from '../lib/navigation.jsx';
+import { useSiteConfig } from '../lib/site-config.jsx';
 import { Button, Field, Logo } from './components.jsx';
 
 const VERIFICATION_AUTH_AVAILABLE = import.meta.env.VITE_VERIFICATION_CODE_ENABLED !== 'false';
@@ -40,7 +41,7 @@ function accountError(identifier, { allowUsername = false } = {}) {
 
 const FALLBACK_PRIVACY_POLICY = {
   title: '数据与隐私说明',
-  content: '教师帮仅为账号、安全验证、教案生成、导出和订单处理使用你主动提交的信息。平台会采用访问控制、传输加密和敏感配置加密存储等措施。关于教材、教案与服务改进的具体处理范围，请以当前公布的完整说明为准。',
+  content: '本平台仅为账号、安全验证、教案生成、导出和订单处理使用你主动提交的信息。平台会采用访问控制、传输加密和敏感配置加密存储等措施。关于教材、教案与服务改进的具体处理范围，请以当前公布的完整说明为准。',
   updatedAt: '',
 };
 
@@ -143,6 +144,7 @@ function PublicHeader() {
 }
 
 export function LandingPage() {
+  const { siteName } = useSiteConfig();
   return (
     <div className="public-page">
       <PublicHeader />
@@ -161,7 +163,7 @@ export function LandingPage() {
               <span><Check size={15} /> 支持 DOC / 打印 PDF</span>
             </div>
           </div>
-          <div className="hero-product" aria-label="教师帮教案生成界面预览">
+          <div className="hero-product" aria-label={`${siteName}教案生成界面预览`}>
             <div className="hero-product-head"><span>七年级语文 ·《春》</span><span className="live-dot">正在生成</span></div>
             <div className="hero-plan-layout">
               <div className="hero-outline">
@@ -254,30 +256,24 @@ export function LandingPage() {
 }
 
 function PublicFooter() {
-  const [siteInfo, setSiteInfo] = useState({ siteName: '教师帮', supportEmail: '' });
-  useEffect(() => {
-    let active = true;
-    api.getSiteConfig().then((response) => {
-      if (active) setSiteInfo((current) => ({ ...current, ...(response.data || {}) }));
-    }).catch(() => {});
-    return () => { active = false; };
-  }, []);
+  const { siteName, supportEmail } = useSiteConfig();
   return (
     <footer className="public-footer">
       <div><Logo /><p>让每一位教师，都有一位懂课堂的备课伙伴。</p></div>
       <div><b>产品</b><Link to="/#features">功能介绍</Link><Link to="/pricing">会员方案</Link><Link to="/app/lesson/lesson-spring-001">教案示例</Link></div>
-      <div><b>支持</b><Link to="/#workflow">使用帮助</Link>{siteInfo.supportEmail ? <a href={`mailto:${siteInfo.supportEmail}`}>联系我们</a> : null}<PrivacyPolicyLink>数据安全说明</PrivacyPolicyLink></div>
+      <div><b>支持</b><Link to="/#workflow">使用帮助</Link>{supportEmail ? <a href={`mailto:${supportEmail}`}>联系我们</a> : null}<PrivacyPolicyLink>数据安全说明</PrivacyPolicyLink></div>
       <div><b>规则</b><PrivacyPolicyLink>用户协议与隐私规则</PrivacyPolicyLink><PrivacyPolicyLink>数据与隐私说明</PrivacyPolicyLink></div>
-      <p className="footer-record">© 2026 {siteInfo.siteName || '教师帮'}</p>
+      <p className="footer-record">© 2026 {siteName}</p>
     </footer>
   );
 }
 
 function AuthBrandPanel() {
+  const { siteName } = useSiteConfig();
   return (
     <div className="auth-brand-panel">
       <Logo />
-      <div className="auth-brand-copy"><h1>少一点重复备课，<br />多一点真实互动</h1><p>从教材到完整课堂设计，教师帮与你一起把每一个教学环节想清楚。</p></div>
+      <div className="auth-brand-copy"><h1>少一点重复备课，<br />多一点真实互动</h1><p>从教材到完整课堂设计，{siteName}与你一起把每一个教学环节想清楚。</p></div>
       <div className="auth-quote"><p>“导入、提问链和学生可能的回答都写得很具体，我只需要再加上自己的课堂语言。”</p><span>七年级语文教师 · 体验反馈</span></div>
     </div>
   );
@@ -516,14 +512,15 @@ export function PricingPage() {
     return () => { active = false; };
   }, []);
 
-  const visiblePlans = plans.filter((plan) => plan.billingPeriod === period);
+  const freePlan = plans.find((plan) => plan.kind === 'free' || plan.purchasable === false || Number(plan.amountCents) === 0);
+  const visiblePlans = plans.filter((plan) => plan.billingPeriod === period && plan !== freePlan && plan.purchasable !== false);
   return (
     <div className="public-page pricing-page">
       <PublicHeader />
       <main>
         <section className="pricing-heading"><h1>把时间还给课堂</h1><p>所有价格均为本次实际支付总额，一次性购买，不会自动续费。</p><div className="billing-switch" aria-label="选择付费周期">{BILLING_PERIODS.map(([value, label]) => <button type="button" aria-pressed={period === value} className={period === value ? 'active' : ''} onClick={() => setPeriod(value)} key={value}>{label}</button>)}</div></section>
         <section className="pricing-grid">
-          <article><div><h2>免费版</h2><p>适合先体验完整备课流程</p></div><div className="price"><b>¥0</b><span>长期可用</span></div><ul>{['注册赠送体验点数', '基础教案生成与修改', '结构化教案导出'].map((item) => <li key={item}><Check size={16} />{item}</li>)}</ul><Button variant="secondary" size="lg" onClick={() => navigate('/register')}>免费注册</Button></article>
+          <article><div><h2>{freePlan?.name || '免费版'}</h2><p>{freePlan ? `注册即享 ${freePlan.credits} 次教案生成点数` : '适合先体验完整备课流程'}</p></div><div className="price"><b>¥0</b><span>长期可用</span></div><ul>{(freePlan?.features?.length ? freePlan.features : ['注册赠送体验点数', '基础教案生成与修改', '结构化教案导出']).map((item) => <li key={item}><Check size={16} />{item}</li>)}</ul><Button variant="secondary" size="lg" onClick={() => navigate('/register')}>免费注册</Button></article>
           {visiblePlans.map((plan, index) => <article key={plan.planId} className={index === 0 ? 'featured' : ''}><div><h2>{plan.name}</h2><p>{plan.credits} 次教案生成点数 · 有效 {plan.durationDays} 天</p></div><div className="price"><b>{formatPlanPrice(plan.amountCents)}</b><span>本次支付</span>{plan.promotion?.active ? <del>{formatPlanPrice(plan.regularAmountCents)}</del> : null}</div><ul>{(plan.features || []).map((item) => <li key={item}><Check size={16} />{item}</li>)}</ul><Button variant={index === 0 ? 'primary' : 'secondary'} size="lg" onClick={() => navigate('/register')}>注册后购买</Button></article>)}
           {!visiblePlans.length ? <article className="pricing-empty-period"><div><h2>{BILLING_PERIODS.find(([value]) => value === period)?.[1]}套餐</h2><p>{plansStatus === 'loading' ? '正在读取可购买套餐…' : plansStatus === 'error' ? '会员套餐暂时无法读取，请稍后刷新页面' : '当前周期暂未上架套餐'}</p></div>{period !== 'month' && plansStatus === 'ready' ? <Button variant="secondary" size="lg" onClick={() => setPeriod('month')}>查看月付套餐</Button> : null}</article> : null}
         </section>

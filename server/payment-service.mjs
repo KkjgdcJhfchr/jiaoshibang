@@ -29,6 +29,7 @@ export function createPaymentService({
   publicBaseUrl = '',
   fulfillPaidOrder,
   confirmCheckout,
+  getSiteName,
 }) {
   const store = createPaymentStore({ dataDir, encryptionSecret, now });
 
@@ -115,7 +116,7 @@ export function createPaymentService({
     if (!inserted.created) return { order: publicPaymentOrder(inserted.order), created: false, idempotent: true };
 
     if (input.provider === 'alipay') {
-      const request = buildAlipayPagePayRequest(order, config, { now: now() });
+      const request = buildAlipayPagePayRequest(order, config, { now: now(), getSiteName });
       const checkout = { type: 'alipay_page_form', action: request.action, method: request.method, fields: request.fields };
       const transitioned = store.updateOrder(order.id, (current) => ({
         ...transitionPayment(current, 'PENDING', { source: 'alipay.checkout' }, now()).order,

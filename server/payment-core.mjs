@@ -161,7 +161,7 @@ function normalizeProductEntitlement(entitlement, { planId, quoteId }) {
   if (type !== 'membership' || !/^[A-Za-z0-9_.:-]{2,40}$/.test(tier)) {
     throw new PaymentError(500, 'PAYMENT_PRODUCT_ENTITLEMENT_INVALID', '服务端套餐目录的会员权益类型无效');
   }
-  if (!['month', 'year'].includes(billingPeriod)) {
+  if (!['month', 'quarter', 'half_year', 'year'].includes(billingPeriod)) {
     throw new PaymentError(500, 'PAYMENT_PRODUCT_ENTITLEMENT_INVALID', '服务端套餐目录的计费周期无效');
   }
   if (!Number.isInteger(durationDays) || durationDays < 1 || durationDays > 3_660) {
@@ -221,7 +221,7 @@ export function validatePaymentConfig(provider, config) {
     if (!/^\d{16,32}$/.test(String(config.sellerId || ''))) errors.push('支付宝卖家 ID 格式不正确');
     validateHttpsUrl(config.notifyUrl, '支付宝异步回调地址', errors);
     if (config.returnUrl) validateHttpsUrl(config.returnUrl, '支付宝同步返回地址', errors);
-    if (!['production', 'sandbox'].includes(config.environment || 'production')) errors.push('支付宝环境只能是 production 或 sandbox');
+    if ((config.environment || 'production') !== 'production') errors.push('支付宝支付只能使用生产环境');
     validatePrivateKey(config.appPrivateKeyPem, '支付宝应用私钥', errors, true);
     validatePublicKey(config.alipayPublicKeyPem, '支付宝公钥', errors, true);
   }
@@ -377,9 +377,11 @@ export function canonicalizeAlipayParams(input) {
 }
 
 export function buildAlipayPagePayRequest(order, config, options = {}) {
-  const gateway = config.environment === 'sandbox'
-    ? 'https://openapi-sandbox.dl.alipaydev.com/gateway.do'
-    : 'https://openapi.alipay.com/gateway.do';
+  const gateway = 'https://openapi.alipay.com/gateway.do';
+  const siteName = cleanText(
+    typeof options.getSiteName === 'function' ? options.getSiteName() : options.siteName,
+    60,
+  ) || '在线教育平台';
   const fields = {
     app_id: config.appId,
     method: 'alipay.trade.page.pay',
@@ -395,7 +397,7 @@ export function buildAlipayPagePayRequest(order, config, options = {}) {
       product_code: 'FAST_INSTANT_TRADE_PAY',
       total_amount: centsToAlipayAmount(order.amountCents),
       subject: order.subject.slice(0, 120),
-      body: `教师帮会员订单 ${order.planId}`.slice(0, 128),
+      body: `${siteName}会员订单 ${order.planId}`.slice(0, 128),
       passback_params: encodeURIComponent(Buffer.from(JSON.stringify({ orderId: order.id })).toString('base64url')),
     }),
   };
