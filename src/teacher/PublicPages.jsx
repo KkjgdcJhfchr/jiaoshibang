@@ -407,7 +407,7 @@ export function AuthPage({ mode = 'login' }) {
             ) : <div className="login-tools"><span>登录状态将在此设备保留 7 天</span><Link to="/forgot-password">忘记密码？</Link></div>}
             {status ? <p className="form-status" role="status">{status}</p> : null}
             {error ? <p className="form-error" role="alert">{error}</p> : null}
-            <Button size="lg" className="auth-submit" type="submit" icon={loading ? LoaderCircle : undefined} disabled={loading || (register && !siteConfigReady) || siteConfig.registrationOpen === false || (codeMode && !VERIFICATION_AUTH_AVAILABLE)}>{loading ? (register ? '正在注册…' : '正在登录…') : register && !siteConfigReady ? '正在读取注册规则…' : siteConfig.registrationOpen === false ? '当前暂停注册' : codeMode && !VERIFICATION_AUTH_AVAILABLE ? '请改用密码方式' : register ? '注册并免费开始' : '登录'}</Button>
+            <Button size="lg" className="auth-submit" type="submit" icon={loading ? LoaderCircle : undefined} disabled={loading || (register && !siteConfigReady) || (register && siteConfig.registrationOpen === false) || (codeMode && !VERIFICATION_AUTH_AVAILABLE)}>{loading ? (register ? '正在注册…' : '正在登录…') : register && !siteConfigReady ? '正在读取注册规则…' : register && siteConfig.registrationOpen === false ? '当前暂停注册' : codeMode && !VERIFICATION_AUTH_AVAILABLE ? '请改用密码方式' : register ? '注册并免费开始' : '登录'}</Button>
           </form>
           <div className="auth-switch">{register ? '已有账号？' : '还没有账号？'} <Link to={register ? '/login' : '/register'}>{register ? '直接登录' : '免费注册'}</Link></div>
           {!register ? <div className="auth-privacy-note"><PrivacyPolicyLink>隐私规则</PrivacyPolicyLink></div> : null}

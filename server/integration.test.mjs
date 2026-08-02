@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createAdminMfaCoordinator, generateTotpCode } from './admin-mfa.mjs';
+import { hashPassword, verifyPassword } from './security.mjs';
 
 const root = new URL('..', import.meta.url);
 const dataDir = mkdtempSync(join(tmpdir(), 'teacher-helper-integration-'));
@@ -254,6 +255,26 @@ try {
     input: `${adminPassword}\n`,
   });
 
+  const legacyAdminShadowPassword = 'legacy-shadow-password';
+  const legacyAdminShadowCreatedAt = new Date().toISOString();
+  writeFileSync(join(dataDir, 'users.json'), `${JSON.stringify({
+    version: 1,
+    users: [{
+      id: 'usr_legacy_admin_teacher',
+      account: 'admin',
+      accountKey: 'admin',
+      displayName: '平台管理员',
+      subject: '',
+      password: hashPassword(legacyAdminShadowPassword),
+      credits: 3,
+      generationCount: 0,
+      verifiedAt: legacyAdminShadowCreatedAt,
+      verifiedChannel: 'admin_credentials',
+      createdAt: legacyAdminShadowCreatedAt,
+      updatedAt: legacyAdminShadowCreatedAt,
+    }],
+  }, null, 2)}\n`, 'utf8');
+
   appProcess = spawn(process.execPath, ['server/index.mjs'], {
     cwd: root,
     env: commonEnv,
@@ -271,6 +292,17 @@ try {
   assert.ok(initialSiteConfig.body.data.privacyPolicy.content.length >= 100);
   assert.match(initialSiteConfig.body.data.privacyPolicy.updatedAt, /^\d{4}-\d{2}-\d{2}T/);
   let currentPrivacyPolicyUpdatedAt = initialSiteConfig.body.data.privacyPolicy.updatedAt;
+  const reservedAdminRegistration = await client.json('/api/auth/register', {
+    method: 'POST',
+    body: {
+      identifier: 'admin',
+      password: 'ReservedAdmin1',
+      privacyAccepted: true,
+      privacyPolicyUpdatedAt: currentPrivacyPolicyUpdatedAt,
+    },
+  });
+  assert.equal(reservedAdminRegistration.status, 409, '管理员标识必须在教师端注册系统中预留');
+  assert.equal(reservedAdminRegistration.body.error.code, 'ACCOUNT_EXISTS');
   const publicPaymentPlans = await client.json('/api/payments/plans');
   assert.equal(publicPaymentPlans.status, 200);
   assert.equal(publicPaymentPlans.body.data.plans.length, 9);
@@ -404,7 +436,15 @@ try {
     body: { username: 'admin', password: adminPassword },
   });
   assert.equal(adminLogin.status, 200);
+  assert.equal(adminLogin.body.data.admin.username, 'admin');
   const adminCookie = cookiePair(adminLogin.headers.get('set-cookie'));
+
+  const staleAdminTeacherLogin = await client.json('/api/auth/login', {
+    method: 'POST',
+    body: { identifier: 'admin', password: legacyAdminShadowPassword },
+  });
+  assert.equal(staleAdminTeacherLogin.status, 401, '前台不得信任陈旧的管理员教师镜像密码');
+  assert.equal(staleAdminTeacherLogin.body.error.code, 'INVALID_CREDENTIALS');
 
   const initialManagedContent = await client.json('/api/admin/content', { cookie: adminCookie });
   assert.equal(initialManagedContent.status, 200);
@@ -489,7 +529,14 @@ try {
   });
   assert.equal(adminTeacherLogin.status, 200);
   assert.equal(adminTeacherLogin.body.data.user.account, 'admin');
+  assert.equal(adminTeacherLogin.body.data.user.displayName, 'admin');
   assert.equal(Object.hasOwn(adminTeacherLogin.body.data.user, 'role'), false);
+  const synchronizedAdminTeacher = JSON.parse(readFileSync(join(dataDir, 'users.json'), 'utf8')).users
+    .find((user) => user.accountKey === 'admin');
+  assert.equal(synchronizedAdminTeacher.role, 'admin_teacher');
+  assert.equal(synchronizedAdminTeacher.verifiedChannel, 'admin_credentials');
+  assert.equal(verifyPassword(adminPassword, synchronizedAdminTeacher.password), true);
+  assert.equal(verifyPassword(legacyAdminShadowPassword, synchronizedAdminTeacher.password), false);
   const adminTeacherCookie = cookiePair(adminTeacherLogin.headers.get('set-cookie'));
   assert.match(adminTeacherLogin.headers.get('set-cookie'), /^teacher_helper_session=/);
   const adminTeacherSession = await client.json('/api/auth/session', { cookie: adminTeacherCookie });
@@ -1202,6 +1249,95 @@ try {
   assert.equal(providerDisabled.status, 200);
   assert.equal(providerDisabled.body.data.provider.enabled, false);
 
+  const credentialsBeforeChange = await client.json('/api/admin/system/credentials', { cookie: adminCookie });
+  assert.equal(credentialsBeforeChange.status, 200);
+  assert.deepEqual(credentialsBeforeChange.body.data.credentials.username, 'admin');
+  assert.equal(Object.hasOwn(credentialsBeforeChange.body.data.credentials, 'password'), false);
+
+  const credentialTotpEnrollment = await client.json('/api/admin/security/mfa/totp/enroll', {
+    method: 'POST',
+    cookie: adminCookie,
+    body: { currentPassword: adminPassword },
+  });
+  assert.equal(credentialTotpEnrollment.status, 201);
+  const credentialTotp = credentialTotpEnrollment.body.data.enrollment;
+  const credentialTotpConfirmed = await client.json('/api/admin/security/mfa/totp/confirm', {
+    method: 'POST',
+    cookie: adminCookie,
+    body: {
+      enrollmentId: credentialTotp.enrollmentId,
+      code: generateTotpCode(credentialTotp.secret),
+    },
+  });
+  assert.equal(credentialTotpConfirmed.status, 200);
+
+  const rejectedCredentialChange = await client.json('/api/admin/system/credentials', {
+    method: 'PUT',
+    cookie: adminCookie,
+    body: { currentPassword: 'wrong-current-password', username: 'admin-renamed' },
+  });
+  assert.equal(rejectedCredentialChange.status, 401);
+  assert.equal(rejectedCredentialChange.body.error.code, 'CURRENT_PASSWORD_INVALID');
+
+  const renamedAdminPassword = 'ChangedAdmin9!Secure';
+  const credentialChange = await client.json('/api/admin/system/credentials', {
+    method: 'PUT',
+    cookie: adminCookie,
+    body: {
+      currentPassword: adminPassword,
+      username: 'admin-renamed',
+      newPassword: renamedAdminPassword,
+    },
+  });
+  assert.equal(credentialChange.status, 200);
+  assert.equal(credentialChange.body.data.credentials.username, 'admin-renamed');
+  assert.equal(credentialChange.body.data.credentialsChanged, true);
+  assert.equal(credentialChange.body.data.sessionInvalidated, true);
+  assert.equal(credentialChange.body.data.recoveryCodes.length, 10);
+  assert.match(credentialChange.headers.get('set-cookie'), /Max-Age=0/);
+
+  const invalidatedAdminSession = await client.json('/api/admin/system/credentials', { cookie: adminCookie });
+  assert.equal(invalidatedAdminSession.status, 401);
+  const invalidatedTeacherSession = await client.json('/api/auth/session', { cookie: adminTeacherCookie });
+  assert.equal(invalidatedTeacherSession.status, 401);
+  const oldAdminFrontendLogin = await client.json('/api/auth/login', {
+    method: 'POST',
+    body: { identifier: 'admin', password: adminPassword },
+  });
+  assert.equal(oldAdminFrontendLogin.status, 401);
+  const oldAdminBackendLogin = await client.json('/api/admin/login', {
+    method: 'POST',
+    body: { username: 'admin', password: adminPassword },
+  });
+  assert.equal(oldAdminBackendLogin.status, 401);
+
+  const renamedAdminFrontendLogin = await client.json('/api/auth/login', {
+    method: 'POST',
+    body: { identifier: 'admin-renamed', password: renamedAdminPassword },
+  });
+  assert.equal(renamedAdminFrontendLogin.status, 200);
+  assert.equal(renamedAdminFrontendLogin.body.data.user.account, 'admin-renamed');
+  assert.equal(renamedAdminFrontendLogin.body.data.user.displayName, 'admin-renamed');
+
+  const renamedAdminPasswordStage = await client.json('/api/admin/login', {
+    method: 'POST',
+    body: { username: 'admin-renamed', password: renamedAdminPassword },
+  });
+  assert.equal(renamedAdminPasswordStage.status, 202);
+  assert.equal(renamedAdminPasswordStage.body.data.challenge.channel, 'totp');
+  const renamedAdminLogin = await client.json('/api/admin/mfa/verify', {
+    method: 'POST',
+    body: {
+      challengeId: renamedAdminPasswordStage.body.data.challenge.id,
+      code: credentialChange.body.data.recoveryCodes[0],
+    },
+  });
+  assert.equal(renamedAdminLogin.status, 200, '用户名变更后重新生成的恢复码应可完成后台登录');
+  const renamedAdminCookie = cookiePair(renamedAdminLogin.headers.get('set-cookie'));
+  const credentialsAfterChange = await client.json('/api/admin/system/credentials', { cookie: renamedAdminCookie });
+  assert.equal(credentialsAfterChange.status, 200);
+  assert.equal(credentialsAfterChange.body.data.credentials.username, 'admin-renamed');
+
   const logout = await client.json('/api/auth/logout', { method: 'POST', cookie: userCookie, body: {} });
   assert.equal(logout.status, 200);
   assert.match(logout.headers.get('set-cookie'), /Max-Age=0/);
@@ -1228,6 +1364,7 @@ try {
       secureAdminUserManagement: true,
       systemSettingsRegistrationAndPrivacyVersioning: true,
       verificationEmailSubject: true,
+      explicitAdminCredentialManagement: true,
     },
   }));
 } finally {

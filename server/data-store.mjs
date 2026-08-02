@@ -111,17 +111,29 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
     const existing = findUserByAccountKey(accountKey);
     const timestamp = new Date().toISOString();
     if (existing) {
-      if (existing.role !== 'admin_teacher') return null;
-      existing.account = account;
-      if (!existing.displayName || existing.displayName === '平台管理员' || existing.displayName === '管理员') {
+      // This record is only synchronized after the caller has verified the
+      // current administrator credentials. Never take over an unrelated
+      // teacher account that happens to use the same identifier; only an
+      // existing bridge (or its explicit legacy marker) may be synchronized.
+      if (existing.role !== 'admin_teacher' && existing.verifiedChannel !== 'admin_credentials') return null;
+      const previous = structuredClone(existing);
+      const credentialsChanged = existing.accountKey !== accountKey || !samePasswordRecord(existing.password, password);
+      try {
+        existing.account = account;
+        existing.accountKey = accountKey;
         existing.displayName = account;
+        existing.password = password;
+        existing.role = 'admin_teacher';
+        existing.verifiedAt = existing.verifiedAt || timestamp;
+        existing.verifiedChannel = existing.verifiedChannel || 'admin_credentials';
+        if (credentialsChanged) existing.passwordChangedAt = timestamp;
+        existing.updatedAt = timestamp;
+        writeState(usersFile, usersState);
+        return existing;
+      } catch (error) {
+        replaceObject(existing, previous);
+        throw error;
       }
-      existing.password = password;
-      existing.verifiedAt = existing.verifiedAt || timestamp;
-      existing.verifiedChannel = existing.verifiedChannel || 'admin_credentials';
-      existing.updatedAt = timestamp;
-      writeState(usersFile, usersState);
-      return existing;
     }
     const user = {
       id: `usr_${randomUUID()}`,
@@ -143,8 +155,52 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
       updatedAt: timestamp,
     };
     usersState.users.push(user);
-    writeState(usersFile, usersState);
-    return user;
+    try {
+      writeState(usersFile, usersState);
+      return user;
+    } catch (error) {
+      const index = usersState.users.indexOf(user);
+      if (index >= 0) usersState.users.splice(index, 1);
+      throw error;
+    }
+  }
+
+  function canMigrateAdminTeacherUser({ previousAccountKey, accountKey }) {
+    const previous = findUserByAccountKey(previousAccountKey);
+    const bridge = isAdminTeacherBridge(previous) ? previous : null;
+    const target = findUserByAccountKey(accountKey);
+    if (!target) return true;
+    if (bridge) return target === bridge;
+    return isAdminTeacherBridge(target);
+  }
+
+  function migrateAdminTeacherUser({ previousAccountKey, account, accountKey, password, credits }) {
+    if (!canMigrateAdminTeacherUser({ previousAccountKey, accountKey })) return null;
+    const previous = findUserByAccountKey(previousAccountKey);
+    const target = findUserByAccountKey(accountKey);
+    const existing = isAdminTeacherBridge(previous)
+      ? previous
+      : isAdminTeacherBridge(target) ? target : null;
+    if (!existing) return ensureAdminTeacherUser({ account, accountKey, password, credits });
+
+    const timestamp = new Date().toISOString();
+    const previousState = structuredClone(existing);
+    try {
+      existing.account = account;
+      existing.accountKey = accountKey;
+      existing.displayName = account;
+      existing.password = password;
+      existing.role = 'admin_teacher';
+      existing.verifiedAt = existing.verifiedAt || timestamp;
+      existing.verifiedChannel = 'admin_credentials';
+      existing.passwordChangedAt = timestamp;
+      existing.updatedAt = timestamp;
+      writeState(usersFile, usersState);
+      return existing;
+    } catch (error) {
+      replaceObject(existing, previousState);
+      throw error;
+    }
   }
 
   function updateUserPassword(userId, password) {
@@ -439,6 +495,7 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
   return {
     addChannel,
     addTrainingCandidate,
+    canMigrateAdminTeacherUser,
     commitGeneration,
     findChannel,
     findUserByAccountKey,
@@ -450,6 +507,7 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
     listUsersForAdmin,
     listTrainingCandidates,
     markUserVerified,
+    migrateAdminTeacherUser,
     readAdmin,
     readSmtpConfig,
     recordUserLogin,
@@ -498,6 +556,26 @@ function toAdminUserListItem(user) {
 function nonNegativeNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.max(0, number) : 0;
+}
+
+function isAdminTeacherBridge(user) {
+  return Boolean(user && (user.role === 'admin_teacher' || user.verifiedChannel === 'admin_credentials'));
+}
+
+function samePasswordRecord(left, right) {
+  return Boolean(
+    left
+    && right
+    && left.algorithm === right.algorithm
+    && left.salt === right.salt
+    && left.hash === right.hash
+    && Number(left.keyLength) === Number(right.keyLength),
+  );
+}
+
+function replaceObject(target, source) {
+  for (const key of Object.keys(target)) delete target[key];
+  Object.assign(target, source);
 }
 
 function activityTimestamp(now) {

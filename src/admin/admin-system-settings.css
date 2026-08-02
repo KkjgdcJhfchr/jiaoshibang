@@ -4,12 +4,15 @@
 .admin-system-error span { flex: 1; }
 .admin-system-error button { display: grid; place-items: center; border: 0; background: transparent; color: inherit; cursor: pointer; }
 .admin-system-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(320px, .8fr); gap: 16px; align-items: start; }
+.admin-system-security-error { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid #efc8bd; border-radius: 10px; background: #fff7f4; color: #9c3e28; font-size: 13px; }
+.admin-system-security-error span { flex: 1; }
+.admin-system-security-error button { display: grid; place-items: center; border: 0; background: transparent; color: inherit; cursor: pointer; }
 .admin-system-card, .admin-system-health-card { padding: 22px 24px; }
 .admin-system-card > header, .admin-system-health-card > header { display: grid; grid-template-columns: 42px 1fr; gap: 12px; align-items: center; margin-bottom: 18px; }
 .admin-system-card > header > span, .admin-system-health-card > header > span { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 11px; background: #eaf4ef; color: #177a55; }
 .admin-system-card h2, .admin-system-health-card h2 { margin: 0 0 4px; color: #26362e; font-size: 16px; }
 .admin-system-card header p, .admin-system-health-card header p { margin: 0; color: #7c8781; font-size: 11px; line-height: 1.55; }
-.admin-system-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.admin-system-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; min-width: 0; margin: 0; padding: 0; border: 0; }
 .admin-system-fields label { display: grid; gap: 6px; }
 .admin-system-fields label.wide { grid-column: 1 / -1; }
 .admin-system-fields label > span { color: #52605a; font-size: 11px; font-weight: 650; }
@@ -22,6 +25,15 @@
 .admin-system-switch-row:last-child { padding-bottom: 0; }
 .admin-system-switch-row b { color: #34423b; font-size: 13px; }
 .admin-system-switch-row p { margin: 5px 0 0; max-width: 540px; color: #7a8680; font-size: 11px; line-height: 1.6; }
+.admin-account-credentials-card { min-width: 0; }
+.admin-account-credentials-form > footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 16px; padding-top: 16px; border-top: 1px solid #edf0ee; }
+.admin-account-credentials-form > footer p { display: flex; align-items: flex-start; gap: 7px; margin: 0; max-width: 480px; color: #76827c; font-size: 10.5px; line-height: 1.55; }
+.admin-account-credentials-form > footer p svg { flex: none; margin-top: 1px; color: #33765a; }
+.admin-credential-rules { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px 12px; margin: 13px 0 0; padding: 12px; border-radius: 9px; background: #f7f9f8; list-style: none; color: #7a8580; font-size: 10.5px; }
+.admin-credential-rules li { display: flex; align-items: center; gap: 7px; }
+.admin-credential-rules li > span { width: 13px; height: 13px; border: 1px solid #aeb8b3; border-radius: 50%; }
+.admin-credential-rules li.is-valid { color: #177a55; }
+.admin-system-mfa-overview, .admin-system-mfa-methods { grid-column: 1 / -1; margin-bottom: 0; }
 .admin-system-policy-card { grid-row: span 2; }
 .admin-system-policy-note { margin: 14px 0 0; padding: 11px 12px; border-radius: 8px; background: #fff8eb; color: #826128; font-size: 10px; line-height: 1.65; }
 .admin-system-health-status { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; padding: 14px; border-radius: 10px; background: #f4f6f5; color: #77827c; }
@@ -34,4 +46,4 @@
 .admin-system-health-card dt { color: #7e8983; }
 .admin-system-health-card dd { margin: 0; color: #34433b; text-align: right; overflow-wrap: anywhere; }
 @media (max-width: 1100px) { .admin-system-grid { grid-template-columns: 1fr; } .admin-system-policy-card { grid-row: auto; } }
-@media (max-width: 680px) { .admin-system-heading-actions { width: 100%; justify-content: stretch; } .admin-system-heading-actions .admin-button { flex: 1; } .admin-system-card, .admin-system-health-card { padding: 18px; } .admin-system-fields { grid-template-columns: 1fr; } .admin-system-fields label.wide { grid-column: auto; } }
+@media (max-width: 680px) { .admin-system-heading-actions { width: 100%; justify-content: stretch; } .admin-system-heading-actions .admin-button { flex: 1; } .admin-system-card, .admin-system-health-card { padding: 18px; } .admin-system-fields { grid-template-columns: 1fr; } .admin-system-fields label.wide { grid-column: auto; } .admin-account-credentials-form > footer { align-items: stretch; flex-direction: column; } .admin-account-credentials-form > footer .admin-button { justify-content: center; } .admin-credential-rules { grid-template-columns: 1fr; } }

@@ -408,6 +408,20 @@ async function handleRequest(request, response) {
       return;
     }
 
+    if (request.method === 'GET' && url.pathname === '/api/admin/system/credentials') {
+      const session = requireAdminSession(request);
+      sendJson(response, 200, {
+        ok: true,
+        data: { credentials: publicAdminCredentials(session.admin) },
+      });
+      return;
+    }
+
+    if (request.method === 'PUT' && url.pathname === '/api/admin/system/credentials') {
+      await handleAdminCredentialsUpdate(request, response);
+      return;
+    }
+
     if (request.method === 'GET' && url.pathname === '/api/admin/system/settings') {
       requireAdminSession(request);
       sendJson(response, 200, { ok: true, data: { settings: siteSettings.getAdminSettings() } });
@@ -761,6 +775,10 @@ async function handleUserRegister(request, response) {
     throw new HttpError(409, 'PRIVACY_POLICY_CHANGED', '数据与隐私说明已更新，请刷新页面并重新阅读后再注册');
   }
   const accountKey = normalizeAccount(account);
+  const admin = store.readAdmin();
+  if (admin && normalizeAccount(admin.username) === accountKey) {
+    throw new HttpError(409, 'ACCOUNT_EXISTS', '该账号已注册，请直接登录');
+  }
   const verificationCode = cleanText(body.verificationCode ?? body.code, 20);
   const verificationId = cleanText(body.verificationId, 200);
   let verifiedAt = null;
@@ -805,12 +823,14 @@ async function handleUserVerificationCodeRequest(request, response) {
   const target = normalizeVerificationTarget(identifier);
   let shouldDeliver = true;
   const existing = store.findUserByAccountKey(normalizeAccount(identifier));
+  const admin = store.readAdmin();
+  const reservedByAdmin = Boolean(admin && normalizeAccount(admin.username) === normalizeAccount(identifier));
 
   if (purpose === 'register') {
     if (!siteSettings.getAdminSettings().registrationOpen) {
       throw new HttpError(403, 'REGISTRATION_CLOSED', '当前暂未开放新账号注册');
     }
-    shouldDeliver = !existing;
+    shouldDeliver = !existing && !reservedByAdmin;
   }
   else if (purpose === 'login' || purpose === 'reset_password') shouldDeliver = Boolean(existing);
   else if (purpose === 'checkout') {
@@ -929,14 +949,17 @@ async function handleUserLogin(request, response) {
   const body = await readJsonBody(request, 64 * 1024);
   const account = cleanText(body.identifier ?? body.account ?? body.email ?? body.phone, 200);
   const password = typeof body.password === 'string' ? body.password : '';
-  let user = account ? store.findUserByAccountKey(normalizeAccount(account)) : null;
-  let passwordValid = user ? verifyPassword(password, user.password) : false;
-  if (!passwordValid && account) {
-    const admin = store.readAdmin();
-    const adminPasswordValid = admin
-      && account === admin.username
-      && verifyPassword(password, admin.password);
-    if (adminPasswordValid) {
+  const accountKey = account ? normalizeAccount(account) : '';
+  const admin = account ? store.readAdmin() : null;
+  const isAdminAccount = Boolean(admin && accountKey === normalizeAccount(admin.username));
+  let user = null;
+  let passwordValid = false;
+
+  if (isAdminAccount) {
+    // Never authenticate an administrator through a possibly stale
+    // teacher-side shadow password. The current admin record is authoritative.
+    passwordValid = account === admin.username && verifyPassword(password, admin.password);
+    if (passwordValid) {
       user = store.ensureAdminTeacherUser({
         account: admin.username,
         accountKey: normalizeAccount(admin.username),
@@ -945,6 +968,9 @@ async function handleUserLogin(request, response) {
       });
       passwordValid = Boolean(user);
     }
+  } else {
+    user = accountKey ? store.findUserByAccountKey(accountKey) : null;
+    passwordValid = user ? verifyPassword(password, user.password) : false;
   }
   if (!user) verifyPassword(password, DUMMY_PASSWORD);
   if (!user || !passwordValid) throw new HttpError(401, 'INVALID_CREDENTIALS', '账号或密码错误');
@@ -959,11 +985,16 @@ function handleUserLogout(request, response) {
 
 function sendUserSession(response, request, user, status = 200, { recordLogin = false } = {}) {
   if (recordLogin) user = store.recordUserLogin(user.id) || user;
+  const passwordChangedAt = Date.parse(user.passwordChangedAt || '');
+  const sessionNow = Number.isFinite(passwordChangedAt)
+    ? Math.max(Date.now(), passwordChangedAt + 1)
+    : Date.now();
   const session = createSessionToken({
     subject: user.id,
     role: 'user',
     secret: SESSION_SECRET,
     ttlSeconds: USER_SESSION_TTL_SECONDS,
+    now: sessionNow,
   });
   sendJson(response, status, {
     ok: true,
@@ -1488,6 +1519,127 @@ function adminTotpSecretContext(username) {
   return `admin-mfa:totp:${username}`;
 }
 
+function publicAdminCredentials(admin) {
+  return {
+    username: admin.username,
+    mfaEnabled: isAdminMfaEnabled(admin),
+    updatedAt: admin.updatedAt || null,
+  };
+}
+
+async function handleAdminCredentialsUpdate(request, response) {
+  const body = await readJsonBody(request, 32 * 1024);
+  const session = requireAdminSession(request);
+  requireCurrentAdminPassword(request, session.admin, body.currentPassword);
+
+  const username = cleanText(body.username ?? session.admin.username, 100);
+  const newPassword = typeof body.newPassword === 'string' ? body.newPassword : '';
+  assertValidAdminUsername(username);
+  if (newPassword) assertValidAdminPassword(username, newPassword);
+
+  const usernameChanged = username !== session.admin.username;
+  const passwordChanged = Boolean(newPassword);
+  if (!usernameChanged && !passwordChanged) {
+    sendJson(response, 200, {
+      ok: true,
+      data: {
+        credentials: publicAdminCredentials(session.admin),
+        credentialsChanged: false,
+        reauthenticationRequired: false,
+        sessionInvalidated: false,
+      },
+    });
+    return;
+  }
+
+  const previousAccountKey = normalizeAccount(session.admin.username);
+  const accountKey = normalizeAccount(username);
+  if (!store.canMigrateAdminTeacherUser({ previousAccountKey, accountKey })) {
+    throw new HttpError(409, 'ADMIN_USERNAME_IN_USE', '该管理员账号已被其他用户占用，请更换后重试');
+  }
+
+  const now = new Date().toISOString();
+  let recoveryCodes = [];
+  let nextMfa = session.admin.mfa ? structuredClone(session.admin.mfa) : undefined;
+  if (usernameChanged && nextMfa) {
+    if (nextMfa.methods?.totp?.enabled) {
+      const secret = openAdminTotpSecret(session.admin);
+      nextMfa.methods.totp.encryptedSecret = encryptSecret(
+        secret,
+        SESSION_SECRET,
+        adminTotpSecretContext(username),
+      );
+    }
+    if (Array.isArray(nextMfa.recoveryCodes) && nextMfa.recoveryCodes.length > 0) {
+      recoveryCodes = generateRecoveryCodes();
+      nextMfa.recoveryCodes = createRecoveryCodeRecords(recoveryCodes, {
+        pepper: adminRecoveryPepper,
+        username,
+      });
+    }
+    nextMfa.updatedAt = now;
+  }
+
+  const previousAdmin = structuredClone(session.admin);
+  const password = passwordChanged ? hashPassword(newPassword) : session.admin.password;
+  const updatedAdmin = store.updateAdmin((current) => {
+    if (current.username !== session.admin.username
+      || !verifyPassword(body.currentPassword, current.password)) {
+      throw new HttpError(409, 'ADMIN_CREDENTIALS_CHANGED', '管理员凭据已在其他会话中更新，请重新登录后再试');
+    }
+    return {
+      ...current,
+      username,
+      password,
+      ...(nextMfa ? { mfa: nextMfa } : {}),
+      credentialsChangedAt: now,
+      ...(usernameChanged ? { usernameChangedAt: now } : {}),
+      ...(passwordChanged ? { passwordChangedAt: now } : {}),
+      updatedAt: now,
+    };
+  });
+
+  try {
+    const teacherUser = store.migrateAdminTeacherUser({
+      previousAccountKey,
+      account: username,
+      accountKey,
+      password,
+      credits: membershipCatalog.getFreeProduct()?.credits ?? DEFAULT_FREE_CREDITS,
+    });
+    if (!teacherUser) {
+      throw new HttpError(409, 'ADMIN_USERNAME_IN_USE', '该管理员账号已被其他用户占用，请更换后重试');
+    }
+  } catch (error) {
+    try {
+      store.updateAdmin(() => previousAdmin);
+    } catch {
+      throw new HttpError(
+        500,
+        'ADMIN_CREDENTIAL_UPDATE_PARTIAL',
+        '管理员凭据写入未完整完成，请立即从服务器备份恢复管理员数据',
+      );
+    }
+    throw error;
+  }
+
+  adminMfaCoordinator.revokeForUsername(session.admin.username);
+  if (usernameChanged) adminMfaCoordinator.revokeForUsername(username);
+  sendJson(response, 200, {
+    ok: true,
+    data: {
+      credentials: publicAdminCredentials(updatedAdmin),
+      credentialsChanged: true,
+      reauthenticationRequired: true,
+      sessionInvalidated: true,
+      recoveryCodes,
+      recoveryCodesShownOnce: recoveryCodes.length > 0,
+    },
+  }, {
+    'Set-Cookie': clearSessionCookie(ADMIN_COOKIE, shouldUseSecureCookie(request)),
+  });
+}
+
 function adminMfaClientBinding(request) {
   const userAgent = String(request.headers['user-agent'] || '').slice(0, 512);
   return stablePrivateHash(`${getClientIp(request)}|${userAgent}`, SAFETY_ID_SALT);
@@ -1530,7 +1682,7 @@ function handleAdminSession(request, response) {
 
   const token = parseCookies(request.headers.cookie).get(ADMIN_COOKIE);
   const payload = verifySessionToken(token, { role: 'admin', secret: SESSION_SECRET });
-  if (!payload || payload.sub !== admin.username) {
+  if (!isCurrentAdminSession(admin, payload)) {
     sendJson(response, 200, {
       ok: true,
       data: { initialized: true, authenticated: false, admin: null },
@@ -1540,10 +1692,26 @@ function handleAdminSession(request, response) {
   sendAdminSession(response, request, admin);
 }
 
+function isCurrentAdminSession(admin, payload) {
+  if (!payload || payload.sub !== admin.username) return false;
+  const credentialsChangedAt = Date.parse(admin.credentialsChangedAt || '');
+  if (!Number.isFinite(credentialsChangedAt)) return true;
+  const sessionStartedAt = Number.isInteger(payload.sat) ? payload.sat : payload.iat * 1000;
+  return sessionStartedAt > credentialsChangedAt;
+}
+
 function assertValidAdminCredentials(username, password) {
+  assertValidAdminUsername(username);
+  assertValidAdminPassword(username, password);
+}
+
+function assertValidAdminUsername(username) {
   if (!username || !/^[\p{L}\p{N}_.@-]{3,100}$/u.test(username)) {
     throw new HttpError(400, 'INVALID_ADMIN_USERNAME', '管理员账号需为 3-100 个字母、数字或 _ . @ -');
   }
+}
+
+function assertValidAdminPassword(username, password) {
   if (password.length < 12 || password.length > 128) {
     throw new HttpError(400, 'WEAK_ADMIN_PASSWORD', '管理员密码需为 12-128 个字符');
   }
@@ -1585,11 +1753,16 @@ function handleAdminLogout(request, response) {
 }
 
 function sendAdminSession(response, request, admin, status = 200) {
+  const credentialsChangedAt = Date.parse(admin.credentialsChangedAt || '');
+  const sessionNow = Number.isFinite(credentialsChangedAt)
+    ? Math.max(Date.now(), credentialsChangedAt + 1)
+    : Date.now();
   const session = createSessionToken({
     subject: admin.username,
     role: 'admin',
     secret: SESSION_SECRET,
     ttlSeconds: ADMIN_SESSION_TTL_SECONDS,
+    now: sessionNow,
   });
   sendJson(response, status, {
     ok: true,
@@ -1639,7 +1812,7 @@ function requireAdminSession(request) {
   if (!admin) throw new HttpError(503, 'ADMIN_NOT_INITIALIZED', '管理员尚未初始化，请先运行安装或管理员初始化命令');
   const token = parseCookies(request.headers.cookie).get(ADMIN_COOKIE);
   const payload = verifySessionToken(token, { role: 'admin', secret: SESSION_SECRET });
-  if (!payload || payload.sub !== admin.username) {
+  if (!isCurrentAdminSession(admin, payload)) {
     throw new HttpError(401, 'ADMIN_AUTH_REQUIRED', '请先登录管理员账号');
   }
   return { payload, admin };

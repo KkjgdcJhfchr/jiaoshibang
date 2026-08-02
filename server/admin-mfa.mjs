@@ -171,6 +171,17 @@ export function createAdminMfaCoordinator(options = {}) {
     challenge.payload = {};
   }
 
+  function revokeForUsername(username) {
+    let revoked = 0;
+    for (const challenge of challenges.values()) {
+      if (challenge.username !== username || challenge.usedAt) continue;
+      challenge.usedAt = now();
+      challenge.payload = {};
+      revoked += 1;
+    }
+    return revoked;
+  }
+
   function reject(challengeId) {
     const challenge = inspect(challengeId);
     fail(challenge.id);
@@ -214,6 +225,7 @@ export function createAdminMfaCoordinator(options = {}) {
     issueTotpLogin,
     reject,
     revoke,
+    revokeForUsername,
     totpEnrollmentSecret,
     verifyEmailCode,
   };

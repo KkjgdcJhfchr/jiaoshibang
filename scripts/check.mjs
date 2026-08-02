@@ -82,4 +82,13 @@ if (!installer.includes('--reset-admin') || !installer.includes("existsSync('/ap
   throw new Error('重复部署必须默认保留已有管理员，仅允许显式重置');
 }
 
+const publicPages = fs.readFileSync(path.resolve('src/teacher/PublicPages.jsx'), 'utf8');
+const authSubmitLine = publicPages.split(/\r?\n/).find((line) => line.includes('className="auth-submit"') && line.includes('siteConfig.registrationOpen'));
+if (!authSubmitLine?.includes('(register && siteConfig.registrationOpen === false)')) {
+  throw new Error('关闭注册只能禁用注册页提交，不得影响已有用户或管理员登录');
+}
+if (authSubmitLine.includes('|| siteConfig.registrationOpen === false ||') || authSubmitLine.includes(': siteConfig.registrationOpen === false ?')) {
+  throw new Error('登录按钮不得直接受 registrationOpen 开关控制');
+}
+
 console.log(`项目结构检查通过：${required.length} 个关键文件存在，JSON Schema 可解析。`);

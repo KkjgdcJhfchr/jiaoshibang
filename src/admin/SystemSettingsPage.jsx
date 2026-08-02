@@ -13,7 +13,9 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api.js';
 import { useSiteConfig } from '../lib/site-config.jsx';
+import { AdminAccountSecurity } from './AdminAccountSecurity.jsx';
 import './admin-system-settings.css';
+import './admin-security.css';
 
 const EMPTY_SETTINGS = {
   siteName: '',
@@ -56,8 +58,7 @@ export function SystemSettingsPage({ onNotice = () => {} }) {
     setDirty(true);
   }
 
-  async function save(event) {
-    event.preventDefault();
+  async function save() {
     if (!dirty || saving) return;
     setSaving(true);
     setError('');
@@ -97,12 +98,12 @@ export function SystemSettingsPage({ onNotice = () => {} }) {
   }
 
   return (
-    <form className="admin-system-page" onSubmit={save} aria-busy={loading || saving}>
+    <div className="admin-system-page" aria-busy={loading || saving}>
       <div className="admin-page-heading admin-system-heading">
-        <div><h1>系统设置</h1><p>维护站点资料、注册规则以及用户可查看的数据与隐私说明</p></div>
+        <div><h1>系统设置</h1><p>维护站点资料、管理员账号与登录保护、注册规则以及数据与隐私说明</p></div>
         <div className="admin-system-heading-actions">
           <button className="admin-button admin-button-secondary" type="button" onClick={reload} disabled={loading || saving}><RefreshCw size={17} className={loading ? 'spin' : ''} />重新读取</button>
-          <button className="admin-button admin-button-primary" type="submit" disabled={loading || saving || !dirty}>{saving ? <LoaderCircle className="spin" size={17} /> : <Save size={17} />}保存设置</button>
+          <button className="admin-button admin-button-primary" type="button" onClick={save} disabled={loading || saving || !dirty}>{saving ? <LoaderCircle className="spin" size={17} /> : <Save size={17} />}保存设置</button>
         </div>
       </div>
 
@@ -117,6 +118,8 @@ export function SystemSettingsPage({ onNotice = () => {} }) {
             <label><span>当前主域名</span><input value={window.location.hostname} readOnly aria-readonly="true" /></label>
           </div>
         </section>
+
+        <AdminAccountSecurity onNotice={onNotice} />
 
         <section className="admin-panel admin-system-card">
           <header><span><ShieldCheck size={20} /></span><div><h2>账号注册规则</h2><p>开关保存后由注册接口直接执行，不会只改变页面显示。</p></div></header>
@@ -155,7 +158,7 @@ export function SystemSettingsPage({ onNotice = () => {} }) {
           <button className="admin-button admin-button-secondary admin-button-full" type="button" onClick={checkHealth} disabled={checkingHealth}>{checkingHealth ? <LoaderCircle className="spin" size={17} /> : <Activity size={17} />}读取运行状态</button>
         </aside>
       </div>
-    </form>
+    </div>
   );
 }
 
