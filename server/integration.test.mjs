@@ -105,19 +105,24 @@ const mockSmtp = createNetServer((socket) => {
 
 const mockUpstream = createServer(async (request, response) => {
   if (request.method === 'GET' && request.url?.endsWith('/models')) {
-    upstreamRequests.push({ authorization: request.headers.authorization, model: 'models-list', safetyIdentifier: null });
+    upstreamRequests.push({ authorization: request.headers.authorization, model: 'models-list', safetyIdentifier: null, endpoint: 'models' });
     response.writeHead(200, { 'Content-Type': 'application/json' });
-    response.end(JSON.stringify({ data: [{ id: 'environment-test-model' }, { id: 'stored-provider-model' }] }));
+    response.end(JSON.stringify({ data: [{ id: 'environment-test-model' }, { id: 'deepseek-v4-pro' }] }));
     return;
   }
   const chunks = [];
   for await (const chunk of request) chunks.push(chunk);
   const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-  const inputText = body.input?.[0]?.content?.find((item) => item.type === 'input_text')?.text || '';
+  const isChatCompletions = request.url?.endsWith('/chat/completions');
+  const inputText = isChatCompletions
+    ? body.messages?.filter((item) => item.role === 'user').at(-1)?.content || ''
+    : body.input?.[0]?.content?.find((item) => item.type === 'input_text')?.text || body.input || '';
   upstreamRequests.push({
     authorization: request.headers.authorization,
     model: body.model,
     safetyIdentifier: body.safety_identifier,
+    endpoint: isChatCompletions ? 'chat/completions' : 'responses',
+    thinking: body.thinking?.type || null,
   });
 
   if (inputText.includes('FORCE_UPSTREAM_ERROR')) {
@@ -133,6 +138,15 @@ const mockUpstream = createServer(async (request, response) => {
   lessonPlan.timeline[0].durationMinutes = requestedDuration;
   lessonPlan.generationMeta.modelRouteId = body.model;
   response.writeHead(200, { 'Content-Type': 'application/json' });
+  if (isChatCompletions) {
+    response.end(JSON.stringify({
+      id: `chatcmpl_${upstreamRequests.length}`,
+      model: body.model,
+      choices: [{ index: 0, message: { role: 'assistant', content: inputText === '请只回复 OK' ? 'OK' : JSON.stringify(lessonPlan) }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
+    }));
+    return;
+  }
   response.end(JSON.stringify({
     id: `resp_${upstreamRequests.length}`,
     status: 'completed',
@@ -1037,22 +1051,38 @@ try {
     method: 'POST',
     cookie: adminCookie,
     body: {
-      name: '本地模拟通道',
-      baseUrl: `http://127.0.0.1:${mockPort}/v1`,
+      name: 'DeepSeek 本地模拟通道',
+      providerType: 'deepseek',
+      adapter: 'openai_chat_completions',
+      baseUrl: `http://127.0.0.1:${mockPort}`,
       apiKey: providerKey,
-      model: 'stored-provider-model',
-      capabilities: ['lesson_generation', 'lesson_revision', 'multimodal_input'],
+      model: 'deepseek-v4-pro',
+      capabilities: ['lesson_generation', 'lesson_revision'],
       priority: 1,
     },
   });
   assert.equal(providerCreated.status, 201);
   assert.equal(providerCreated.body.data.provider.keyLastFour, '-key');
-  assert.deepEqual(providerCreated.body.data.provider.capabilities, ['lesson_generation', 'lesson_revision', 'multimodal_input']);
+  assert.equal(providerCreated.body.data.provider.providerType, 'deepseek');
+  assert.equal(providerCreated.body.data.provider.provider, 'DeepSeek');
+  assert.equal(providerCreated.body.data.provider.adapter, 'openai_chat_completions');
+  assert.deepEqual(providerCreated.body.data.provider.capabilities, ['lesson_generation', 'lesson_revision']);
   assert.equal(JSON.stringify(providerCreated.body).includes(providerKey), false);
   const providerId = providerCreated.body.data.provider.id;
   const channelFile = readFileSync(join(dataDir, 'model-channels.json'), 'utf8');
   assert.equal(channelFile.includes(providerKey), false, '模型密钥不得明文落盘');
   assert.match(channelFile, /aes-256-gcm/);
+
+  const storedProviderTest = await client.json(`/api/admin/providers/${encodeURIComponent(providerId)}/test`, {
+    method: 'POST',
+    cookie: adminCookie,
+    body: {},
+  });
+  assert.equal(storedProviderTest.status, 200);
+  assert.equal(storedProviderTest.body.data.result.modelAvailable, true);
+  assert.equal(storedProviderTest.body.data.result.invocationVerified, true);
+  assert.equal(upstreamRequests.at(-1).endpoint, 'chat/completions');
+  assert.equal(upstreamRequests.at(-1).thinking, 'disabled');
 
   const secondGeneration = await client.json('/api/ai/generate', {
     method: 'POST',
@@ -1062,8 +1092,10 @@ try {
   assert.equal(secondGeneration.status, 200);
   assert.equal(secondGeneration.body.data.providerId, providerId);
   assert.equal(secondGeneration.body.data.creditsRemaining, 1);
-  assert.equal(upstreamRequests.at(-1).model, 'stored-provider-model');
+  assert.equal(upstreamRequests.at(-1).model, 'deepseek-v4-pro');
   assert.equal(upstreamRequests.at(-1).authorization, `Bearer ${providerKey}`);
+  assert.equal(upstreamRequests.at(-1).endpoint, 'chat/completions');
+  assert.equal(upstreamRequests.at(-1).thinking, 'disabled');
 
   const candidateCreated = await client.json('/api/training/candidates', {
     method: 'POST',

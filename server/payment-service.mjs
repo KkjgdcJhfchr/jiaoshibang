@@ -274,7 +274,9 @@ export function createPaymentService({
         providerState,
       },
       validate(order) {
-        if (!safeStringEqual(parameters.get('app_id'), config.appId) || !safeStringEqual(parameters.get('seller_id'), config.sellerId)) {
+        const appIdMatches = safeStringEqual(parameters.get('app_id'), config.appId);
+        const sellerIdMatches = !config.sellerId || safeStringEqual(parameters.get('seller_id'), config.sellerId);
+        if (!appIdMatches || !sellerIdMatches) {
           throw new PaymentError(400, 'ALIPAY_MERCHANT_MISMATCH', '支付宝通知应用或卖家身份与配置不一致');
         }
         if (alipayAmountToCents(parameters.get('total_amount')) !== order.amountCents) {

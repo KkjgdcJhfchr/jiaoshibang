@@ -32,7 +32,7 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api.js';
 import { navigate } from '../lib/navigation.jsx';
-import { Button, EmptyState, Field, Modal, Status, TeacherShell, Toast, useAccount } from './components.jsx';
+import { accountDisplayName, Button, EmptyState, Field, Modal, Status, TeacherShell, Toast, useAccount } from './components.jsx';
 
 const LESSON_LIBRARY_KEY = 'teacher-helper.lesson-library.v2';
 
@@ -102,7 +102,7 @@ async function toAttachment(file) {
 
 export function DashboardPage({ path }) {
   const account = useAccount();
-  const displayName = account?.displayName || '教师用户';
+  const displayName = accountDisplayName(account);
   const credits = Number(account?.credits || 0);
   const lessons = loadLessonLibrary().slice(0, 5);
   const [quickDraft, setQuickDraft] = useState(() => ({
@@ -588,20 +588,10 @@ function paymentOrderMessage(order) {
 export function SettingsPage({ path }) {
   const account = useAccount();
   const [tab, setTab] = useState('profile');
-  const [privacyPolicy, setPrivacyPolicy] = useState({ title: '数据与隐私说明', content: '我们会按照注册时公布的数据与隐私说明处理账号、教材、教案和订单信息。', updatedAt: '' });
   const [toast, setToast] = useState(null);
   const [loggingOut, setLoggingOut] = useState(false);
-  const displayName = account?.displayName || '教师用户';
+  const displayName = accountDisplayName(account);
   const avatarText = displayName.trim().slice(0, 1) || '师';
-
-  useEffect(() => {
-    let active = true;
-    api.getSiteConfig().then((response) => {
-      const value = response.data?.privacyPolicy;
-      if (active && value?.content) setPrivacyPolicy((current) => ({ ...current, ...value }));
-    }).catch(() => {});
-    return () => { active = false; };
-  }, []);
 
   async function logout() {
     if (loggingOut) return;
@@ -616,11 +606,10 @@ export function SettingsPage({ path }) {
   }
 
   return (
-    <TeacherShell path={path} title="账号设置" subtitle="查看个人资料、账号安全和数据规则。">
-      <div className="settings-layout"><nav aria-label="账号设置分类">{[['profile', UserRound, '个人资料'], ['security', LockKeyhole, '账号安全'], ['privacy', ShieldCheck, '数据与隐私'], ['orders', ReceiptText, '订单与账单']].map(([key, Icon, label]) => <button aria-current={tab === key ? 'page' : undefined} className={tab === key ? 'active' : ''} onClick={() => setTab(key)} key={key}><Icon size={17} />{label}</button>)}</nav><section className="settings-panel">
+    <TeacherShell path={path} title="账号设置" subtitle="查看个人资料、账号安全和订单信息。">
+      <div className="settings-layout"><nav aria-label="账号设置分类">{[['profile', UserRound, '个人资料'], ['security', LockKeyhole, '账号安全'], ['orders', ReceiptText, '订单与账单']].map(([key, Icon, label]) => <button aria-current={tab === key ? 'page' : undefined} className={tab === key ? 'active' : ''} onClick={() => setTab(key)} key={key}><Icon size={17} />{label}</button>)}</nav><section className="settings-panel">
         {tab === 'profile' ? <><header><h2>个人资料</h2><p>你的账号基本信息。</p></header><div className="profile-avatar"><span className="avatar avatar-teacher">{avatarText}</span><div><b>{displayName}</b><p>{maskAccount(account?.account || account?.identifier)}</p></div></div><div className="form-grid"><Field label="显示名称"><input value={displayName} readOnly /></Field><Field label="登录账号"><input value={account?.account || account?.identifier || ''} readOnly /></Field><Field label="主要学科"><input value={account?.subject || '尚未填写'} readOnly /></Field></div></> : null}
         {tab === 'security' ? <><header><h2>账号安全</h2><p>管理登录密码和当前会话。</p></header><div className="settings-list"><div><span><b>登录账号</b><small>{maskAccount(account?.account || account?.identifier)}</small></span></div><div><span><b>登录密码</b><small>通过注册手机号或邮箱验证身份后重设密码</small></span><Button size="sm" variant="secondary" onClick={() => navigate('/forgot-password')}>重设密码</Button></div><div><span><b>退出当前账号</b><small>退出后需要重新登录才能继续备课</small></span><Button size="sm" variant="danger" icon={LogOut} disabled={loggingOut} onClick={logout}>{loggingOut ? '正在退出…' : '退出登录'}</Button></div></div></> : null}
-        {tab === 'privacy' ? <><header><h2>{privacyPolicy.title}</h2><p>{privacyPolicy.updatedAt ? `更新于 ${new Date(privacyPolicy.updatedAt).toLocaleDateString('zh-CN')}` : '当前适用的数据处理规则'}</p></header><article className="privacy-setting"><div><h3>信息处理范围</h3>{privacyPolicy.content.split(/\n{2,}/).map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</div></article></> : null}
         {tab === 'orders' ? <><header><h2>订单与账单</h2><p>查看会员购买记录。</p></header><EmptyState icon={ReceiptText} title="暂无订单记录" text="完成会员购买后，订单信息会显示在这里。" /></> : null}
       </section></div>
       {toast ? <Toast message={toast} onClose={() => setToast(null)} /> : null}

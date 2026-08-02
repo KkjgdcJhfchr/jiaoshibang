@@ -53,6 +53,15 @@ export function useAccount() {
   return useContext(AccountContext);
 }
 
+const GENERIC_ACCOUNT_NAMES = new Set(['平台管理员', '管理员']);
+
+export function accountDisplayName(account) {
+  const displayName = String(account?.displayName || '').trim();
+  const loginAccount = String(account?.account || account?.identifier || '').trim();
+  if (displayName && !GENERIC_ACCOUNT_NAMES.has(displayName)) return displayName;
+  return loginAccount || '教师用户';
+}
+
 const nav = [
   { label: '首页', path: '/app', icon: Home },
   { label: '创建教案', path: '/app/create', icon: FilePlus2 },
@@ -67,7 +76,7 @@ const nav = [
 export function TeacherShell({ path, title, subtitle, children, contentClass = '' }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const account = useAccount();
-  const displayName = account?.displayName || '教师用户';
+  const displayName = accountDisplayName(account);
   const subject = account?.subject || '学科待完善';
   const avatarText = displayName.trim().slice(0, 1) || '师';
 

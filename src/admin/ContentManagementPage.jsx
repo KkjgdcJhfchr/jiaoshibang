@@ -51,7 +51,7 @@ const DATE_TIME_FORMATTER = new Intl.DateTimeFormat('zh-CN', {
 });
 
 export function ContentManagementPage({ onNotice = () => {}, initialSection = 'announcements' }) {
-  const [activeSection, setActiveSection] = useState(initialSection);
+  const activeSection = initialSection === 'tutorial' ? 'tutorial' : 'announcements';
   const [announcements, setAnnouncements] = useState([]);
   const [tutorial, setTutorial] = useState(() => ({ ...EMPTY_TUTORIAL }));
   const [tutorialDirty, setTutorialDirty] = useState(false);
@@ -80,7 +80,6 @@ export function ContentManagementPage({ onNotice = () => {}, initialSection = 'a
   }
 
   useEffect(() => { reload(); }, []);
-  useEffect(() => { setActiveSection(initialSection); }, [initialSection]);
 
   const announcementSummary = useMemo(() => {
     const now = Date.now();
@@ -254,18 +253,16 @@ export function ContentManagementPage({ onNotice = () => {}, initialSection = 'a
   return (
     <div className="admin-content-page" aria-busy={loading}>
       <div className="admin-page-heading admin-content-heading">
-        <div><h1>公告与新手教程</h1><p>管理登录后公告弹窗，以及新用户进入工作台时看到的分步使用指引</p></div>
+        <div>
+          <h1>{activeSection === 'announcements' ? '公告管理' : '新手教程'}</h1>
+          <p>{activeSection === 'announcements' ? '管理用户登录后看到的公告弹窗、展示时间和重复展示规则' : '编辑新用户进入工作台后看到的分步指引、顺序和启用状态'}</p>
+        </div>
         <button className="admin-button admin-button-secondary" type="button" onClick={reload} disabled={loading || Boolean(busy)}>
           <RefreshCw size={17} className={loading ? 'spin' : ''} />刷新内容
         </button>
       </div>
 
       {error ? <ErrorBanner message={error} onClose={() => setError('')} /> : null}
-
-      <div className="admin-content-tabs" role="tablist" aria-label="内容管理分类">
-        <button type="button" role="tab" aria-selected={activeSection === 'announcements'} className={activeSection === 'announcements' ? 'active' : ''} onClick={() => setActiveSection('announcements')}><Megaphone size={17} />公告管理</button>
-        <button type="button" role="tab" aria-selected={activeSection === 'tutorial'} className={activeSection === 'tutorial' ? 'active' : ''} onClick={() => setActiveSection('tutorial')}><CheckCircle2 size={17} />新手教程</button>
-      </div>
 
       {activeSection === 'announcements' ? (
         <AnnouncementSection

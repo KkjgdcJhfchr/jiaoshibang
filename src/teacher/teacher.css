@@ -102,6 +102,8 @@
 .auth-capability-note.subtle span { color: var(--muted); }
 .code-input button:disabled { background: #f1f3f2; color: #8e9895; cursor: not-allowed; }
 .auth-consents a, .auth-consents .privacy-policy-link { color: var(--brand); text-decoration: underline; text-underline-offset: 2px; }
+.auth-privacy-note { margin-top: 12px; text-align: center; color: var(--faint); font-size: 11px; }
+.auth-privacy-note .privacy-policy-link:hover { color: var(--brand); }
 .login-tools { gap: 16px; color: var(--muted); }
 .login-tools a { white-space: nowrap; }
 .form-error, .form-status { margin: -5px 0; font-size: 12px; }

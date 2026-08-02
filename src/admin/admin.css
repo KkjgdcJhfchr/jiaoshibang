@@ -346,8 +346,8 @@ button { color: inherit; }
 .admin-task-state-danger i { background: var(--admin-danger); }
 .admin-task-state-info i { background: var(--admin-info); }
 
-.admin-toggle { width: 32px; height: 19px; padding: 2px; border: 0; border-radius: 10px; background: #b8bfbc; cursor: pointer; transition: background 150ms ease; }
-.admin-toggle-knob { width: 15px; height: 15px; border-radius: 50%; display: block; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.19); transition: transform 150ms ease; }
+.admin-toggle { appearance: none; width: 32px; min-width: 32px; max-width: 32px; height: 19px; min-height: 19px; max-height: 19px; flex: 0 0 32px; align-self: center; display: inline-flex; align-items: center; justify-content: flex-start; margin: 0; padding: 2px; overflow: hidden; border: 0; border-radius: 10px; background: #b8bfbc; line-height: 0; cursor: pointer; transition: background 150ms ease; }
+.admin-toggle > .admin-toggle-knob { width: 15px; min-width: 15px; max-width: 15px; height: 15px; min-height: 15px; max-height: 15px; flex: 0 0 15px; display: block; margin: 0 !important; padding: 0; border-radius: 50%; background: #fff; color: transparent; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.19); transition: transform 150ms ease; }
 .admin-toggle-on { background: var(--admin-jade); }
 .admin-toggle-on .admin-toggle-knob { transform: translateX(13px); }
 .admin-toggle:disabled { cursor: not-allowed; opacity: .58; }

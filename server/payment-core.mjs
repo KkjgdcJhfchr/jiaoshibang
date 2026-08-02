@@ -218,7 +218,7 @@ export function validatePaymentConfig(provider, config) {
     validatePublicKey(config.verifierPublicKeyPem, '微信支付公钥或平台证书', errors);
   } else {
     if (!/^\d{10,32}$/.test(String(config.appId || ''))) errors.push('支付宝 AppID 格式不正确');
-    if (!/^\d{16,32}$/.test(String(config.sellerId || ''))) errors.push('支付宝卖家 ID 格式不正确');
+    if (config.sellerId && !/^\d{16,32}$/.test(String(config.sellerId))) errors.push('支付宝卖家 ID 格式不正确');
     validateHttpsUrl(config.notifyUrl, '支付宝异步回调地址', errors);
     if (config.returnUrl) validateHttpsUrl(config.returnUrl, '支付宝同步返回地址', errors);
     if ((config.environment || 'production') !== 'production') errors.push('支付宝支付只能使用生产环境');

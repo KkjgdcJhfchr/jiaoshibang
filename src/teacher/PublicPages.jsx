@@ -16,7 +16,6 @@ import {
   MessageSquareText,
   Network,
   ScrollText,
-  ShieldCheck,
   Sparkles,
   WandSparkles,
   X,
@@ -130,7 +129,6 @@ function PublicHeader() {
         <Link to="/#features">功能</Link>
         <Link to="/#workflow">使用方式</Link>
         <Link to="/pricing">会员方案</Link>
-        <PrivacyPolicyLink>数据与隐私</PrivacyPolicyLink>
       </nav>
       <div className="public-actions">
         <Link to="/login" className="text-link">登录</Link>
@@ -236,15 +234,6 @@ export function LandingPage() {
           </div>
         </section>
 
-        <section className="landing-section security-section" id="security">
-          <div className="security-heading"><ShieldCheck size={30} /><h2>教材与教案如何使用，规则清晰可查</h2></div>
-          <div className="security-points">
-            <div><b>数据用途公开说明</b><p>注册前可查看完整的数据与隐私说明，了解账号、教材和教案的处理范围。</p></div>
-            <div><b>教材与教案分开处理</b><p>上传内容仅用于完成你发起的备课流程，并按公布的保留规则进行管理。</p></div>
-            <div><b>敏感凭据隔离保护</b><p>密码、支付凭据和通信密钥采用独立保护措施，不会写入教案内容。</p></div>
-          </div>
-        </section>
-
         <section className="landing-cta">
           <div><h2>下一堂课，从更从容的准备开始</h2><p>注册送 3 次完整生成额度，不需要绑定支付方式。</p></div>
           <Button size="lg" icon={Sparkles} onClick={() => navigate('/register')}>免费生成第一份教案</Button>
@@ -261,8 +250,8 @@ function PublicFooter() {
     <footer className="public-footer">
       <div><Logo /><p>让每一位教师，都有一位懂课堂的备课伙伴。</p></div>
       <div><b>产品</b><Link to="/#features">功能介绍</Link><Link to="/pricing">会员方案</Link><Link to="/app/lesson/lesson-spring-001">教案示例</Link></div>
-      <div><b>支持</b><Link to="/#workflow">使用帮助</Link>{supportEmail ? <a href={`mailto:${supportEmail}`}>联系我们</a> : null}<PrivacyPolicyLink>数据安全说明</PrivacyPolicyLink></div>
-      <div><b>规则</b><PrivacyPolicyLink>用户协议与隐私规则</PrivacyPolicyLink><PrivacyPolicyLink>数据与隐私说明</PrivacyPolicyLink></div>
+      <div><b>支持</b><Link to="/#workflow">使用帮助</Link>{supportEmail ? <a href={`mailto:${supportEmail}`}>联系我们</a> : null}</div>
+      <div><b>规则</b><PrivacyPolicyLink>用户协议与隐私规则</PrivacyPolicyLink></div>
       <p className="footer-record">© 2026 {siteName}</p>
     </footer>
   );
@@ -421,6 +410,7 @@ export function AuthPage({ mode = 'login' }) {
             <Button size="lg" className="auth-submit" type="submit" icon={loading ? LoaderCircle : undefined} disabled={loading || (register && !siteConfigReady) || siteConfig.registrationOpen === false || (codeMode && !VERIFICATION_AUTH_AVAILABLE)}>{loading ? (register ? '正在注册…' : '正在登录…') : register && !siteConfigReady ? '正在读取注册规则…' : siteConfig.registrationOpen === false ? '当前暂停注册' : codeMode && !VERIFICATION_AUTH_AVAILABLE ? '请改用密码方式' : register ? '注册并免费开始' : '登录'}</Button>
           </form>
           <div className="auth-switch">{register ? '已有账号？' : '还没有账号？'} <Link to={register ? '/login' : '/register'}>{register ? '直接登录' : '免费注册'}</Link></div>
+          {!register ? <div className="auth-privacy-note"><PrivacyPolicyLink>隐私规则</PrivacyPolicyLink></div> : null}
         </div>
       </main>
     </div>

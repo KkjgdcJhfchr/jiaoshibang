@@ -113,7 +113,9 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
     if (existing) {
       if (existing.role !== 'admin_teacher') return null;
       existing.account = account;
-      existing.displayName = existing.displayName || '平台管理员';
+      if (!existing.displayName || existing.displayName === '平台管理员' || existing.displayName === '管理员') {
+        existing.displayName = account;
+      }
       existing.password = password;
       existing.verifiedAt = existing.verifiedAt || timestamp;
       existing.verifiedChannel = existing.verifiedChannel || 'admin_credentials';
@@ -125,7 +127,7 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
       id: `usr_${randomUUID()}`,
       account,
       accountKey,
-      displayName: '平台管理员',
+      displayName: account,
       subject: '',
       password,
       credits,

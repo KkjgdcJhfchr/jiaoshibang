@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   AlertTriangle,
   BadgeCheck,
@@ -8,6 +8,7 @@ import {
   ChevronLeft,
   ChevronRight,
   CreditCard,
+  Edit3,
   KeyRound,
   LoaderCircle,
   PackageCheck,
@@ -203,9 +204,7 @@ export function PaymentChannelsPage({ onNotice = () => {} }) {
 
 export function MembershipPlansPage({ onNotice = () => {} }) {
   const [plans, setPlans] = useState([])
-  const [forms, setForms] = useState({})
-  const [creating, setCreating] = useState(false)
-  const [newForm, setNewForm] = useState(() => ({ ...EMPTY_PLAN_FORM }))
+  const [editor, setEditor] = useState(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
@@ -217,7 +216,6 @@ export function MembershipPlansPage({ onNotice = () => {} }) {
       const response = await api.getAdminPaymentPlans()
       const nextPlans = Array.isArray(response.data?.plans) ? response.data.plans : []
       setPlans(nextPlans)
-      setForms(Object.fromEntries(nextPlans.map((plan) => [plan.planId, planToForm(plan)])))
     } catch (requestError) {
       setError(requestError.message || '套餐目录读取失败')
     } finally {
@@ -227,56 +225,44 @@ export function MembershipPlansPage({ onNotice = () => {} }) {
 
   useEffect(() => { reload() }, [])
 
-  function updatePlanField(planId, field, value) {
-    setForms((current) => ({ ...current, [planId]: { ...current[planId], [field]: value } }))
+  function openCreatePlan() {
+    setError('')
+    setEditor({ plan: null, form: { ...EMPTY_PLAN_FORM } })
   }
 
-  async function savePlan(event, plan) {
+  function openEditPlan(plan) {
+    setError('')
+    setEditor({ plan, form: planToForm(plan) })
+  }
+
+  function updatePlanField(field, value) {
+    setEditor((current) => current ? { ...current, form: { ...current.form, [field]: value } } : current)
+  }
+
+  async function savePlan(event) {
     event.preventDefault()
-    const form = forms[plan.planId]
-    const action = `plan-${plan.planId}`
-    setBusy(action)
+    if (!editor) return
+    const { plan, form } = editor
+    const planId = plan?.planId || form.planId.trim()
+    if (!plan && plans.some((item) => item.planId === planId)) {
+      setError('套餐标识已存在，请换一个唯一标识')
+      return
+    }
+    setBusy('plan-save')
     setError('')
     try {
-      const response = await api.saveAdminPaymentPlan(plan.planId, buildPlanPayload(form, plan))
+      const response = await api.saveAdminPaymentPlan(planId, buildPlanPayload(form, plan))
       const saved = response.data?.plan
-      setPlans((current) => current.map((item) => item.planId === saved.planId ? saved : item))
-      setForms((current) => ({ ...current, [saved.planId]: planToForm(saved) }))
-      onNotice(`${saved.name}已保存`)
+      setPlans((current) => plan
+        ? current.map((item) => item.planId === saved.planId ? saved : item)
+        : [...current, saved])
+      setEditor(null)
+      onNotice(`${saved.name}已${plan ? '保存' : '添加到套餐目录'}`)
     } catch (requestError) {
       setError(requestError.message || '套餐保存失败')
     } finally {
       setBusy('')
     }
-  }
-
-  async function createPlan(event) {
-    event.preventDefault()
-    const planId = newForm.planId.trim()
-    if (plans.some((plan) => plan.planId === planId)) {
-      setError('套餐标识已存在，请换一个唯一标识')
-      return
-    }
-    setBusy('plan-create')
-    setError('')
-    try {
-      const response = await api.saveAdminPaymentPlan(planId, buildPlanPayload(newForm))
-      const saved = response.data?.plan
-      setPlans((current) => [...current, saved])
-      setForms((current) => ({ ...current, [saved.planId]: planToForm(saved) }))
-      cancelCreatePlan()
-      onNotice(`${saved.name}已添加到套餐目录`)
-    } catch (requestError) {
-      setError(requestError.message || '套餐创建失败')
-    } finally {
-      setBusy('')
-    }
-  }
-
-  function cancelCreatePlan() {
-    setNewForm({ ...EMPTY_PLAN_FORM })
-    setCreating(false)
-    setError('')
   }
 
   async function archivePlan(plan) {
@@ -288,7 +274,7 @@ export function MembershipPlansPage({ onNotice = () => {} }) {
     try {
       await api.deleteAdminPaymentPlan(plan.planId)
       setPlans((current) => current.filter((item) => item.planId !== plan.planId))
-      setForms((current) => { const next = { ...current }; delete next[plan.planId]; return next })
+      if (editor?.plan?.planId === plan.planId) setEditor(null)
       onNotice(`${plan.name}已归档`)
     } catch (requestError) {
       setError(requestError.message || '套餐归档失败')
@@ -303,7 +289,7 @@ export function MembershipPlansPage({ onNotice = () => {} }) {
   return (
     <div className="admin-payment-page">
       <CommercePageHeader title="套餐设置" description="编辑免费版与付费套餐的价格、额度、有效期和前端展示权益" loading={loading} busy={busy} onRefresh={reload}>
-        {!creating ? <button className="admin-button admin-button-primary" type="button" onClick={() => setCreating(true)}><Plus size={16} />添加付费套餐</button> : null}
+        <button className="admin-button admin-button-primary" type="button" onClick={openCreatePlan} disabled={Boolean(busy)}><Plus size={16} />添加付费套餐</button>
       </CommercePageHeader>
       <CommerceError error={error} onClose={() => setError('')} />
 
@@ -319,22 +305,15 @@ export function MembershipPlansPage({ onNotice = () => {} }) {
           <span className="admin-membership-catalog-count">{saleableCount} 个展示中</span>
         </header>
         <div className="admin-membership-catalog-grid">
-          {creating ? <PlanForm form={newForm} onChange={(field, value) => setNewForm((current) => ({ ...current, [field]: value }))} onSubmit={createPlan} onCancel={cancelCreatePlan} busy={busy === 'plan-create'} isNew /> : null}
-          {plans.map((plan) => (
-            <PlanForm
-              key={plan.planId}
-              form={forms[plan.planId] || planToForm(plan)}
-              plan={plan}
-              onChange={(field, value) => updatePlanField(plan.planId, field, value)}
-              onSubmit={(event) => savePlan(event, plan)}
-              onArchive={() => archivePlan(plan)}
-              busy={busy === `plan-${plan.planId}` || busy === `delete-plan-${plan.planId}`}
-            />
-          ))}
+          {plans.map((plan) => <PlanSummary key={plan.planId} plan={plan} busy={Boolean(busy)} onEdit={() => openEditPlan(plan)} onArchive={() => archivePlan(plan)} />)}
           {loading ? <InlineLoading label="正在读取套餐目录…" /> : null}
-          {!loading && !plans.length && !creating ? <CommerceEmpty icon={<PackageCheck size={28} />} title="暂无套餐" description="点击“添加付费套餐”创建第一个在售套餐。" /> : null}
+          {!loading && !plans.length ? <CommerceEmpty icon={<PackageCheck size={28} />} title="暂无套餐" description="点击“添加付费套餐”创建第一个在售套餐。" /> : null}
         </div>
       </section>
+
+      {editor ? <CommerceEditorModal title={editor.plan ? '编辑套餐' : '新增付费套餐'} description={editor.plan ? `正在编辑 ${editor.plan.name}` : '填写套餐信息后保存到用户端套餐目录'} busy={busy === 'plan-save'} error={error} onClose={() => { setEditor(null); setError('') }}>
+        <PlanForm form={editor.form} plan={editor.plan} onChange={updatePlanField} onSubmit={savePlan} onCancel={() => { setEditor(null); setError('') }} busy={busy === 'plan-save'} isNew={!editor.plan} />
+      </CommerceEditorModal> : null}
     </div>
   )
 }
@@ -342,9 +321,7 @@ export function MembershipPlansPage({ onNotice = () => {} }) {
 export function PromotionsPage({ onNotice = () => {} }) {
   const [promotions, setPromotions] = useState([])
   const [plans, setPlans] = useState([])
-  const [forms, setForms] = useState({})
-  const [creating, setCreating] = useState(false)
-  const [newForm, setNewForm] = useState(() => ({ ...EMPTY_PROMOTION_FORM }))
+  const [editor, setEditor] = useState(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
@@ -358,7 +335,6 @@ export function PromotionsPage({ onNotice = () => {} }) {
       const nextPlans = planResponse.data?.plans || []
       setPromotions(Array.isArray(nextPromotions) ? nextPromotions : [])
       setPlans(Array.isArray(nextPlans) ? nextPlans.filter((plan) => plan.kind !== 'free' && !plan.archivedAt) : [])
-      setForms(Object.fromEntries((nextPromotions || []).map((promotion) => [promotionIdOf(promotion), promotionToForm(promotion)])))
     } catch (requestError) {
       setError(requestError.message || '优惠活动读取失败')
     } finally {
@@ -368,40 +344,37 @@ export function PromotionsPage({ onNotice = () => {} }) {
 
   useEffect(() => { reload() }, [])
 
-  function updatePromotionField(id, field, value) {
-    setForms((current) => ({ ...current, [id]: { ...current[id], [field]: value } }))
-  }
-
-  async function createPromotion(event) {
-    event.preventDefault()
-    setBusy('promotion-create')
+  function openCreatePromotion() {
     setError('')
-    try {
-      const response = await api.createAdminPromotion(buildPromotionPayload(newForm))
-      const saved = promotionFromResponse(response)
-      setPromotions((current) => [saved, ...current])
-      setForms((current) => ({ ...current, [promotionIdOf(saved)]: promotionToForm(saved) }))
-      setNewForm({ ...EMPTY_PROMOTION_FORM })
-      setCreating(false)
-      onNotice(`${saved.name || saved.label || '优惠活动'}已创建`)
-    } catch (requestError) {
-      setError(requestError.message || '优惠活动创建失败')
-    } finally {
-      setBusy('')
-    }
+    setEditor({ promotion: null, form: { ...EMPTY_PROMOTION_FORM, targetPlanIds: [] } })
   }
 
-  async function savePromotion(event, promotion) {
+  function openEditPromotion(promotion) {
+    setError('')
+    setEditor({ promotion, form: promotionToForm(promotion) })
+  }
+
+  function updatePromotionField(field, value) {
+    setEditor((current) => current ? { ...current, form: { ...current.form, [field]: value } } : current)
+  }
+
+  async function savePromotion(event) {
     event.preventDefault()
+    if (!editor) return
+    const { promotion, form } = editor
     const id = promotionIdOf(promotion)
-    setBusy(`promotion-${id}`)
+    setBusy('promotion-save')
     setError('')
     try {
-      const response = await api.updateAdminPromotion(id, buildPromotionPayload(forms[id], promotion))
+      const response = promotion
+        ? await api.updateAdminPromotion(id, buildPromotionPayload(form, promotion))
+        : await api.createAdminPromotion(buildPromotionPayload(form))
       const saved = promotionFromResponse(response)
-      setPromotions((current) => current.map((item) => promotionIdOf(item) === id ? saved : item))
-      setForms((current) => ({ ...current, [promotionIdOf(saved)]: promotionToForm(saved) }))
-      onNotice(`${saved.name || saved.label || '优惠活动'}已保存`)
+      setPromotions((current) => promotion
+        ? current.map((item) => promotionIdOf(item) === id ? saved : item)
+        : [saved, ...current])
+      setEditor(null)
+      onNotice(`${saved.name || saved.label || '优惠活动'}已${promotion ? '保存' : '创建'}`)
     } catch (requestError) {
       setError(requestError.message || '优惠活动保存失败')
     } finally {
@@ -418,7 +391,7 @@ export function PromotionsPage({ onNotice = () => {} }) {
     try {
       await api.deleteAdminPromotion(id)
       setPromotions((current) => current.filter((item) => promotionIdOf(item) !== id))
-      setForms((current) => { const next = { ...current }; delete next[id]; return next })
+      if (promotionIdOf(editor?.promotion) === id) setEditor(null)
       onNotice(`${name}已删除`)
     } catch (requestError) {
       setError(requestError.message || '优惠活动删除失败')
@@ -433,7 +406,7 @@ export function PromotionsPage({ onNotice = () => {} }) {
   return (
     <div className="admin-payment-page">
       <CommercePageHeader title="优惠活动" description="创建庆祝活动，设置折扣比例、目标套餐、生效时间和前端活动文案" loading={loading} busy={busy} onRefresh={reload}>
-        {!creating ? <button className="admin-button admin-button-primary" type="button" onClick={() => setCreating(true)}><Plus size={16} />添加优惠活动</button> : null}
+        <button className="admin-button admin-button-primary" type="button" onClick={openCreatePromotion} disabled={Boolean(busy)}><Plus size={16} />添加优惠活动</button>
       </CommercePageHeader>
       <CommerceError error={error} onClose={() => setError('')} />
 
@@ -446,15 +419,15 @@ export function PromotionsPage({ onNotice = () => {} }) {
       <section className="admin-panel admin-promotion-panel">
         <header className="admin-payment-orders-header"><div><h2>活动列表</h2><p>折扣在开始与结束时间之间自动生效；目标套餐可以多选。</p></div></header>
         <div className="admin-promotion-grid">
-          {creating ? <PromotionForm form={newForm} plans={plans} onChange={(field, value) => setNewForm((current) => ({ ...current, [field]: value }))} onSubmit={createPromotion} onCancel={() => { setCreating(false); setNewForm({ ...EMPTY_PROMOTION_FORM }); setError('') }} busy={busy === 'promotion-create'} isNew /> : null}
-          {promotions.map((promotion) => {
-            const id = promotionIdOf(promotion)
-            return <PromotionForm key={id} form={forms[id] || promotionToForm(promotion)} promotion={promotion} plans={plans} onChange={(field, value) => updatePromotionField(id, field, value)} onSubmit={(event) => savePromotion(event, promotion)} onDelete={() => deletePromotion(promotion)} busy={busy === `promotion-${id}` || busy === `delete-promotion-${id}`} />
-          })}
+          {promotions.map((promotion) => <PromotionSummary key={promotionIdOf(promotion)} promotion={promotion} plans={plans} busy={Boolean(busy)} onEdit={() => openEditPromotion(promotion)} onDelete={() => deletePromotion(promotion)} />)}
           {loading ? <InlineLoading label="正在读取优惠活动…" /> : null}
-          {!loading && !promotions.length && !creating ? <CommerceEmpty icon={<Tag size={28} />} title="暂无优惠活动" description="点击“添加优惠活动”创建开学季、教师节或其他庆祝优惠。" /> : null}
+          {!loading && !promotions.length ? <CommerceEmpty icon={<Tag size={28} />} title="暂无优惠活动" description="点击“添加优惠活动”创建开学季、教师节或其他庆祝优惠。" /> : null}
         </div>
       </section>
+
+      {editor ? <CommerceEditorModal title={editor.promotion ? '编辑优惠活动' : '新增优惠活动'} description={editor.promotion ? `正在编辑 ${editor.promotion.name || editor.promotion.label}` : '设置折扣、活动时间和参与套餐'} busy={busy === 'promotion-save'} error={error} onClose={() => { setEditor(null); setError('') }} wide>
+        <PromotionForm form={editor.form} promotion={editor.promotion} plans={plans} onChange={updatePromotionField} onSubmit={savePromotion} onCancel={() => { setEditor(null); setError('') }} busy={busy === 'promotion-save'} isNew={!editor.promotion} />
+      </CommerceEditorModal> : null}
     </div>
   )
 }
@@ -544,74 +517,77 @@ export function OrdersPage({ query = '' }) {
   )
 }
 
-function PlanForm({ form, plan, onChange, onSubmit, onCancel, onArchive, busy, isNew = false }) {
-  const isFree = !isNew && (plan?.kind === 'free' || form.kind === 'free')
-  return (
-    <form className={`admin-membership-plan-form ${isNew ? 'admin-membership-new-plan' : ''} ${isFree ? 'admin-membership-free-plan' : ''}`} onSubmit={onSubmit} aria-busy={busy}>
-      <header>
-        <div><b>{isNew ? '新增付费套餐' : form.name || plan?.name}</b><small>{isNew ? '套餐标识创建后不可修改' : `${isFree ? '免费基础权益' : PERIOD_LABELS[form.billingPeriod] || form.billingPeriod} · ${plan?.planId}`}</small></div>
-        <label><input type="checkbox" checked={Boolean(form.saleable)} onChange={(event) => onChange('saleable', event.target.checked)} /><span>前端展示</span></label>
-      </header>
-      <div className="admin-membership-plan-fields">
-        {isNew ? <TextField label="套餐标识" value={form.planId} onChange={(value) => onChange('planId', value)} placeholder="例如 pro-quarter-2026" pattern="[A-Za-z0-9_.:-]{2,80}" required /> : null}
-        <TextField label="套餐名称" value={form.name} onChange={(value) => onChange('name', value)} required />
-        <TextField label="会员等级标识" value={form.tier} onChange={(value) => onChange('tier', value)} placeholder={isFree ? 'free' : 'pro'} required />
-        <TextField label="等级权重" value={form.tierRank} onChange={(value) => onChange('tierRank', value)} type="number" min={isFree ? '0' : '1'} max="10000" required />
-        {isFree ? <TextField label="套餐价格" value="0.00" onChange={() => {}} readOnly /> : <>
-          <label className="admin-payment-field"><span>付费周期</span><select value={form.billingPeriod} onChange={(event) => onChange('billingPeriod', event.target.value)}>{Object.entries(PERIOD_LABELS).filter(([value]) => value !== 'free').map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
-          <TextField label="售价（元）" value={form.price} onChange={(value) => onChange('price', value)} type="number" min="0.01" step="0.01" required />
-        </>}
-        <TextField label={isFree ? '注册赠送额度' : '发放额度'} value={form.credits} onChange={(value) => onChange('credits', value)} type="number" min="0" step="1" required />
-        {isFree ? <TextField label="有效期" value="长期有效" onChange={() => {}} readOnly /> : <TextField label="有效天数" value={form.durationDays} onChange={(value) => onChange('durationDays', value)} type="number" min="1" max="3660" required />}
-      </div>
-      <label className="admin-membership-feature-field"><span>前端展示权益（每行一项）</span><textarea value={form.features} onChange={(event) => onChange('features', event.target.value)} required /></label>
-      <footer>
-        <small>{isFree ? '免费版不可删除，但名称、额度和权益内容均可编辑。' : '归档后不影响已支付订单和已发放权益。'}</small>
-        <div className="admin-commerce-form-actions">
-          {isNew ? <button className="admin-button admin-button-secondary" type="button" onClick={onCancel} disabled={busy}><X size={16} />取消</button> : !isFree ? <button className="admin-button admin-button-danger" type="button" onClick={onArchive} disabled={busy}><Trash2 size={16} />归档套餐</button> : null}
-          <button className="admin-button admin-button-primary" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />}{isNew ? '确认添加' : '保存套餐'}</button>
-        </div>
-      </footer>
-    </form>
-  )
+function PlanSummary({ plan, busy, onEdit, onArchive }) {
+  const isFree = plan.kind === 'free'
+  const price = isFree ? '免费' : `¥${formatAmount(plan.regularAmountCents ?? plan.amountCents)}`
+  return <article className={`admin-commerce-summary-card ${isFree ? 'is-free' : ''}`}>
+    <header><div><b>{plan.name}</b><small>{plan.planId}</small></div><span className={plan.saleable ? 'is-enabled' : ''}>{plan.saleable ? '前端展示' : '已下架'}</span></header>
+    <div className="admin-commerce-summary-price"><strong>{price}</strong><span>{PERIOD_LABELS[plan.billingPeriod] || plan.billingPeriod}</span></div>
+    <dl><div><dt>发放额度</dt><dd>{Number(plan.credits || 0)}</dd></div><div><dt>有效期</dt><dd>{isFree ? '长期' : `${Number(plan.durationDays || 0)} 天`}</dd></div></dl>
+    <ul>{(plan.features || []).slice(0, 4).map((feature) => <li key={feature}><CheckCircle2 size={13} />{feature}</li>)}</ul>
+    <footer>{!isFree ? <button className="admin-button admin-button-danger" type="button" onClick={onArchive} disabled={busy}><Trash2 size={15} />归档</button> : <span>基础套餐不可删除</span>}<button className="admin-button admin-button-secondary" type="button" onClick={onEdit} disabled={busy}><Edit3 size={15} />编辑套餐</button></footer>
+  </article>
 }
 
-function PromotionForm({ form, promotion, plans, onChange, onSubmit, onCancel, onDelete, busy, isNew = false }) {
-  const id = promotion ? promotionIdOf(promotion) : 'new'
-  const togglePlan = (planId) => {
-    const selected = new Set(form.targetPlanIds || [])
-    if (selected.has(planId)) selected.delete(planId)
-    else selected.add(planId)
-    onChange('targetPlanIds', [...selected])
-  }
-  return (
-    <form className={`admin-promotion-form ${isNew ? 'admin-promotion-new' : ''}`} onSubmit={onSubmit} aria-busy={busy}>
-      <header>
-        <div><b>{isNew ? '新增优惠活动' : form.name}</b><small>{isNew ? '填写活动规则并选择目标套餐' : `${CELEBRATION_TEMPLATES[form.template] || '自定义活动'} · ${id}`}</small></div>
-        <label className="admin-promotion-enabled"><input type="checkbox" checked={Boolean(form.enabled)} onChange={(event) => onChange('enabled', event.target.checked)} /><span>启用活动</span></label>
-      </header>
-      <div className="admin-promotion-fields">
-        <TextField label="活动名称" value={form.name} onChange={(value) => onChange('name', value)} placeholder="例如：教师节感恩优惠" required />
-        <label className="admin-payment-field"><span>庆祝模板</span><select value={form.template} onChange={(event) => onChange('template', event.target.value)}>{Object.entries(CELEBRATION_TEMPLATES).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-        <TextField label="优惠折扣（%）" value={form.discountPercent} onChange={(value) => onChange('discountPercent', value)} type="number" min="1" max="99" step="1" required />
-        <TextField label="开始时间" value={form.startsAt} onChange={(value) => onChange('startsAt', value)} type="datetime-local" required />
-        <TextField label="结束时间" value={form.endsAt} onChange={(value) => onChange('endsAt', value)} type="datetime-local" required />
-      </div>
-      <label className="admin-membership-feature-field"><span>活动弹窗文案</span><textarea value={form.content} onChange={(event) => onChange('content', event.target.value)} placeholder="填写用户端可见的活动说明" required /></label>
-      <fieldset className="admin-promotion-targets">
-        <legend>目标套餐</legend>
-        {plans.map((plan) => <label key={plan.planId}><input type="checkbox" checked={(form.targetPlanIds || []).includes(plan.planId)} onChange={() => togglePlan(plan.planId)} /><span><b>{plan.name}</b><small>{PERIOD_LABELS[plan.billingPeriod] || plan.billingPeriod} · ¥{formatAmount(plan.regularAmountCents ?? plan.amountCents)}</small></span></label>)}
-        {!plans.length ? <p>暂无可选择的付费套餐，请先在“套餐设置”中添加。</p> : null}
-      </fieldset>
-      <footer>
-        <small>{isPromotionActive(promotion || form) ? '活动当前正在生效' : form.enabled ? '活动将按设定时间自动生效' : '活动当前停用'}</small>
-        <div className="admin-commerce-form-actions">
-          {isNew ? <button className="admin-button admin-button-secondary" type="button" onClick={onCancel} disabled={busy}><X size={16} />取消</button> : <button className="admin-button admin-button-danger" type="button" onClick={onDelete} disabled={busy}><Trash2 size={16} />删除活动</button>}
-          <button className="admin-button admin-button-primary" type="submit" disabled={busy || !plans.length}>{busy ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />}{isNew ? '创建活动' : '保存活动'}</button>
-        </div>
-      </footer>
-    </form>
-  )
+function PlanForm({ form, plan, onChange, onSubmit, onCancel, busy, isNew = false }) {
+  const isFree = !isNew && (plan?.kind === 'free' || form.kind === 'free')
+  return <form className="admin-commerce-editor-form admin-plan-editor-form" onSubmit={onSubmit} aria-busy={busy}>
+    <div className="admin-membership-plan-fields">
+      {isNew ? <TextField label="套餐标识" value={form.planId} onChange={(value) => onChange('planId', value)} placeholder="例如 pro-quarter-2026" pattern="[A-Za-z0-9_.:-]{2,80}" required autoFocus /> : null}
+      <TextField label="套餐名称" value={form.name} onChange={(value) => onChange('name', value)} required autoFocus={!isNew} />
+      <TextField label="会员等级标识" value={form.tier} onChange={(value) => onChange('tier', value)} placeholder={isFree ? 'free' : 'pro'} required />
+      <TextField label="等级权重" value={form.tierRank} onChange={(value) => onChange('tierRank', value)} type="number" min={isFree ? '0' : '1'} max="10000" required />
+      {isFree ? <TextField label="套餐价格" value="0.00" onChange={() => {}} readOnly /> : <><label className="admin-payment-field"><span>付费周期</span><select value={form.billingPeriod} onChange={(event) => onChange('billingPeriod', event.target.value)}>{Object.entries(PERIOD_LABELS).filter(([value]) => value !== 'free').map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><TextField label="售价（元）" value={form.price} onChange={(value) => onChange('price', value)} type="number" min="0.01" step="0.01" required /></>}
+      <TextField label={isFree ? '注册赠送额度' : '发放额度'} value={form.credits} onChange={(value) => onChange('credits', value)} type="number" min="0" step="1" required />
+      {isFree ? <TextField label="有效期" value="长期有效" onChange={() => {}} readOnly /> : <TextField label="有效天数" value={form.durationDays} onChange={(value) => onChange('durationDays', value)} type="number" min="1" max="3660" required />}
+    </div>
+    <label className="admin-membership-feature-field"><span>前端展示权益（每行一项）</span><textarea value={form.features} onChange={(event) => onChange('features', event.target.value)} required /></label>
+    <div className="admin-commerce-switch-row"><div><b>在用户端展示</b><span>关闭后不会出现在注册与购买页面，已发放的会员权益不受影响。</span></div><button className={`admin-toggle ${form.saleable ? 'admin-toggle-on' : ''}`} type="button" role="switch" aria-checked={Boolean(form.saleable)} onClick={() => onChange('saleable', !form.saleable)} disabled={busy}><span className="admin-toggle-knob" /></button></div>
+    <footer><small>{isFree ? '免费版不可删除，但名称、额度和权益内容均可编辑。' : '保存后只影响后续下单，已有订单不会变化。'}</small><div className="admin-commerce-form-actions"><button className="admin-button admin-button-secondary" type="button" onClick={onCancel} disabled={busy}><X size={16} />取消</button><button className="admin-button admin-button-primary" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />}{isNew ? '确认添加' : '保存套餐'}</button></div></footer>
+  </form>
+}
+
+function PromotionSummary({ promotion, plans, busy, onEdit, onDelete }) {
+  const targetIds = promotion.targetPlanIds || promotion.planIds || []
+  const targetNames = plans.filter((plan) => targetIds.includes(plan.planId)).map((plan) => plan.name)
+  const active = isPromotionActive(promotion)
+  return <article className="admin-commerce-summary-card admin-promotion-summary-card">
+    <header><div><b>{promotion.name || promotion.label}</b><small>{CELEBRATION_TEMPLATES[promotion.template] || '自定义活动'}</small></div><span className={active ? 'is-enabled' : ''}>{active ? '生效中' : promotion.enabled ? '已启用' : '已停用'}</span></header>
+    <div className="admin-promotion-summary-discount"><BadgePercent size={23} /><strong>优惠 {Number(promotion.discountPercent || promotion.discount || 0)}%</strong></div>
+    <p>{promotion.content || promotion.message || promotion.description || '未填写活动文案'}</p>
+    <dl><div><dt>活动时间</dt><dd>{formatDate(promotion.startsAt)} 至 {formatDate(promotion.endsAt)}</dd></div><div><dt>目标套餐</dt><dd>{targetNames.length ? targetNames.join('、') : `${targetIds.length} 个套餐`}</dd></div></dl>
+    <footer><button className="admin-button admin-button-danger" type="button" onClick={onDelete} disabled={busy}><Trash2 size={15} />删除</button><button className="admin-button admin-button-secondary" type="button" onClick={onEdit} disabled={busy}><Edit3 size={15} />编辑活动</button></footer>
+  </article>
+}
+
+function PromotionForm({ form, promotion, plans, onChange, onSubmit, onCancel, busy, isNew = false }) {
+  const togglePlan = (planId) => { const selected = new Set(form.targetPlanIds || []); if (selected.has(planId)) selected.delete(planId); else selected.add(planId); onChange('targetPlanIds', [...selected]) }
+  const allPlanIds = plans.map((plan) => plan.planId)
+  const selectedCount = allPlanIds.filter((planId) => (form.targetPlanIds || []).includes(planId)).length
+  return <form className="admin-commerce-editor-form admin-promotion-editor-form" onSubmit={onSubmit} aria-busy={busy}>
+    <div className="admin-promotion-fields">
+      <TextField label="活动名称" value={form.name} onChange={(value) => onChange('name', value)} placeholder="例如：教师节感恩优惠" required autoFocus />
+      <label className="admin-payment-field"><span>庆祝模板</span><select value={form.template} onChange={(event) => onChange('template', event.target.value)}>{Object.entries(CELEBRATION_TEMPLATES).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+      <TextField label="优惠折扣（%）" value={form.discountPercent} onChange={(value) => onChange('discountPercent', value)} type="number" min="1" max="99" step="1" required />
+      <DateTimeField label="开始时间" value={form.startsAt} onChange={(value) => onChange('startsAt', value)} required />
+      <DateTimeField label="结束时间" value={form.endsAt} onChange={(value) => onChange('endsAt', value)} required />
+    </div>
+    <label className="admin-membership-feature-field"><span>活动弹窗文案</span><textarea value={form.content} onChange={(event) => onChange('content', event.target.value)} placeholder="填写用户端可见的活动说明" required /></label>
+    <div className="admin-promotion-targets"><div className="admin-promotion-targets-header"><span>目标套餐 <small>已选 {selectedCount} / {plans.length}</small></span><div><button type="button" onClick={() => onChange('targetPlanIds', allPlanIds)} disabled={!plans.length || selectedCount === plans.length}>全选</button><button type="button" onClick={() => onChange('targetPlanIds', [])} disabled={!selectedCount}>取消全选</button></div></div>{plans.map((plan) => <label key={plan.planId}><input type="checkbox" checked={(form.targetPlanIds || []).includes(plan.planId)} onChange={() => togglePlan(plan.planId)} /><span><b>{plan.name}</b><small>{PERIOD_LABELS[plan.billingPeriod] || plan.billingPeriod} · ¥{formatAmount(plan.regularAmountCents ?? plan.amountCents)}</small></span></label>)}{!plans.length ? <p>暂无可选择的付费套餐，请先在“套餐设置”中添加。</p> : null}</div>
+    <div className="admin-commerce-switch-row"><div><b>启用活动</b><span>启用后仍只会在设置的开始与结束时间之间生效。</span></div><button className={`admin-toggle ${form.enabled ? 'admin-toggle-on' : ''}`} type="button" role="switch" aria-checked={Boolean(form.enabled)} onClick={() => onChange('enabled', !form.enabled)} disabled={busy}><span className="admin-toggle-knob" /></button></div>
+    <footer><small>{isPromotionActive(promotion || form) ? '活动当前正在生效' : form.enabled ? '活动将按设定时间自动生效' : '活动当前停用'}</small><div className="admin-commerce-form-actions"><button className="admin-button admin-button-secondary" type="button" onClick={onCancel} disabled={busy}><X size={16} />取消</button><button className="admin-button admin-button-primary" type="submit" disabled={busy || !plans.length}>{busy ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />}{isNew ? '创建活动' : '保存活动'}</button></div></footer>
+  </form>
+}
+
+function CommerceEditorModal({ title, description, busy, error, onClose, wide = false, children }) {
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const handleKeyDown = (event) => { if (event.key === 'Escape' && !busy) onClose() }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => { document.body.style.overflow = previousOverflow; window.removeEventListener('keydown', handleKeyDown) }
+  }, [busy, onClose])
+  return <div className="admin-commerce-dialog-layer"><button className="admin-commerce-dialog-backdrop" type="button" onClick={onClose} aria-label="关闭编辑窗口" disabled={busy} /><section className={`admin-commerce-dialog ${wide ? 'is-wide' : ''}`} role="dialog" aria-modal="true" aria-labelledby="admin-commerce-dialog-title"><header><div><h2 id="admin-commerce-dialog-title">{title}</h2><p>{description}</p></div><button type="button" onClick={onClose} aria-label="关闭" disabled={busy}><X size={20} /></button></header><div className="admin-commerce-dialog-body">{error ? <CommerceError error={error} /> : null}{children}</div></section></div>
 }
 
 function CommercePageHeader({ title, description, loading, busy, onRefresh, children }) {
@@ -627,7 +603,7 @@ function CommercePageHeader({ title, description, loading, busy, onRefresh, chil
 }
 
 function CommerceError({ error, onClose }) {
-  return error ? <div className="admin-payment-error" role="alert"><AlertTriangle size={18} /><span>{error}</span><button type="button" onClick={onClose} aria-label="关闭错误提示"><X size={16} /></button></div> : null
+  return error ? <div className="admin-payment-error" role="alert"><AlertTriangle size={18} /><span>{error}</span>{onClose ? <button type="button" onClick={onClose} aria-label="关闭错误提示"><X size={16} /></button> : null}</div> : null
 }
 
 function CommerceEmpty({ icon, title, description }) {
@@ -670,7 +646,7 @@ function AlipayFields({ form, config, updateField }) {
   return <div className="admin-payment-field-grid">
     <TextField label="显示名称" value={form.displayName} onChange={(value) => updateField('displayName', value)} />
     <TextField label="应用 AppID" value={form.appId} onChange={(value) => updateField('appId', value)} placeholder="支付宝开放平台 AppID" required />
-    <TextField label="卖家 ID（seller_id）" value={form.sellerId} onChange={(value) => updateField('sellerId', value)} placeholder="签约支付宝账号 PID" required />
+    <TextField label="卖家 ID（选填）" value={form.sellerId} onChange={(value) => updateField('sellerId', value)} placeholder="通常无需填写；仅特殊商户验签策略使用" />
     <TextField label="异步通知地址（自动生成）" value={form.notifyUrl} onChange={() => {}} placeholder="保存后由部署域名自动生成" type="url" readOnly wide />
     <TextField label="支付完成返回地址（自动生成）" value={form.returnUrl} onChange={() => {}} placeholder="保存后由部署域名自动生成" type="url" readOnly wide />
     <SecretArea label="应用私钥" value={form.appPrivateKeyPem} onChange={(value) => updateField('appPrivateKeyPem', value)} configured={config.credentials?.appPrivateKeyPem} hint={config.credentialHints?.appPrivateKeyPem} placeholder="-----BEGIN PRIVATE KEY-----" required={!config.credentials?.appPrivateKeyPem} />
@@ -680,6 +656,17 @@ function AlipayFields({ form, config, updateField }) {
 
 function TextField({ label, value, onChange, wide = false, ...inputProps }) {
   return <label className={`admin-payment-field ${wide ? 'wide' : ''}`}><span>{label}</span><input value={value ?? ''} onChange={(event) => onChange(event.target.value)} {...inputProps} /></label>
+}
+
+function DateTimeField({ label, value, onChange, ...inputProps }) {
+  const inputRef = useRef(null)
+  const focusAndOpen = () => {
+    const input = inputRef.current
+    if (!input || input.disabled) return
+    input.focus()
+    try { input.showPicker?.() } catch { /* 浏览器不支持时仍保持输入框聚焦 */ }
+  }
+  return <label className="admin-payment-field admin-datetime-field" onClick={focusAndOpen}><span>{label}</span><input ref={inputRef} type="datetime-local" value={value ?? ''} onChange={(event) => onChange(event.target.value)} onClick={(event) => { event.stopPropagation(); focusAndOpen() }} {...inputProps} /></label>
 }
 
 function SecretArea({ label, value, onChange, configured, hint, ...textareaProps }) {

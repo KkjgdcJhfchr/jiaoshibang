@@ -120,6 +120,13 @@ const TRUST_PROXY = parseBoolean(process.env.TRUST_PROXY, IS_PRODUCTION);
 const ALLOW_INSECURE_PROVIDER_URLS = parseBoolean(process.env.ALLOW_INSECURE_PROVIDER_URLS, false);
 const ALLOW_PRIVATE_PROVIDER_NETWORKS = parseBoolean(process.env.ALLOW_PRIVATE_PROVIDER_NETWORKS, false);
 const MODEL_CAPABILITIES = new Set(['lesson_generation', 'lesson_revision', 'multimodal_input']);
+const MODEL_ADAPTERS = new Set(['openai_responses', 'openai_chat_completions']);
+const MODEL_PROVIDER_LABELS = Object.freeze({
+  deepseek: 'DeepSeek',
+  openai: 'OpenAI 官方',
+  aliyun_bailian: '阿里云百炼',
+  custom_openai_compatible: '自定义兼容接口',
+});
 const USER_COOKIE = 'teacher_helper_session';
 const ADMIN_COOKIE = 'teacher_helper_admin_session';
 const ADMIN_ENTRY_COOKIE = 'teacher_helper_admin_entry';
@@ -1671,12 +1678,16 @@ async function testModelChannel(channelId) {
   let model;
   let apiKey;
   let displayName;
+  let adapter;
+  let providerType;
   if (channelId === 'environment-fallback') {
     apiKey = getApiKey();
     if (!apiKey) throw new HttpError(404, 'PROVIDER_NOT_FOUND', '服务器安全配置的模型通道不存在');
     baseUrl = OPENAI_BASE_URL;
     model = OPENAI_MODEL;
     displayName = 'OpenAI（服务器安全配置）';
+    adapter = 'openai_responses';
+    providerType = 'openai';
   } else {
     const channel = store.findChannel(channelId);
     if (!channel) throw new HttpError(404, 'PROVIDER_NOT_FOUND', '模型通道不存在');
@@ -1688,37 +1699,81 @@ async function testModelChannel(channelId) {
     baseUrl = channel.baseUrl;
     model = channel.models?.generation || channel.models?.revision || '';
     displayName = channel.displayName;
+    adapter = normalizeStoredProviderAdapter(channel.adapter, channel.provider);
+    providerType = normalizeStoredProviderType(channel.provider);
   }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), Math.min(AI_TIMEOUT_MS, 15_000));
   const startedAt = Date.now();
-  let upstream;
+  let modelsUpstream;
+  let invocationUpstream;
   try {
-    upstream = await fetch(`${baseUrl}/models`, {
+    modelsUpstream = await fetch(`${baseUrl}/models`, {
       headers: { Authorization: `Bearer ${apiKey}` },
       signal: controller.signal,
     });
+    const modelsBody = await modelsUpstream.json().catch(() => ({}));
+    if (!modelsUpstream.ok) {
+      throw new HttpError(502, 'AI_PROVIDER_TEST_FAILED', safeMessage(modelsBody?.error?.message || `模型服务返回 HTTP ${modelsUpstream.status}`), {
+        upstreamStatus: modelsUpstream.status,
+      });
+    }
+
+    const invocationPayload = adapter === 'openai_chat_completions'
+      ? {
+          model,
+          messages: [{ role: 'user', content: '请只回复 OK' }],
+          max_tokens: 32,
+          stream: false,
+          ...(providerType === 'deepseek' ? { thinking: { type: 'disabled' } } : {}),
+        }
+      : {
+          model,
+          input: '请只回复 OK',
+          max_output_tokens: 128,
+          store: false,
+        };
+    invocationUpstream = await fetch(`${baseUrl}/${adapter === 'openai_chat_completions' ? 'chat/completions' : 'responses'}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(invocationPayload),
+      signal: controller.signal,
+    });
+    const invocationBody = await invocationUpstream.json().catch(() => ({}));
+    if (!invocationUpstream.ok) {
+      throw new HttpError(502, 'AI_PROVIDER_TEST_FAILED', safeMessage(invocationBody?.error?.message || `模型调用返回 HTTP ${invocationUpstream.status}`), {
+        upstreamStatus: invocationUpstream.status,
+      });
+    }
+    const invocationText = adapter === 'openai_chat_completions'
+      ? extractChatCompletionText(invocationBody)
+      : extractOutputText(invocationBody);
+    if (!invocationText) {
+      throw new HttpError(502, 'AI_PROVIDER_TEST_FAILED', '模型连接成功，但实际调用没有返回内容');
+    }
+
+    const availableModels = Array.isArray(modelsBody?.data) ? modelsBody.data.map((item) => item?.id).filter(Boolean) : [];
+    return {
+      providerId: channelId,
+      displayName,
+      model,
+      adapter,
+      providerType,
+      modelAvailable: availableModels.length ? availableModels.includes(model) : null,
+      invocationVerified: true,
+      latencyMs: Date.now() - startedAt,
+      checkedAt: new Date().toISOString(),
+    };
   } catch (error) {
+    if (error instanceof HttpError) throw error;
     const message = error?.name === 'AbortError' ? '连接测试超时' : `无法连接模型服务：${safeMessage(error?.message)}`;
     throw new HttpError(502, 'AI_PROVIDER_TEST_FAILED', message);
   } finally {
     clearTimeout(timeout);
   }
-  const body = await upstream.json().catch(() => ({}));
-  if (!upstream.ok) {
-    throw new HttpError(502, 'AI_PROVIDER_TEST_FAILED', safeMessage(body?.error?.message || `模型服务返回 HTTP ${upstream.status}`), {
-      upstreamStatus: upstream.status,
-    });
-  }
-  const availableModels = Array.isArray(body?.data) ? body.data.map((item) => item?.id).filter(Boolean) : [];
-  return {
-    providerId: channelId,
-    displayName,
-    model,
-    modelAvailable: availableModels.length ? availableModels.includes(model) : null,
-    latencyMs: Date.now() - startedAt,
-    checkedAt: new Date().toISOString(),
-  };
 }
 
 function createModelChannel(body, updatedBy) {
@@ -1730,16 +1785,21 @@ function createModelChannel(body, updatedBy) {
   const baseUrl = normalizeProviderBaseUrl(body.baseUrl ?? body.url);
   const apiKey = normalizeProviderApiKey(body.apiKey ?? body.key);
   const models = normalizeProviderModels(body);
+  const provider = normalizeProviderType(body.providerType ?? body.provider);
+  const adapter = normalizeProviderAdapter(body.adapter, provider);
+  const capabilities = normalizeProviderCapabilities(body);
+  assertProviderCapabilitiesSupported(adapter, capabilities);
   const now = new Date().toISOString();
   return store.addChannel({
-    schemaVersion: 'model-channel.v1',
+    schemaVersion: 'model-channel.v2',
     id,
     displayName,
-    adapter: 'openai_responses',
+    provider,
+    adapter,
     enabled: body.enabled !== false,
     baseUrl,
     models,
-    capabilities: normalizeProviderCapabilities(body),
+    capabilities,
     priority: parseBoundedInteger(body.priority, 100, 1, 1000),
     encryptedApiKey: encryptSecret(apiKey, SESSION_SECRET, `model-channel:${id}`),
     keyLastFour: apiKey.slice(-4),
@@ -1767,6 +1827,12 @@ function patchModelChannel(channelId, body, updatedBy) {
     if (body.baseUrl !== undefined || body.url !== undefined) {
       next.baseUrl = normalizeProviderBaseUrl(body.baseUrl ?? body.url);
     }
+    if (body.providerType !== undefined || body.provider !== undefined) {
+      next.provider = normalizeProviderType(body.providerType ?? body.provider, next.provider);
+      next.adapter = normalizeProviderAdapter(body.adapter, next.provider);
+    } else if (body.adapter !== undefined) {
+      next.adapter = normalizeProviderAdapter(body.adapter, next.provider);
+    }
     if (body.priority !== undefined) next.priority = parseBoundedInteger(body.priority, next.priority, 1, 1000);
     if (body.model !== undefined || body.modelId !== undefined || body.models !== undefined) {
       next.models = normalizeProviderModels(body, next.models);
@@ -1774,6 +1840,10 @@ function patchModelChannel(channelId, body, updatedBy) {
     if (body.capabilities !== undefined || body.purposes !== undefined || body.purpose !== undefined) {
       next.capabilities = normalizeProviderCapabilities(body, next.capabilities);
     }
+    assertProviderCapabilitiesSupported(
+      normalizeStoredProviderAdapter(next.adapter, next.provider),
+      normalizeStoredProviderCapabilities(next.capabilities),
+    );
     if (body.apiKey !== undefined || body.key !== undefined) {
       requirePersistentSessionSecret();
       const apiKey = normalizeProviderApiKey(body.apiKey ?? body.key);
@@ -1790,13 +1860,15 @@ function patchModelChannel(channelId, body, updatedBy) {
 
 function publicChannel(channel) {
   const model = channel.models?.generation || channel.models?.revision || '';
+  const providerType = normalizeStoredProviderType(channel.provider);
   return {
     id: channel.id,
     providerId: channel.id,
     name: channel.displayName,
     displayName: channel.displayName,
-    provider: 'OpenAI Compatible',
-    adapter: channel.adapter,
+    provider: MODEL_PROVIDER_LABELS[providerType],
+    providerType,
+    adapter: normalizeStoredProviderAdapter(channel.adapter, providerType),
     enabled: Boolean(channel.enabled),
     baseUrl: channel.baseUrl,
     model,
@@ -1821,7 +1893,8 @@ function publicEnvironmentChannel() {
     providerId: 'environment-fallback',
     name: 'OpenAI（服务器安全配置）',
     displayName: 'OpenAI（服务器安全配置）',
-    provider: 'OpenAI',
+    provider: 'OpenAI 官方',
+    providerType: 'openai',
     adapter: 'openai_responses',
     enabled: true,
     baseUrl: OPENAI_BASE_URL,
@@ -1837,6 +1910,63 @@ function publicEnvironmentChannel() {
     readonly: true,
     managedBy: 'environment',
   };
+}
+
+function normalizeProviderType(value, current = '') {
+  const raw = cleanText(value, 100);
+  const normalized = raw.toLowerCase().replace(/[\s-]+/g, '_');
+  const aliases = {
+    deepseek: 'deepseek',
+    '深度求索': 'deepseek',
+    openai: 'openai',
+    'openai_官方': 'openai',
+    aliyun: 'aliyun_bailian',
+    aliyun_bailian: 'aliyun_bailian',
+    '阿里云百炼': 'aliyun_bailian',
+    openai_compatible: 'custom_openai_compatible',
+    custom_openai_compatible: 'custom_openai_compatible',
+    '自定义兼容接口': 'custom_openai_compatible',
+    '自研模型': 'custom_openai_compatible',
+  };
+  let provider = aliases[raw] || aliases[normalized];
+  if (!provider && !raw) provider = current ? normalizeStoredProviderType(current) : 'custom_openai_compatible';
+  if (!provider || !MODEL_PROVIDER_LABELS[provider]) {
+    throw new HttpError(400, 'PROVIDER_TYPE_INVALID', '请选择受支持的模型供应商类型');
+  }
+  return provider;
+}
+
+function normalizeStoredProviderType(value) {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  const normalized = raw.toLowerCase().replace(/[\s-]+/g, '_');
+  if (MODEL_PROVIDER_LABELS[normalized]) return normalized;
+  if (raw === 'DeepSeek') return 'deepseek';
+  if (raw === 'OpenAI') return 'openai';
+  if (raw === '阿里云百炼' || normalized === 'aliyun') return 'aliyun_bailian';
+  return 'custom_openai_compatible';
+}
+
+function normalizeProviderAdapter(value, provider) {
+  const forced = provider === 'openai' ? 'openai_responses' : null;
+  const adapter = forced || cleanText(value, 100) || 'openai_chat_completions';
+  if (!MODEL_ADAPTERS.has(adapter)) {
+    throw new HttpError(400, 'PROVIDER_ADAPTER_INVALID', '模型接口协议不受支持');
+  }
+  if (provider === 'deepseek' && adapter !== 'openai_chat_completions') {
+    throw new HttpError(400, 'PROVIDER_ADAPTER_INVALID', 'DeepSeek 必须使用 Chat Completions 接口');
+  }
+  return adapter;
+}
+
+function normalizeStoredProviderAdapter(value, provider) {
+  if (MODEL_ADAPTERS.has(value)) return value;
+  return normalizeStoredProviderType(provider) === 'openai' ? 'openai_responses' : 'openai_chat_completions';
+}
+
+function assertProviderCapabilitiesSupported(adapter, capabilities) {
+  if (adapter === 'openai_chat_completions' && capabilities.includes('multimodal_input')) {
+    throw new HttpError(400, 'PROVIDER_CAPABILITY_INVALID', '当前兼容接口仅接入文字生成与修改；图片/PDF 请使用支持 Responses 多模态的通道');
+  }
 }
 
 function normalizeProviderModels(body, current = null) {
@@ -1953,6 +2083,8 @@ function resolveProviderRoute(taskType, { requiresMultimodal = false } = {}) {
     }
     return {
       providerId: channel.id,
+      providerType: normalizeStoredProviderType(channel.provider),
+      adapter: normalizeStoredProviderAdapter(channel.adapter, channel.provider),
       baseUrl: channel.baseUrl,
       model: taskType === 'revision' ? channel.models.revision : channel.models.generation,
       apiKey,
@@ -1966,7 +2098,14 @@ function resolveProviderRoute(taskType, { requiresMultimodal = false } = {}) {
       '尚未配置可用模型通道或 OPENAI_API_KEY，请管理员配置后重试',
     );
   }
-  return { providerId: 'environment-fallback', baseUrl: OPENAI_BASE_URL, model: OPENAI_MODEL, apiKey };
+  return {
+    providerId: 'environment-fallback',
+    providerType: 'openai',
+    adapter: 'openai_responses',
+    baseUrl: OPENAI_BASE_URL,
+    model: OPENAI_MODEL,
+    apiKey,
+  };
 }
 
 function hasConfiguredProvider() {
@@ -2132,7 +2271,7 @@ async function generateLesson(input, requestId, user) {
     input.classProfile ? `班级学情：${input.classProfile}` : '',
     input.requirements ? `教师补充要求：${input.requirements}` : '',
     input.sourceText ? `补充的章节文字：\n${input.sourceText}` : '',
-    `生成信息：模型路由 ${OPENAI_MODEL}；生成时间 ${new Date().toISOString()}`,
+    `生成信息：模型路由由后台自动选择；生成时间 ${new Date().toISOString()}`,
     input.sources.length ? `资料编号：${input.sources.map((_, index) => `upload-${index + 1}`).join('、')}，与随后文件顺序一致；无法可靠定位时 sourceRefs 使用空数组。` : '',
     '请先准确理解所有课本图片和 PDF，再生成完整教案。',
   ].filter(Boolean).join('\n\n');
@@ -2177,6 +2316,17 @@ async function reviseLesson(input, requestId, user) {
 
 async function callOpenAI({ inputText, sources, requestId, taskType, user, expectedDuration }) {
   const provider = resolveProviderRoute(taskType, { requiresMultimodal: sources.length > 0 });
+  if (provider.adapter === 'openai_chat_completions') {
+    if (sources.length > 0) {
+      throw new HttpError(400, 'AI_PROVIDER_MULTIMODAL_UNSUPPORTED', '当前模型通道仅支持文字内容，请配置支持图片/PDF识别的多模态通道');
+    }
+    return callOpenAIChatCompletions({
+      provider,
+      inputText,
+      requestId,
+      expectedDuration,
+    });
+  }
   const content = [{ type: 'input_text', text: inputText }];
   for (const source of sources) {
     if (source.kind === 'image') {
@@ -2238,7 +2388,7 @@ async function callOpenAI({ inputText, sources, requestId, taskType, user, expec
   if (!upstream.ok) {
     const upstreamMessage = upstreamBody?.error?.message || `上游返回 HTTP ${upstream.status}`;
     const authFailure = upstream.status === 401 || upstream.status === 403;
-    const billingFailure = /billing|not active|insufficient_quota|billing_hard_limit/i.test(
+    const billingFailure = /billing|not active|insufficient[_\s-]?(?:quota|balance)|billing_hard_limit/i.test(
       `${upstreamMessage} ${upstreamBody?.error?.code || ''} ${upstreamBody?.error?.type || ''}`,
     );
     const code = billingFailure
@@ -2250,7 +2400,7 @@ async function callOpenAI({ inputText, sources, requestId, taskType, user, expec
         : 'AI_UPSTREAM_ERROR';
     const status = upstream.status === 429 || authFailure || billingFailure ? 503 : 502;
     const message = billingFailure
-      ? 'AI 账户尚未启用计费，请在 OpenAI Platform 完成 billing 设置后重试'
+      ? 'AI 账户余额或计费状态不可用，请在对应模型平台充值或启用计费后重试'
       : safeMessage(upstreamMessage);
     throw new HttpError(status, code, message, {
       upstreamStatus: upstream.status,
@@ -2293,6 +2443,94 @@ async function callOpenAI({ inputText, sources, requestId, taskType, user, expec
   if (validationError) {
     throw new HttpError(502, 'AI_INVALID_OUTPUT', validationError);
   }
+
+  return {
+    lessonPlan,
+    model: upstreamBody.model || provider.model,
+    providerId: provider.providerId,
+    responseId: upstreamBody.id || null,
+    usage: upstreamBody.usage || null,
+  };
+}
+
+async function callOpenAIChatCompletions({ provider, inputText, requestId, expectedDuration }) {
+  const payload = {
+    model: provider.model,
+    messages: [
+      {
+        role: 'system',
+        content: `${SYSTEM_PROMPT}\n\n你必须只输出一个有效 JSON 对象，不要输出 Markdown 代码块或额外说明。输出 JSON 必须符合以下 JSON Schema：\n${JSON.stringify(LESSON_PLAN_SCHEMA)}`,
+      },
+      { role: 'user', content: inputText },
+    ],
+    response_format: { type: 'json_object' },
+    max_tokens: OPENAI_MAX_OUTPUT_TOKENS,
+    stream: false,
+    ...(provider.providerType === 'deepseek' ? { thinking: { type: 'disabled' } } : {}),
+  };
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+  let upstream;
+  try {
+    upstream = await fetch(`${provider.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${provider.apiKey}`,
+        'Content-Type': 'application/json',
+        'X-Client-Request-Id': requestId,
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new HttpError(504, 'AI_TIMEOUT', `AI 服务在 ${AI_TIMEOUT_MS}ms 内没有响应`);
+    }
+    throw new HttpError(502, 'AI_UNREACHABLE', `无法连接 AI 服务：${safeMessage(error?.message)}`);
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  const rawText = await upstream.text();
+  const upstreamBody = safeJsonParse(rawText);
+  if (!upstream.ok) {
+    const upstreamMessage = upstreamBody?.error?.message || `上游返回 HTTP ${upstream.status}`;
+    const authFailure = upstream.status === 401 || upstream.status === 403;
+    const billingFailure = /billing|not active|insufficient[_\s-]?(?:quota|balance)|billing_hard_limit/i.test(
+      `${upstreamMessage} ${upstreamBody?.error?.code || ''} ${upstreamBody?.error?.type || ''}`,
+    );
+    const code = billingFailure
+      ? 'AI_BILLING_REQUIRED'
+      : upstream.status === 429
+        ? 'AI_RATE_LIMITED'
+        : authFailure
+          ? 'AI_AUTHENTICATION_FAILED'
+          : 'AI_UPSTREAM_ERROR';
+    const status = upstream.status === 429 || authFailure || billingFailure ? 503 : 502;
+    throw new HttpError(
+      status,
+      code,
+      billingFailure
+        ? 'AI 账户余额或计费状态不可用，请在对应模型平台充值或启用计费后重试'
+        : safeMessage(upstreamMessage),
+      {
+        upstreamStatus: upstream.status,
+        upstreamCode: upstreamBody?.error?.code || null,
+        upstreamType: upstreamBody?.error?.type || null,
+      },
+    );
+  }
+  if (!upstreamBody || typeof upstreamBody !== 'object') {
+    throw new HttpError(502, 'AI_INVALID_RESPONSE', 'AI 服务返回了无法解析的响应');
+  }
+
+  const outputText = extractChatCompletionText(upstreamBody);
+  if (!outputText) throw new HttpError(502, 'AI_EMPTY_OUTPUT', 'AI 没有返回教案内容');
+  const lessonPlan = parseModelJsonOutput(outputText);
+  if (!lessonPlan) throw new HttpError(502, 'AI_INVALID_OUTPUT', 'AI 返回的教案不是有效 JSON');
+  const validationError = validateLessonPlan(lessonPlan, expectedDuration);
+  if (validationError) throw new HttpError(502, 'AI_INVALID_OUTPUT', validationError);
 
   return {
     lessonPlan,
@@ -2541,6 +2779,26 @@ function extractOutputText(responseBody) {
     }
   }
   return texts.join('').trim();
+}
+
+function extractChatCompletionText(responseBody) {
+  const content = responseBody?.choices?.[0]?.message?.content;
+  if (typeof content === 'string') return content.trim();
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((item) => (item?.type === 'text' && typeof item.text === 'string' ? item.text : ''))
+    .join('')
+    .trim();
+}
+
+function parseModelJsonOutput(value) {
+  const direct = safeJsonParse(value);
+  if (direct) return direct;
+  const withoutFence = String(value || '')
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/, '');
+  return safeJsonParse(withoutFence);
 }
 
 function findRefusal(responseBody) {

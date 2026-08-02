@@ -3,9 +3,6 @@
 .admin-content-error { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid #efc8bd; border-radius: 10px; background: #fff7f4; color: #9c3e28; font-size: 12px; }
 .admin-content-error span { flex: 1; }
 .admin-content-error button { display: grid; place-items: center; border: 0; background: transparent; color: inherit; cursor: pointer; }
-.admin-content-tabs { display: flex; gap: 4px; width: fit-content; padding: 4px; border: 1px solid var(--admin-border); border-radius: 9px; background: #edf2ef; }
-.admin-content-tabs button { min-height: 38px; padding: 0 16px; display: inline-flex; align-items: center; gap: 7px; border: 0; border-radius: 6px; background: transparent; color: var(--admin-text-soft); font-size: 12px; cursor: pointer; }
-.admin-content-tabs button.active { background: #fff; color: var(--admin-jade-dark); box-shadow: 0 1px 4px rgba(20, 40, 34, .1); font-weight: 700; }
 .admin-content-section { overflow: hidden; }
 .admin-content-section-header { min-height: 72px; padding: 16px 18px; display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--admin-border); }
 .admin-content-section-header h2 { margin: 0 0 4px; color: #2e3c35; font-size: 15px; }
@@ -107,8 +104,6 @@
 @media (max-width: 1080px) { .admin-content-tutorial { grid-template-columns: 1fr; } .admin-content-tutorial-settings { position: static; } }
 @media (max-width: 720px) {
   .admin-content-heading .admin-button { width: 100%; }
-  .admin-content-tabs { width: 100%; }
-  .admin-content-tabs button { flex: 1; justify-content: center; }
   .admin-content-section-header { align-items: stretch; flex-direction: column; }
   .admin-content-section-header .admin-button { width: 100%; }
   .admin-content-summary { gap: 15px; justify-content: space-between; }

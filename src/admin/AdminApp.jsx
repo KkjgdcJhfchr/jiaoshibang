@@ -46,7 +46,7 @@ const navigationItems = [
   { id: 'plans', label: '套餐设置', icon: GraduationCap },
   { id: 'promotions', label: '优惠活动', icon: BadgePercent },
   { id: 'announcements', label: '公告管理', icon: Bell },
-  { id: 'tutorial', label: '使用教程', icon: BookOpenCheck },
+  { id: 'tutorial', label: '新手教程', icon: BookOpenCheck },
   { id: 'knowledgeGraph', label: '教学认知图谱', icon: Network },
   { id: 'questionBank', label: '题库管理', icon: ListChecks },
   { id: 'models', label: 'AI模型通道', icon: Bot },
@@ -55,6 +55,13 @@ const navigationItems = [
   { id: 'orders', label: '订单管理', icon: ReceiptText },
   { id: 'securitySettings', label: '安全与通信', icon: KeyRound },
   { id: 'settings', label: '系统设置', icon: Settings },
+]
+
+const modelProviderPresets = [
+  { value: 'deepseek', label: 'DeepSeek', adapter: 'openai_chat_completions', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-pro', capabilities: ['lesson_generation', 'lesson_revision'] },
+  { value: 'openai', label: 'OpenAI 官方', adapter: 'openai_responses', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.6', capabilities: ['lesson_generation', 'lesson_revision', 'multimodal_input'] },
+  { value: 'aliyun_bailian', label: '阿里云百炼', adapter: 'openai_chat_completions', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: '', capabilities: ['lesson_generation', 'lesson_revision'] },
+  { value: 'custom_openai_compatible', label: '自定义兼容接口（第三方/自研）', adapter: 'openai_chat_completions', baseUrl: '', model: '', capabilities: ['lesson_generation', 'lesson_revision'] },
 ]
 
 function providerToChannel(provider, index = 0) {
@@ -70,6 +77,7 @@ function providerToChannel(provider, index = 0) {
   return {
     id: provider.id || provider.providerId,
     name: provider.displayName || provider.name || `模型通道 ${index + 1}`,
+    provider: provider.provider || (provider.providerType === 'openai' ? 'OpenAI 官方' : '自定义兼容接口'),
     model,
     purpose: capabilities.length ? capabilities.map((item) => capabilityLabels[item] || item).join('、') : provider.purpose || '教案生成、对话修改、图片/PDF识别',
     capabilities,
@@ -126,7 +134,7 @@ function ChannelHealthTable({ channels, onToggle, onTest, query, busyIds }) {
           <tbody>
             {filteredChannels.map((channel) => (
               <tr key={channel.id}>
-                <td><span className={`admin-health-dot admin-health-dot-${channel.health}`} /><span className="admin-channel-identity"><b>{channel.name}</b><small>{channel.managedBy === 'environment' ? `服务器安全配置${channel.keyLastFour ? ` · 密钥尾号 ••••${channel.keyLastFour}` : ''}` : channel.keyLastFour ? `密钥尾号 ••••${channel.keyLastFour}` : '密钥已加密保存'}</small></span></td>
+                <td><span className={`admin-health-dot admin-health-dot-${channel.health}`} /><span className="admin-channel-identity"><b>{channel.name}</b><small>{channel.provider} · {channel.managedBy === 'environment' ? `服务器安全配置${channel.keyLastFour ? ` · 密钥尾号 ••••${channel.keyLastFour}` : ''}` : channel.keyLastFour ? `密钥尾号 ••••${channel.keyLastFour}` : '密钥已加密保存'}</small></span></td>
                 <td>{channel.model}</td>
                 <td>{channel.purpose}</td>
                 <td>{channel.priority}</td>
@@ -370,7 +378,16 @@ function TrainingMaterialsPage({ query }) {
 }
 
 function AddChannelModal({ open, onClose, onAdd }) {
-  const emptyForm = () => ({ name: '', provider: 'OpenAI Compatible', baseUrl: 'https://api.openai.com/v1', apiKey: '', model: '', capabilities: ['lesson_generation', 'lesson_revision', 'multimodal_input'], priority: '7' })
+  const emptyForm = () => ({
+    name: '',
+    provider: modelProviderPresets[0].value,
+    adapter: modelProviderPresets[0].adapter,
+    baseUrl: modelProviderPresets[0].baseUrl,
+    apiKey: '',
+    model: modelProviderPresets[0].model,
+    capabilities: [...modelProviderPresets[0].capabilities],
+    priority: '7',
+  })
   const [form, setForm] = useState(emptyForm)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -392,6 +409,18 @@ function AddChannelModal({ open, onClose, onAdd }) {
   if (!open) return null
 
   const updateField = (field) => (event) => setForm((current) => ({ ...current, [field]: event.target.value }))
+  const updateProvider = (event) => {
+    const preset = modelProviderPresets.find((item) => item.value === event.target.value)
+    if (!preset) return
+    setForm((current) => ({
+      ...current,
+      provider: preset.value,
+      adapter: preset.adapter,
+      baseUrl: preset.baseUrl,
+      model: preset.model,
+      capabilities: [...preset.capabilities],
+    }))
+  }
   const handleSubmit = async (event) => {
     event.preventDefault()
     if (saving) return
@@ -423,11 +452,11 @@ function AddChannelModal({ open, onClose, onAdd }) {
   return (
     <div className="admin-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
       <section className="admin-modal" role="dialog" aria-modal="true" aria-labelledby="admin-add-channel-title">
-        <header className="admin-modal-header"><div><h2 id="admin-add-channel-title">添加模型通道</h2><p>接入 OpenAI Compatible 或其他大模型服务。</p></div><button type="button" onClick={onClose} aria-label="关闭"><X size={20} /></button></header>
+        <header className="admin-modal-header"><div><h2 id="admin-add-channel-title">添加模型通道</h2><p>选择官方供应商，或接入第三方兼容接口。</p></div><button type="button" onClick={onClose} aria-label="关闭"><X size={20} /></button></header>
         <form className="admin-modal-form" onSubmit={handleSubmit}>
           <div className="admin-form-grid">
-            <label><span>通道名称</span><input value={form.name} onChange={updateField('name')} placeholder="例如：通道-7（备用）" required autoFocus disabled={saving} /></label>
-            <label><span>供应商类型</span><select value={form.provider} onChange={updateField('provider')} disabled={saving}><option>OpenAI Compatible</option><option>OpenAI</option><option>阿里云百炼</option><option>火山方舟</option><option>自研模型</option></select></label>
+            <label><span>通道名称</span><input value={form.name} onChange={updateField('name')} placeholder="例如：DeepSeek 主通道" required autoFocus disabled={saving} /></label>
+            <label><span>供应商类型</span><select value={form.provider} onChange={updateProvider} disabled={saving}>{modelProviderPresets.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
           </div>
           <label><span>API Base URL</span><input value={form.baseUrl} onChange={updateField('baseUrl')} placeholder="https://api.example.com/v1" required disabled={saving} /></label>
           <label><span>API Key</span><input value={form.apiKey} onChange={updateField('apiKey')} type="password" autoComplete="new-password" placeholder="密钥保存后仅显示末四位" required disabled={saving} /></label>
@@ -439,9 +468,12 @@ function AddChannelModal({ open, onClose, onAdd }) {
                 ['lesson_generation', '教案生成'],
                 ['lesson_revision', '对话修改'],
                 ['multimodal_input', '图片/PDF识别'],
-              ].map(([value, label]) => <label key={value}><input type="checkbox" checked={form.capabilities.includes(value)} onChange={() => toggleCapability(value)} disabled={saving} /><span>{label}</span></label>)}
+              ].map(([value, label]) => {
+                const unavailable = value === 'multimodal_input' && form.adapter === 'openai_chat_completions'
+                return <label key={value}><input type="checkbox" checked={form.capabilities.includes(value)} onChange={() => toggleCapability(value)} disabled={saving || unavailable} /><span>{label}{unavailable ? '（当前接口不支持）' : ''}</span></label>
+              })}
             </div>
-            <small>同一个 API 通道可以同时承担全部用途。</small>
+            <small>{form.provider === 'deepseek' ? 'DeepSeek V4 官方 API 当前仅支持文字；图片/PDF 需另配支持多模态的通道。' : form.adapter === 'openai_chat_completions' ? '当前兼容接口用于文字教案生成和修改。' : 'OpenAI 官方 Responses 通道可同时承担文字与图片/PDF识别。'}</small>
           </fieldset>
           <label><span>路由优先级</span><input value={form.priority} onChange={updateField('priority')} type="number" min="1" max="99" required disabled={saving} /><small>数字越小，调用优先级越高。</small></label>
           <div className="admin-modal-callout"><ShieldCheck size={18} /><p>密钥将以加密形式保存，页面、日志和任务响应中不会返回完整内容。</p></div>
@@ -506,7 +538,7 @@ function ModelChannelsPage({ query, onNotice }) {
         health: 'healthy',
         latency: Number.isFinite(Number(result.latencyMs)) ? `${result.latencyMs} ms` : item.latency,
       } : item))
-      onNotice(`${channel.name}连接成功${result.modelAvailable === false ? '，但当前模型不在服务商模型列表中' : ''}`)
+      onNotice(`${channel.name}${result.invocationVerified ? '连接与实际调用均成功' : '连接成功'}${result.modelAvailable === false ? '，但当前模型不在服务商模型列表中' : ''}`)
     } catch (requestError) {
       setChannels((current) => current.map((item) => item.id === channel.id ? { ...item, health: 'abnormal' } : item))
       onNotice(`连接测试失败：${requestError.message}`)
@@ -523,6 +555,8 @@ function ModelChannelsPage({ query, onNotice }) {
       name: form.name,
       displayName: form.name,
       provider: form.provider,
+      providerType: form.provider,
+      adapter: form.adapter,
       baseUrl: form.baseUrl,
       apiKey: form.apiKey,
       model: form.model,

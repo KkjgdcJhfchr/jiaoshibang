@@ -419,7 +419,7 @@ test('微信下单、幂等重放、回调验签解密和重复通知保持一�
   assert.equal(duplicate.duplicate, true);
 });
 
-test('支付宝页面支付签名、回调验签、金额校验与通知幂等闭环', async (context) => {
+test('支付宝页面支付在未配置卖家 ID 时仍可完成签名、回调验签与通知幂等闭环', async (context) => {
   const dataDir = temporaryDataDir();
   context.after(() => removeTemporaryDataDir(dataDir));
   let checkoutConfirmations = 0;
@@ -440,7 +440,7 @@ test('支付宝页面支付签名、回调验签、金额校验与通知幂等�
       membershipExpiresAt: new Date(FIXED_DATE.getTime() + 365 * 86_400_000).toISOString(),
     }),
   });
-  service.saveConfig('alipay', { ...ALIPAY_CONFIG, enabled: true }, 'test-admin');
+  service.saveConfig('alipay', { ...ALIPAY_CONFIG, sellerId: '', enabled: true }, 'test-admin');
 
   const created = await service.createOrder(
     { id: 'user-alipay' },
@@ -485,7 +485,6 @@ test('支付宝页面支付签名、回调验签、金额校验与通知幂等�
     total_amount: '88.00',
     receipt_amount: '88.00',
     buyer_pay_amount: '88.00',
-    seller_id: ALIPAY_CONFIG.sellerId,
   });
   notification.set('sign', cryptoSign(
     'RSA-SHA256',
