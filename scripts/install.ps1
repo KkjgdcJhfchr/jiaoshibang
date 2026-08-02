@@ -64,11 +64,39 @@ try {
     return ([BitConverter]::ToString($Bytes)).Replace('-', '').ToLowerInvariant()
   }
 
+  function Test-AdminEntryPath([string]$Value) {
+    if (-not $Value -or $Value -notmatch '^/[A-Za-z0-9_-]{40}$') { return $false }
+    $Token = $Value.Substring(1)
+    return $Token -notmatch '^(?i:admin)' -and
+      $Token -cmatch '[A-Z]' -and
+      $Token -cmatch '[a-z]' -and
+      $Token -match '[0-9]' -and
+      $Token -match '[-_]'
+  }
+
+  function New-AdminEntryPath {
+    $Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+    for ($Attempt = 0; $Attempt -lt 100; $Attempt++) {
+      $Bytes = New-Object byte[] 40
+      $Generator = [Security.Cryptography.RandomNumberGenerator]::Create()
+      try { $Generator.GetBytes($Bytes) } finally { $Generator.Dispose() }
+      $Token = -join ($Bytes | ForEach-Object { $Alphabet[[int]$_ % 64] })
+      $Candidate = "/$Token"
+      if (Test-AdminEntryPath $Candidate) { return $Candidate }
+    }
+    throw 'Unable to generate a secure administrator entry path.'
+  }
+
   $LocalEnv = Join-Path $RootDir '.env.local'
   $SessionSecret = Get-EnvValue $EnvFile 'SESSION_SECRET'
   if (-not $SessionSecret) { $SessionSecret = New-HexSecret }
   $SafetySalt = Get-EnvValue $EnvFile 'SAFETY_ID_SALT'
   if (-not $SafetySalt) { $SafetySalt = New-HexSecret }
+  $AdminEntryPath = Get-EnvValue $EnvFile 'ADMIN_ENTRY_PATH'
+  if (-not $AdminEntryPath) { $AdminEntryPath = New-AdminEntryPath }
+  if (-not (Test-AdminEntryPath $AdminEntryPath)) {
+    throw 'ADMIN_ENTRY_PATH in .env.production is invalid. Installation stopped to avoid changing the administrator URL unexpectedly.'
+  }
   $OpenAIKey = Get-EnvValue $EnvFile 'OPENAI_API_KEY'
   if (-not $OpenAIKey) { $OpenAIKey = Get-EnvValue $LocalEnv 'OPENAI_API_KEY' }
   $OpenAIBaseUrl = Get-EnvValue $EnvFile 'OPENAI_BASE_URL'
@@ -93,6 +121,7 @@ try {
     'MAX_IMAGES=12'
     "SESSION_SECRET=$SessionSecret"
     "SAFETY_ID_SALT=$SafetySalt"
+    "ADMIN_ENTRY_PATH=$AdminEntryPath"
   )
   [IO.File]::WriteAllLines($EnvFile, $Lines, [Text.UTF8Encoding]::new($false))
 
@@ -120,6 +149,8 @@ try {
     if (-not $Healthy) { throw 'Containers started, but the health check did not pass. Inspect the Compose logs.' }
 
     Write-Host "Deployment complete: https://$Domain"
+    Write-Host "Administrator entry: https://$Domain$AdminEntryPath"
+    Write-Host 'Keep this URL private. You can recover it from ADMIN_ENTRY_PATH in .env.production.'
     Write-Host 'Caddy will obtain and renew the certificate automatically. Initial issuance can take about a minute.'
   } finally {
     Pop-Location

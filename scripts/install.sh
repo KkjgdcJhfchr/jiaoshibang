@@ -137,8 +137,47 @@ random_hex() {
   fi
 }
 
+is_valid_admin_entry_path() {
+  local value="${1:-}" token
+  [[ "$value" == /* ]] || return 1
+  token="${value:1}"
+  ((${#token} == 40)) || return 1
+  [[ "$token" =~ ^[A-Za-z0-9_-]{40}$ ]] || return 1
+  [[ "${token,,}" != admin* ]] || return 1
+  [[ "$token" == *[A-Z]* ]] || return 1
+  [[ "$token" == *[a-z]* ]] || return 1
+  [[ "$token" == *[0-9]* ]] || return 1
+  [[ "$token" == *[-_]* ]] || return 1
+}
+
+random_admin_entry_path() {
+  local alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_' token line byte
+  for _ in {1..100}; do
+    token=''
+    while IFS= read -r line; do
+      for byte in $line; do
+        ((${#token} < 40)) || break
+        token+="${alphabet:$((byte % 64)):1}"
+      done
+    done < <(od -An -v -N40 -tu1 /dev/urandom)
+    if is_valid_admin_entry_path "/$token"; then
+      printf '/%s' "$token"
+      return 0
+    fi
+  done
+  echo "无法生成安全的管理员入口地址。" >&2
+  return 1
+}
+
 SESSION_SECRET="$(read_env_value "$ENV_FILE" SESSION_SECRET || random_hex)"
 SAFETY_ID_SALT="$(read_env_value "$ENV_FILE" SAFETY_ID_SALT || random_hex)"
+ADMIN_ENTRY_PATH="$(read_env_value "$ENV_FILE" ADMIN_ENTRY_PATH || true)"
+if [[ -z "$ADMIN_ENTRY_PATH" ]]; then
+  ADMIN_ENTRY_PATH="$(random_admin_entry_path)"
+elif ! is_valid_admin_entry_path "$ADMIN_ENTRY_PATH"; then
+  echo ".env.production 中的 ADMIN_ENTRY_PATH 无效；为避免意外更换后台入口，安装已停止。" >&2
+  exit 2
+fi
 OPENAI_API_KEY="$(read_env_value "$ENV_FILE" OPENAI_API_KEY || read_env_value "$ROOT_DIR/.env.local" OPENAI_API_KEY || true)"
 OPENAI_BASE_URL="$(read_env_value "$ENV_FILE" OPENAI_BASE_URL || read_env_value "$ROOT_DIR/.env.local" OPENAI_BASE_URL || printf '%s' 'https://api.openai.com/v1')"
 OPENAI_MODEL="$(read_env_value "$ENV_FILE" OPENAI_MODEL || read_env_value "$ROOT_DIR/.env.local" OPENAI_MODEL || printf '%s' 'gpt-5.6')"
@@ -160,6 +199,7 @@ ENV_TMP="${ENV_FILE}.tmp.$$"
   printf 'MAX_IMAGES=12\n'
   printf 'SESSION_SECRET=%s\n' "$SESSION_SECRET"
   printf 'SAFETY_ID_SALT=%s\n' "$SAFETY_ID_SALT"
+  printf 'ADMIN_ENTRY_PATH=%s\n' "$ADMIN_ENTRY_PATH"
 } > "$ENV_TMP"
 chmod 600 "$ENV_TMP"
 mv -f "$ENV_TMP" "$ENV_FILE"
@@ -181,6 +221,8 @@ compose up -d --remove-orphans
 for _ in {1..30}; do
   if compose exec -T app node -e "fetch('http://127.0.0.1:8787/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" >/dev/null 2>&1; then
     echo "部署完成：https://$DOMAIN"
+    echo "管理员入口：https://$DOMAIN$ADMIN_ENTRY_PATH"
+    echo "请私密保存管理员入口；也可在服务器 .env.production 的 ADMIN_ENTRY_PATH 中找回。"
     echo "Caddy 将自动申请并续期证书；首次签发可能需要约一分钟。"
     exit 0
   fi

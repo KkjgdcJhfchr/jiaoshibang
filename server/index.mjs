@@ -47,6 +47,7 @@ import {
   normalizeVerificationTarget,
   VerificationCodeError,
 } from './verification-codes.mjs';
+import { isLegacyAdminPagePath, isValidAdminEntryPath, normalizeRoutingPath } from './admin-entry.mjs';
 
 const ROOT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 loadEnvFile(join(ROOT_DIR, '.env.local'));
@@ -68,16 +69,22 @@ const OPENAI_MAX_OUTPUT_TOKENS = parsePositiveInteger(process.env.OPENAI_MAX_OUT
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const CONFIGURED_SESSION_SECRET = process.env.SESSION_SECRET?.trim() || '';
 const CONFIGURED_SAFETY_ID_SALT = process.env.SAFETY_ID_SALT?.trim() || '';
+const CONFIGURED_ADMIN_ENTRY_PATH = process.env.ADMIN_ENTRY_PATH?.trim() || '';
 if (IS_PRODUCTION && CONFIGURED_SESSION_SECRET.length < 32) {
   throw new Error('生产环境 SESSION_SECRET 必须至少 32 个字符');
 }
 if (IS_PRODUCTION && CONFIGURED_SAFETY_ID_SALT.length < 32) {
   throw new Error('生产环境 SAFETY_ID_SALT 必须至少 32 个字符');
 }
+if ((IS_PRODUCTION || CONFIGURED_ADMIN_ENTRY_PATH) && !isValidAdminEntryPath(CONFIGURED_ADMIN_ENTRY_PATH)) {
+  throw new Error('生产环境 ADMIN_ENTRY_PATH 必须为 / 加 40 位 URL 安全随机字符，并包含大小写字母、数字和 - 或 _');
+}
 const SESSION_SECRET = CONFIGURED_SESSION_SECRET || randomBytes(32).toString('hex');
 const SAFETY_ID_SALT = CONFIGURED_SAFETY_ID_SALT || SESSION_SECRET;
+const ADMIN_ENTRY_PATH = isValidAdminEntryPath(CONFIGURED_ADMIN_ENTRY_PATH) ? CONFIGURED_ADMIN_ENTRY_PATH : '';
 const USER_SESSION_TTL_SECONDS = parsePositiveInteger(process.env.USER_SESSION_TTL_SECONDS, 7 * 24 * 60 * 60);
 const ADMIN_SESSION_TTL_SECONDS = parsePositiveInteger(process.env.ADMIN_SESSION_TTL_SECONDS, 8 * 60 * 60);
+const ADMIN_ENTRY_TTL_SECONDS = parsePositiveInteger(process.env.ADMIN_ENTRY_TTL_SECONDS, ADMIN_SESSION_TTL_SECONDS);
 const DEFAULT_FREE_CREDITS = parseNonNegativeInteger(process.env.DEFAULT_FREE_CREDITS, 3);
 const AUTH_RATE_LIMIT_WINDOW_MS = parsePositiveInteger(process.env.AUTH_RATE_LIMIT_WINDOW_MS, 10 * 60 * 1000);
 const AUTH_RATE_LIMIT_IP_MAX = parsePositiveInteger(process.env.AUTH_RATE_LIMIT_IP_MAX, 20);
@@ -108,6 +115,10 @@ const ALLOW_INSECURE_PROVIDER_URLS = parseBoolean(process.env.ALLOW_INSECURE_PRO
 const ALLOW_PRIVATE_PROVIDER_NETWORKS = parseBoolean(process.env.ALLOW_PRIVATE_PROVIDER_NETWORKS, false);
 const USER_COOKIE = 'teacher_helper_session';
 const ADMIN_COOKIE = 'teacher_helper_admin_session';
+const ADMIN_ENTRY_COOKIE = 'teacher_helper_admin_entry';
+const ADMIN_ENTRY_SUBJECT = ADMIN_ENTRY_PATH
+  ? stablePrivateHash(`admin-entry:${ADMIN_ENTRY_PATH}`, SAFETY_ID_SALT)
+  : '';
 const store = createDataStore(DATA_DIR);
 const membershipCatalog = createMembershipCatalog({ dataDir: DATA_DIR });
 const DUMMY_PASSWORD = hashPassword(randomBytes(32).toString('hex'));
@@ -247,6 +258,10 @@ async function handleRequest(request, response) {
   setCommonHeaders(response, requestId);
 
   try {
+    if (IS_PRODUCTION && (url.pathname === '/api/admin' || url.pathname.startsWith('/api/admin/'))) {
+      requireAdminEntryGate(request);
+    }
+
     if (request.method === 'OPTIONS' && url.pathname.startsWith('/api/')) {
       response.writeHead(204, corsHeaders(request));
       response.end();
@@ -549,7 +564,14 @@ async function handleRequest(request, response) {
     sendError(response, error, requestId);
   } finally {
     const status = response.statusCode || 200;
-    console.log(`${request.method} ${url.pathname} ${status} ${Date.now() - startedAt}ms requestId=${requestId}`);
+    const normalizedLogPath = normalizeRoutingPath(url.pathname);
+    const loggedPath = ADMIN_ENTRY_PATH && (
+      url.pathname.startsWith(ADMIN_ENTRY_PATH)
+      || normalizedLogPath?.startsWith(ADMIN_ENTRY_PATH)
+    )
+      ? '[admin-entry]'
+      : url.pathname;
+    console.log(`${request.method} ${loggedPath} ${status} ${Date.now() - startedAt}ms requestId=${requestId}`);
   }
 }
 
@@ -1373,6 +1395,31 @@ function sendAdminSession(response, request, admin, status = 200) {
   });
 }
 
+function requireAdminEntryGate(request) {
+  const token = parseCookies(request.headers.cookie).get(ADMIN_ENTRY_COOKIE);
+  const payload = verifySessionToken(token, { role: 'admin-entry', secret: SESSION_SECRET });
+  if (!payload || payload.sub !== ADMIN_ENTRY_SUBJECT) {
+    throw new HttpError(404, 'NOT_FOUND', '接口不存在');
+  }
+}
+
+function createAdminEntryGateCookie(request) {
+  const session = createSessionToken({
+    subject: ADMIN_ENTRY_SUBJECT,
+    role: 'admin-entry',
+    secret: SESSION_SECRET,
+    ttlSeconds: ADMIN_ENTRY_TTL_SECONDS,
+  });
+  return [
+    `${ADMIN_ENTRY_COOKIE}=${encodeURIComponent(session.token)}`,
+    'Path=/api/admin',
+    'HttpOnly',
+    'SameSite=Strict',
+    shouldUseSecureCookie(request) ? 'Secure' : '',
+    `Max-Age=${ADMIN_ENTRY_TTL_SECONDS}`,
+  ].filter(Boolean).join('; ');
+}
+
 function requireAdminSession(request) {
   const admin = store.readAdmin();
   if (!admin) throw new HttpError(503, 'ADMIN_NOT_INITIALIZED', '管理员尚未初始化，请先运行安装或管理员初始化命令');
@@ -2083,8 +2130,17 @@ async function serveStatic(request, response, pathname) {
   } catch {
     throw new HttpError(400, 'INVALID_PATH', '请求路径无效');
   }
+  const isAdminEntry = Boolean(ADMIN_ENTRY_PATH) && pathname === ADMIN_ENTRY_PATH;
+  if (!isAdminEntry && (isLegacyAdminPagePath(pathname) || isLegacyAdminPagePath(decodedPath))) {
+    throw new HttpError(404, 'NOT_FOUND', '页面不存在');
+  }
+  if (!isAdminEntry && ADMIN_ENTRY_PATH && pathname.startsWith(ADMIN_ENTRY_PATH)) {
+    throw new HttpError(404, 'NOT_FOUND', '页面不存在');
+  }
   const relativePath = normalize(decodedPath).replace(/^[/\\]+/, '');
-  let filePath = resolve(DIST_DIR, relativePath || 'index.html');
+  let filePath = isAdminEntry
+    ? join(DIST_DIR, 'admin.html')
+    : resolve(DIST_DIR, relativePath || 'index.html');
   if (filePath !== DIST_DIR && !filePath.startsWith(`${DIST_DIR}${sep}`)) {
     throw new HttpError(403, 'FORBIDDEN', '禁止访问该路径');
   }
@@ -2095,6 +2151,7 @@ async function serveStatic(request, response, pathname) {
     fileStat = await safeStat(filePath);
   }
   if (!fileStat?.isFile()) {
+    if (isAdminEntry) throw new HttpError(503, 'ADMIN_FRONTEND_NOT_BUILT', '管理端前端尚未构建');
     filePath = join(DIST_DIR, 'index.html');
     fileStat = await safeStat(filePath);
   }
@@ -2102,11 +2159,17 @@ async function serveStatic(request, response, pathname) {
 
   const extension = extname(filePath).toLowerCase();
   const immutable = /[/\\]assets[/\\].+\.[a-f0-9]{8,}\./i.test(filePath);
-  response.writeHead(200, {
+  const headers = {
     'Content-Type': MIME_TYPES.get(extension) || 'application/octet-stream',
     'Content-Length': fileStat.size,
-    'Cache-Control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache',
-  });
+    'Cache-Control': isAdminEntry ? 'no-store' : immutable ? 'public, max-age=31536000, immutable' : 'no-cache',
+    ...(isAdminEntry ? {
+      'Referrer-Policy': 'no-referrer',
+      'X-Robots-Tag': 'noindex, nofollow, noarchive',
+      ...(IS_PRODUCTION ? { 'Set-Cookie': createAdminEntryGateCookie(request) } : {}),
+    } : {}),
+  };
+  response.writeHead(200, headers);
   if (request.method === 'HEAD') {
     response.end();
     return;

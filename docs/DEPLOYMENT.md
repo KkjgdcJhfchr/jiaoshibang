@@ -13,12 +13,25 @@
 
 ## Linux 一键安装
 
+截图中命令没有开始安装，是因为新服务器没有 `gh`，命令在克隆私有仓库之前就已退出。全新 Ubuntu/Debian 先执行：
+
+```bash
+apt-get update
+apt-get install -y git gh
+gh auth login --hostname github.com --git-protocol https --web
+gh auth setup-git
+gh repo clone KkjgdcJhfchr/jiaoshibang jiaoshibang
+cd jiaoshibang
+```
+
+设备登录完成后再运行项目安装器：
+
 ```bash
 chmod +x scripts/install.sh
 sudo ./scripts/install.sh
 ```
 
-脚本只询问域名、管理员账号和管理员密码。若 Debian/Ubuntu 尚未安装 Docker，脚本会尝试自动安装。非交互安装必须通过权限受控的密码文件，避免密码出现在 shell 历史中：
+脚本只询问域名、管理员账号和管理员密码，并生成一个由 40 位大小写字母、数字、`-`、`_` 组成的随机管理入口。若 Debian/Ubuntu 尚未安装 Docker，脚本会尝试自动安装。非交互安装必须通过权限受控的密码文件，避免密码出现在 shell 历史中：
 
 ```bash
 sudo ./scripts/install.sh \
@@ -67,7 +80,8 @@ docker compose --env-file .env.production up -d --force-recreate app
 
 ## 管理员登录、用户账号与额度
 
-- 安装器会初始化一个管理员账号；密码只在初始化时通过标准输入传递，数据卷中保存的是带随机盐的 scrypt 哈希。部署完成后从 `https://你的域名/admin` 登录，服务端接口为 `POST /api/admin/login`。
+- 安装器会初始化一个管理员账号；密码只在初始化时通过标准输入传递，数据卷中保存的是带随机盐的 scrypt 哈希。部署完成后，终端会打印 `https://你的域名/<40位随机入口>`；请私密保存，也可从 `.env.production` 的 `ADMIN_ENTRY_PATH` 找回。重跑安装器会复用原值，`/admin` 与 `/admin.html` 均返回 404。
+- 正确入口会签发仅限 `/api/admin`、HttpOnly、SameSite=Strict 的短期入口凭证；没有先访问正确入口时，管理接口统一返回 404。隐藏入口是纵深防护，账号密码、可选验证码、登录限流和管理员会话仍然必须保留。
 - 管理员和普通用户使用相互隔离的 HttpOnly 会话 Cookie。HTTPS 下 Cookie 带 `Secure`、`SameSite=Strict`，默认管理员会话 8 小时、用户会话 7 天，可分别通过 `ADMIN_SESSION_TTL_SECONDS`、`USER_SESSION_TTL_SECONDS` 调整。
 - 用户可通过 `/api/auth/register`、`/api/auth/login`、`/api/auth/logout` 和 `/api/auth/session` 完成账号注册、登录与会话检查。新账号默认获得 `DEFAULT_FREE_CREDITS=3` 次额度。
 - AI 请求会先预占 1 次额度，模型成功返回并通过结构校验后才正式扣除；上游失败时释放预占额度。默认还启用登录 IP 限流、用户/IP 生成限流与全局 AI 并发上限。
@@ -141,7 +155,7 @@ docker compose --env-file .env.production logs caddy --tail=100
 
 健康接口返回 `aiConfigured`，但永远不会返回 API Key。还应在浏览器完成以下冒烟验证：
 
-1. 教师端与 `/admin` 均可刷新并正常加载。
+1. 教师端与安装器打印的随机管理入口均可刷新并正常加载，`/admin`、`/admin/` 和 `/admin.html` 均为 404。
 2. 上传一张受支持的课本图片或 PDF 后可以生成结构化教案。
 3. 断开或移除密钥时，前端能展示服务端的清晰错误，而不是伪造成功结果。
 4. 修改教案后仍至少包含 10 道带答案与解析的习题。

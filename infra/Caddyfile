@@ -21,6 +21,9 @@
 	@health path /api/health
 	header @health Cache-Control "no-store"
 
+	# 管理入口由安装器随机生成；不要把完整秘密路径写入 access log。
+	log_skip {$ADMIN_ENTRY_PATH}*
+
 	reverse_proxy app:8787 {
 		health_uri /api/health
 		health_interval 30s

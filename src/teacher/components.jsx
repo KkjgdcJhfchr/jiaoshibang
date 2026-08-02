@@ -20,8 +20,9 @@ import {
 import { Link, navigate } from '../lib/navigation.jsx';
 
 export function Logo({ compact = false, admin = false }) {
+  const destination = admin ? globalThis.location?.pathname || '/' : '/';
   return (
-    <Link to={admin ? '/admin' : '/'} className={`brand ${compact ? 'brand-compact' : ''}`} aria-label="教师帮首页">
+    <Link to={destination} className={`brand ${compact ? 'brand-compact' : ''}`} aria-label="教师帮首页">
       <span className="brand-mark" aria-hidden="true">
         <BookOpen size={22} strokeWidth={2.2} />
         <i />

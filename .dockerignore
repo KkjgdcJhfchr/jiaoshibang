@@ -31,6 +31,7 @@ secrets/
 !package-lock.json
 !npm-shrinkwrap.json
 !index.html
+!admin.html
 !vite.config.js
 
 !src/

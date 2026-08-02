@@ -28,7 +28,7 @@ pnpm install
 pnpm run dev
 ```
 
-打开 `http://127.0.0.1:5188`，管理后台位于 `http://127.0.0.1:5188/admin`。
+打开 `http://127.0.0.1:5188`。开发服务首次启动会生成 40 位随机管理入口并打印完整网址；该值保存在 `data/.development-secrets.json`，`/admin` 不再可用。
 
 ```powershell
 pnpm run build
@@ -47,11 +47,26 @@ chmod +x scripts/install.sh
 sudo ./scripts/install.sh
 ```
 
+全新的 Ubuntu 服务器在获取私有 GitHub 仓库前，先安装并登录 GitHub CLI：
+
+```bash
+apt-get update
+apt-get install -y git gh
+gh auth login --hostname github.com --git-protocol https --web
+gh auth setup-git
+gh repo clone KkjgdcJhfchr/jiaoshibang jiaoshibang
+cd jiaoshibang
+chmod +x scripts/install.sh
+./scripts/install.sh
+```
+
+`gh auth login` 会显示一次性验证码，需要按提示在浏览器确认；私有仓库无法在没有 GitHub 授权的情况下直接克隆。不要把 Personal Access Token 写入命令或仓库地址。
+
 安装程序交互式收集域名、管理员账号和管理员密码，并启动应用与 Caddy。Cloudflare 首次签发证书时需将记录暂设为 **DNS only**；签发成功后可切回代理并使用 **Full (strict)**。
 
 完整步骤见 [部署说明](docs/DEPLOYMENT.md)，安全/通信/支付边界见 [接入说明](docs/SECURITY-COMMUNICATION-PAYMENTS.md)，训练与蒸馏路线见 [AI 数据闭环设计](docs/AI-TRAINING-PIPELINE.md)，立项书与当前版本的取舍见 [立项书需求对齐说明](docs/WORD-REQUIREMENTS-ALIGNMENT.md)。
 
-部署后从 `https://你的域名/admin` 使用安装时设置的管理员账号登录。普通用户注册默认赠送 3 次生成额度；生成请求先预占额度，只有模型成功返回并通过校验后才扣除。登录、用户/IP 生成频率和全局 AI 并发均有服务端限制，可在 `.env.production` 中调整。
+安装器会生成并在结束时打印 `https://你的域名/<40位随机入口>`，使用安装时设置的管理员账号登录。请私密保存完整网址；可在服务器 `.env.production` 的 `ADMIN_ENTRY_PATH` 中找回，重跑安装器会保留原值。旧 `/admin`、`/admin.html` 和没有入口凭证的管理接口均返回 404。普通用户注册默认赠送 3 次生成额度；生成请求先预占额度，只有模型成功返回并通过校验后才扣除。登录、用户/IP 生成频率和全局 AI 并发均有服务端限制，可在 `.env.production` 中调整。
 
 后台新增的模型通道 API Key 由服务端使用 AES-256-GCM 加密保存，管理接口不返回明文。`SESSION_SECRET` 同时参与通道密钥派生，必须安全备份且不能随意更换；生产环境默认只允许公网 HTTPS 模型地址。
 

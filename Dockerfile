@@ -5,7 +5,8 @@ COPY package.json pnpm-lock.yaml ./
 RUN npm install --global pnpm@11.9.0 --no-audit --no-fund \
     && pnpm install --frozen-lockfile
 
-COPY index.html vite.config.js ./
+COPY index.html admin.html vite.config.js ./
+COPY server/admin-entry.mjs ./server/admin-entry.mjs
 COPY src ./src
 COPY public ./public
 RUN pnpm run build

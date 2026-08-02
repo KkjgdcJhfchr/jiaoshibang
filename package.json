@@ -12,7 +12,8 @@
     "preview": "vite preview --host 127.0.0.1",
     "start": "node server/index.mjs",
     "check": "node scripts/check.mjs",
-    "test:integration": "node server/integration.test.mjs"
+    "test:integration": "node server/integration.test.mjs",
+    "test:admin-entry": "node server/admin-entry.test.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",

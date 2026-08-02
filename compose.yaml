@@ -27,6 +27,8 @@ services:
       MAX_IMAGES: ${MAX_IMAGES:-12}
       SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET must be set in the production env file}
       SAFETY_ID_SALT: ${SAFETY_ID_SALT:?SAFETY_ID_SALT must be set in the production env file}
+      ADMIN_ENTRY_PATH: ${ADMIN_ENTRY_PATH:?ADMIN_ENTRY_PATH must be set in the production env file}
+      ADMIN_ENTRY_TTL_SECONDS: ${ADMIN_ENTRY_TTL_SECONDS:-28800}
       DEFAULT_FREE_CREDITS: ${DEFAULT_FREE_CREDITS:-3}
       USER_SESSION_TTL_SECONDS: ${USER_SESSION_TTL_SECONDS:-604800}
       ADMIN_SESSION_TTL_SECONDS: ${ADMIN_SESSION_TTL_SECONDS:-28800}
@@ -79,6 +81,7 @@ services:
         condition: service_healthy
     environment:
       DOMAIN: ${DOMAIN:-localhost}
+      ADMIN_ENTRY_PATH: ${ADMIN_ENTRY_PATH:?ADMIN_ENTRY_PATH must be set in the production env file}
     ports:
       - target: 80
         published: "80"
