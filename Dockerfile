@@ -1,7 +1,7 @@
 FROM node:22-alpine AS frontend-builder
 
 WORKDIR /app
-COPY package.json pnpm-lock.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN npm install --global pnpm@11.9.0 --no-audit --no-fund \
     && pnpm install --frozen-lockfile
 

@@ -28,6 +28,7 @@ secrets/
 !Dockerfile
 !package.json
 !pnpm-lock.yaml
+!pnpm-workspace.yaml
 !package-lock.json
 !npm-shrinkwrap.json
 !index.html

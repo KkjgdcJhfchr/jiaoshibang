@@ -3,6 +3,7 @@ import path from 'node:path';
 
 const required = [
   'package.json',
+  'pnpm-workspace.yaml',
   'index.html',
   'admin.html',
   'src/main.jsx',
@@ -37,6 +38,18 @@ for (const file of required.filter((item) => item.endsWith('.json'))) {
 const dockerIgnore = fs.readFileSync(path.resolve('.dockerignore'), 'utf8');
 if (!dockerIgnore.split(/\r?\n/).includes('!admin.html')) {
   throw new Error('Docker 构建上下文必须显式包含 admin.html');
+}
+if (!dockerIgnore.split(/\r?\n/).includes('!pnpm-workspace.yaml')) {
+  throw new Error('Docker 构建上下文必须包含 pnpm 的依赖脚本批准清单');
+}
+
+const pnpmWorkspace = fs.readFileSync(path.resolve('pnpm-workspace.yaml'), 'utf8');
+if (!/allowBuilds:\s*[\r\n]+\s+esbuild@0\.25\.12:\s*true/.test(pnpmWorkspace)) {
+  throw new Error('必须只批准锁定版本 esbuild@0.25.12 的构建脚本');
+}
+const dockerfile = fs.readFileSync(path.resolve('Dockerfile'), 'utf8');
+if (!dockerfile.includes('COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./')) {
+  throw new Error('Docker 依赖安装阶段必须复制 pnpm-workspace.yaml');
 }
 
 const bootstrap = fs.readFileSync(path.resolve('scripts/bootstrap.sh'), 'utf8');
