@@ -58,6 +58,11 @@ if (/(^|\r?\n)data\/(\r?\n|$)/.test(gitIgnore)) {
   throw new Error('运行时数据目录必须写成 /data/，否则会误排除 src/data');
 }
 
+const caddyfile = fs.readFileSync(path.resolve('infra/Caddyfile'), 'utf8');
+if (!caddyfile.includes('?Referrer-Policy "strict-origin-when-cross-origin"')) {
+  throw new Error('Caddy 只能补充默认 Referrer-Policy，不能覆盖随机管理员入口的 no-referrer');
+}
+
 const bootstrap = fs.readFileSync(path.resolve('scripts/bootstrap.sh'), 'utf8');
 for (const marker of ['exec env JIAOSHIBANG_DIR=', '#{pane_dead}', 'tmux attach-session', 'git clone --depth 1', 'https://github.com/KkjgdcJhfchr/jiaoshibang.git']) {
   if (!bootstrap.includes(marker)) throw new Error(`公开断线续装入口缺少关键标记: ${marker}`);
