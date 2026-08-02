@@ -19,6 +19,7 @@ export function createPaymentRouter({
   listProducts,
   listAdminProducts,
   saveProduct,
+  publicBaseUrl = '',
   fulfillPaidOrder,
   confirmCheckout,
   checkoutVerificationRequired = false,
@@ -34,6 +35,7 @@ export function createPaymentRouter({
     now,
     gatewayTimeoutMs,
     resolveProduct,
+    publicBaseUrl,
     fulfillPaidOrder,
     confirmCheckout,
   });
@@ -76,7 +78,8 @@ export function createPaymentRouter({
 
       if (request.method === 'GET' && url.pathname === '/api/admin/payments/configs') {
         requireAdminSession(request);
-        sendJson(response, 200, { ok: true, data: { configs: service.listConfigs() } });
+        const configs = service.listConfigs().map((config) => applyAutomaticCallbackUrls(config.provider, config, publicBaseUrl));
+        sendJson(response, 200, { ok: true, data: { configs } });
         return true;
       }
 
@@ -85,7 +88,12 @@ export function createPaymentRouter({
         assertSameOriginMutation(request);
         const session = requireAdminSession(request);
         const body = await readJsonBody(request, 256 * 1024);
-        const config = service.saveConfig(configMatch[1], body, session.admin?.username || 'admin');
+        const provider = configMatch[1];
+        const config = service.saveConfig(
+          provider,
+          applyAutomaticCallbackUrls(provider, body, publicBaseUrl),
+          session.admin?.username || 'admin',
+        );
         sendJson(response, 200, { ok: true, data: { config } });
         return true;
       }
@@ -184,6 +192,16 @@ export function createPaymentRouter({
   }
 
   return { handle, service };
+}
+
+function applyAutomaticCallbackUrls(provider, input, publicBaseUrl) {
+  const baseUrl = String(publicBaseUrl || '').replace(/\/+$/, '');
+  if (!baseUrl) return input;
+  return {
+    ...input,
+    notifyUrl: `${baseUrl}/api/payments/notify/${provider}`,
+    ...(provider === 'alipay' ? { returnUrl: `${baseUrl}/app/membership?payment=completed` } : {}),
+  };
 }
 
 async function readJsonBody(request, maximumBytes) {

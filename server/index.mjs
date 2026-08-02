@@ -41,6 +41,7 @@ import {
 } from './message-service.mjs';
 import { createPaymentRouter } from './payment-routes.mjs';
 import { createMembershipCatalog } from './membership-catalog.mjs';
+import { createSiteSettingsStore } from './site-settings.mjs';
 import { createSmsService, SmsServiceError } from './sms-service.mjs';
 import {
   createVerificationCodeService,
@@ -70,6 +71,10 @@ const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const CONFIGURED_SESSION_SECRET = process.env.SESSION_SECRET?.trim() || '';
 const CONFIGURED_SAFETY_ID_SALT = process.env.SAFETY_ID_SALT?.trim() || '';
 const CONFIGURED_ADMIN_ENTRY_PATH = process.env.ADMIN_ENTRY_PATH?.trim() || '';
+const PUBLIC_BASE_URL = normalizePublicBaseUrl(process.env.PUBLIC_BASE_URL || (process.env.DOMAIN ? `https://${process.env.DOMAIN}` : ''));
+if (IS_PRODUCTION && !PUBLIC_BASE_URL) {
+  throw new Error('生产环境必须配置 PUBLIC_BASE_URL，用于生成支付通知与返回地址');
+}
 if (IS_PRODUCTION && CONFIGURED_SESSION_SECRET.length < 32) {
   throw new Error('生产环境 SESSION_SECRET 必须至少 32 个字符');
 }
@@ -96,7 +101,7 @@ const SMTP_TIMEOUT_MS = parsePositiveInteger(process.env.SMTP_TIMEOUT_MS, 15_000
 const ALLOW_INSECURE_SMTP = parseBoolean(process.env.ALLOW_INSECURE_SMTP, false);
 const REGISTRATION_VERIFICATION_REQUIRED = parseBoolean(
   process.env.REGISTRATION_VERIFICATION_REQUIRED,
-  IS_PRODUCTION,
+  true,
 );
 const VERIFICATION_CODE_TTL_MS = parsePositiveInteger(process.env.VERIFICATION_CODE_TTL_SECONDS, 5 * 60) * 1000;
 const VERIFICATION_CODE_RESEND_MS = parsePositiveInteger(process.env.VERIFICATION_CODE_RESEND_SECONDS, 60) * 1000;
@@ -120,6 +125,10 @@ const ADMIN_ENTRY_SUBJECT = ADMIN_ENTRY_PATH
   ? stablePrivateHash(`admin-entry:${ADMIN_ENTRY_PATH}`, SAFETY_ID_SALT)
   : '';
 const store = createDataStore(DATA_DIR);
+const siteSettings = createSiteSettingsStore({
+  dataDir: DATA_DIR,
+  registrationVerificationRequired: REGISTRATION_VERIFICATION_REQUIRED,
+});
 const membershipCatalog = createMembershipCatalog({ dataDir: DATA_DIR });
 const DUMMY_PASSWORD = hashPassword(randomBytes(32).toString('hex'));
 const authRateBuckets = new Map();
@@ -153,6 +162,7 @@ const paymentRouter = createPaymentRouter({
   listProducts: membershipCatalog.listProducts,
   listAdminProducts: () => membershipCatalog.listProducts({ includeInactive: true }),
   saveProduct: membershipCatalog.saveProduct,
+  publicBaseUrl: PUBLIC_BASE_URL,
   confirmCheckout: ({ user, rawInput }) => {
     const code = cleanText(rawInput?.verificationCode ?? rawInput?.code, 20);
     const verificationId = cleanText(rawInput?.verificationId, 200);
@@ -270,6 +280,11 @@ async function handleRequest(request, response) {
 
     if (await paymentRouter.handle(request, response, url)) return;
 
+    if (request.method === 'GET' && url.pathname === '/api/site-config') {
+      sendJson(response, 200, { ok: true, data: siteSettings.getPublicSettings() });
+      return;
+    }
+
     if (request.method === 'POST' && url.pathname === '/api/auth/register') {
       await handleUserRegister(request, response, requestId);
       return;
@@ -311,20 +326,6 @@ async function handleRequest(request, response) {
       return;
     }
 
-    if (request.method === 'POST' && url.pathname === '/api/auth/training-consent') {
-      const session = requireUserSession(request);
-      const body = await readJsonBody(request, 32 * 1024);
-      if (typeof body.trainingConsent !== 'boolean') {
-        throw new HttpError(400, 'INVALID_TRAINING_CONSENT', 'trainingConsent 必须是布尔值');
-      }
-      const user = store.setTrainingConsent(session.user.id, body.trainingConsent);
-      const revokedCandidates = body.trainingConsent
-        ? 0
-        : store.revokeTrainingCandidates(`usr_hash_${stablePrivateHash(user.id, SAFETY_ID_SALT).slice(0, 32)}`);
-      sendJson(response, 200, { ok: true, data: { user: publicUser(user), revokedCandidates } });
-      return;
-    }
-
     if (request.method === 'POST' && isAdminPath(url.pathname, 'bootstrap')) {
       await handleAdminBootstrap(request, response);
       return;
@@ -353,6 +354,30 @@ async function handleRequest(request, response) {
     if (request.method === 'GET' && url.pathname === '/api/admin/security/mfa') {
       const session = requireAdminSession(request);
       sendJson(response, 200, { ok: true, data: { mfa: publicAdminMfaStatus(session.admin) } });
+      return;
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/admin/system/settings') {
+      requireAdminSession(request);
+      sendJson(response, 200, { ok: true, data: { settings: siteSettings.getAdminSettings() } });
+      return;
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/admin/users') {
+      requireAdminSession(request);
+      const query = cleanText(url.searchParams.get('query'), 100);
+      const offset = parseBoundedInteger(url.searchParams.get('offset'), 0, 0, 1_000_000);
+      const limit = parseBoundedInteger(url.searchParams.get('limit'), 25, 1, 200);
+      const result = store.listUsersForAdmin({ query, offset, limit });
+      sendJson(response, 200, { ok: true, data: result });
+      return;
+    }
+
+    if (request.method === 'PUT' && url.pathname === '/api/admin/system/settings') {
+      const session = requireAdminSession(request);
+      const body = await readJsonBody(request, 64 * 1024);
+      const settings = siteSettings.saveSettings(body, session.admin.username);
+      sendJson(response, 200, { ok: true, data: { settings } });
       return;
     }
 
@@ -577,6 +602,10 @@ async function handleRequest(request, response) {
 
 async function handleUserRegister(request, response) {
   enforceAuthRateLimit(getClientIp(request));
+  const currentSiteSettings = siteSettings.getAdminSettings();
+  if (!currentSiteSettings.registrationOpen) {
+    throw new HttpError(403, 'REGISTRATION_CLOSED', '当前暂未开放新账号注册');
+  }
   const body = await readJsonBody(request, 64 * 1024);
   const account = cleanText(
     body.identifier ?? body.account ?? body.email ?? body.phone,
@@ -586,12 +615,19 @@ async function handleUserRegister(request, response) {
     throw new HttpError(400, 'INVALID_ACCOUNT', '请输入有效的手机号或邮箱账号');
   }
   const password = validateUserPassword(body.password);
+  if (body.privacyAccepted !== true) {
+    throw new HttpError(400, 'PRIVACY_ACCEPTANCE_REQUIRED', '请先阅读并同意当前的数据与隐私说明');
+  }
+  const acceptedPrivacyPolicyUpdatedAt = cleanText(body.privacyPolicyUpdatedAt, 100);
+  if (!acceptedPrivacyPolicyUpdatedAt || acceptedPrivacyPolicyUpdatedAt !== currentSiteSettings.privacyPolicyUpdatedAt) {
+    throw new HttpError(409, 'PRIVACY_POLICY_CHANGED', '数据与隐私说明已更新，请刷新页面并重新阅读后再注册');
+  }
   const accountKey = normalizeAccount(account);
   const verificationCode = cleanText(body.verificationCode ?? body.code, 20);
   const verificationId = cleanText(body.verificationId, 200);
   let verifiedAt = null;
   let verifiedChannel = null;
-  if (verificationCode || verificationId || REGISTRATION_VERIFICATION_REQUIRED) {
+  if (verificationCode || verificationId || currentSiteSettings.registrationVerificationRequired) {
     if (!verificationCode) {
       throw new HttpError(400, 'REGISTRATION_VERIFICATION_REQUIRED', '请先获取并填写验证码');
     }
@@ -613,7 +649,9 @@ async function handleUserRegister(request, response) {
     subject,
     password: hashPassword(password),
     credits: DEFAULT_FREE_CREDITS,
-    trainingConsent: body.trainingConsent === true,
+    trainingConsent: true,
+    privacyAcceptedAt: new Date().toISOString(),
+    privacyPolicyUpdatedAt: currentSiteSettings.privacyPolicyUpdatedAt,
     verifiedAt,
     verifiedChannel,
   });
@@ -630,7 +668,12 @@ async function handleUserVerificationCodeRequest(request, response) {
   let shouldDeliver = true;
   const existing = store.findUserByAccountKey(normalizeAccount(identifier));
 
-  if (purpose === 'register') shouldDeliver = !existing;
+  if (purpose === 'register') {
+    if (!siteSettings.getAdminSettings().registrationOpen) {
+      throw new HttpError(403, 'REGISTRATION_CLOSED', '当前暂未开放新账号注册');
+    }
+    shouldDeliver = !existing;
+  }
   else if (purpose === 'login' || purpose === 'reset_password') shouldDeliver = Boolean(existing);
   else if (purpose === 'checkout') {
     const session = requireUserSession(request);
@@ -688,9 +731,14 @@ async function issueUserVerificationCode(options) {
   try {
     return await verificationCodeService.issue(options);
   } catch (error) {
+    const deliveryUnavailable = error instanceof MessageServiceError || error instanceof SmsServiceError;
+    if (options.purpose === 'register' && options.shouldDeliver && deliveryUnavailable) {
+      console.warn(`[teacher-helper] register verification delivery unavailable: ${error.code}`);
+      throw new VerificationCodeError('VERIFICATION_DELIVERY_UNAVAILABLE', '验证码服务暂时不可用，请稍后重试', 503);
+    }
     const concealFailure = options.shouldDeliver
       && ['register', 'login', 'reset_password'].includes(options.purpose)
-      && (error instanceof MessageServiceError || error instanceof SmsServiceError);
+      && deliveryUnavailable;
     if (!concealFailure) throw error;
     // 账号相关验证码不能因发信结果不同而暴露账号是否存在；运维侧仍记录通道故障。
     console.warn(`[teacher-helper] ${options.purpose} verification delivery unavailable: ${error.code}`);
@@ -743,8 +791,24 @@ async function handleUserLogin(request, response) {
   const body = await readJsonBody(request, 64 * 1024);
   const account = cleanText(body.identifier ?? body.account ?? body.email ?? body.phone, 200);
   const password = typeof body.password === 'string' ? body.password : '';
-  const user = account ? store.findUserByAccountKey(normalizeAccount(account)) : null;
-  const passwordValid = user ? verifyPassword(password, user.password) : verifyPassword(password, DUMMY_PASSWORD);
+  let user = account ? store.findUserByAccountKey(normalizeAccount(account)) : null;
+  let passwordValid = user ? verifyPassword(password, user.password) : false;
+  if (!passwordValid && account) {
+    const admin = store.readAdmin();
+    const adminPasswordValid = admin
+      && account === admin.username
+      && verifyPassword(password, admin.password);
+    if (adminPasswordValid) {
+      user = store.ensureAdminTeacherUser({
+        account: admin.username,
+        accountKey: normalizeAccount(admin.username),
+        password: admin.password,
+        credits: DEFAULT_FREE_CREDITS,
+      });
+      passwordValid = Boolean(user);
+    }
+  }
+  if (!user) verifyPassword(password, DUMMY_PASSWORD);
   if (!user || !passwordValid) throw new HttpError(401, 'INVALID_CREDENTIALS', '账号或密码错误');
   sendUserSession(response, request, user);
 }
@@ -989,7 +1053,7 @@ async function handleAdminEmailMfaEnroll(request, response) {
   const email = normalizeEmailAddress(body.email);
   if (!email) throw new HttpError(400, 'INVALID_MFA_EMAIL', '请填写有效的管理员验证邮箱');
   if (!publicSmtpConfig(store.readSmtpConfig()).configured) {
-    throw new HttpError(503, 'SMTP_NOT_CONFIGURED', '请先保存并测试 SMTP 通信配置');
+    throw new HttpError(503, 'SMTP_NOT_CONFIGURED', '请先保存并验证 SMTP 通信配置');
   }
   const result = adminMfaCoordinator.issueEmailCode({
     purpose: 'email_enrollment',
@@ -1181,7 +1245,7 @@ async function handleAdminSmtpTest(request, response) {
   const config = store.readSmtpConfig();
   if (!config) throw new HttpError(503, 'SMTP_NOT_CONFIGURED', '尚未配置 SMTP 发信服务');
   const recipient = normalizeEmailAddress(body.recipient || config.fromEmail);
-  if (!recipient) throw new HttpError(400, 'INVALID_EMAIL_RECIPIENT', '请填写有效的测试收件邮箱');
+  if (!recipient) throw new HttpError(400, 'INVALID_EMAIL_RECIPIENT', '请填写有效的验证收件邮箱');
   const result = await messageService.sendTestEmail({ to: recipient });
   const updated = { ...config, testedAt: new Date().toISOString() };
   store.saveSmtpConfig(updated);
@@ -1646,9 +1710,8 @@ function requirePersistentSessionSecret() {
 
 function createTrainingSubmission(user, body) {
   assertPlainObject(body, '训练候选请求必须是 JSON 对象');
-  const explicitTaskConsent = body.trainingConsent === true;
-  if (!user.trainingConsent && !explicitTaskConsent) {
-    throw new HttpError(403, 'TRAINING_CONSENT_REQUIRED', '只有在明确授权后，最终教案才能进入待审核训练候选池');
+  if (!user.trainingConsent) {
+    throw new HttpError(403, 'TRAINING_SAMPLE_NOT_ELIGIBLE', '当前账号的数据用途状态不允许创建训练候选');
   }
   let lessonPlan = body.lessonPlan ?? body.finalLessonPlan ?? body.plan;
   if (typeof lessonPlan === 'string') lessonPlan = safeJsonParse(lessonPlan);
@@ -1661,9 +1724,7 @@ function createTrainingSubmission(user, body) {
   }
   const validationError = validateLessonPlan(lessonPlan, lessonPlan.metadata?.durationMinutes);
   if (validationError) throw new HttpError(422, 'INVALID_LESSON_PLAN', validationError);
-  const consentAt = explicitTaskConsent
-    ? new Date().toISOString()
-    : user.trainingConsentAt || new Date().toISOString();
+  const consentAt = user.trainingConsentAt || new Date().toISOString();
   const candidate = buildTrainingCandidate({
     user,
     lessonPlan,
@@ -2252,7 +2313,8 @@ function sendError(response, error, requestId) {
     || error instanceof AdminMfaError
     || error instanceof MessageServiceError
     || error instanceof SmsServiceError
-    || error instanceof VerificationCodeError;
+    || error instanceof VerificationCodeError
+    || (Number.isInteger(error?.status) && typeof error?.code === 'string');
   const status = known ? error.status : 500;
   const code = known ? error.code : 'INTERNAL_ERROR';
   const message = known ? error.message : '服务器内部错误';
@@ -2383,6 +2445,20 @@ function parseBoolean(value, fallback) {
   if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
   if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
   return fallback;
+}
+
+function normalizePublicBaseUrl(value) {
+  const candidate = String(value || '').trim().replace(/\/+$/, '');
+  if (!candidate) return '';
+  let parsed;
+  try { parsed = new URL(candidate); }
+  catch { throw new Error('PUBLIC_BASE_URL 必须是完整的 http 或 https 地址'); }
+  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error('PUBLIC_BASE_URL 格式无效');
+  }
+  if (parsed.pathname !== '/' && parsed.pathname !== '') throw new Error('PUBLIC_BASE_URL 不能包含路径');
+  if (IS_PRODUCTION && parsed.protocol !== 'https:') throw new Error('生产环境 PUBLIC_BASE_URL 必须使用 https');
+  return parsed.origin;
 }
 
 function parseBoundedInteger(value, fallback, minimum, maximum) {

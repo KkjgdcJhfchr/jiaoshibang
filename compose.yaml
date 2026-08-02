@@ -13,6 +13,8 @@ services:
       HOST: 0.0.0.0
       PORT: 8787
       DATA_DIR: /app/data
+      DOMAIN: ${DOMAIN:?DOMAIN must be set in the production env file}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL must be set in the production env file}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_API_KEY_FILE: ${OPENAI_API_KEY_FILE:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}

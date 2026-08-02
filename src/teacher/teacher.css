@@ -51,9 +51,9 @@
 .feature-editorial-list article > div { display: grid; grid-template-columns: 54px 250px 1fr; align-items: center; gap: 24px; }
 .feature-editorial-list svg { width: 44px; height: 44px; padding: 11px; color: var(--brand); border-radius: 50%; background: var(--brand-soft); }
 .feature-editorial-list h3 { margin: 0; font-size: 20px; }.feature-editorial-list p { margin: 0; max-width: 590px; color: var(--muted); line-height: 1.8; }
-.workflow-section { max-width: none; padding: 0; display: grid; grid-template-columns: 1.05fr .95fr; background: #eff3ef; }
+.workflow-section { max-width: none; padding: 0; display: grid; grid-template-columns: minmax(420px, 1.05fr) minmax(560px, .95fr); background: #eff3ef; }
 .workflow-media { min-height: 690px; background: #f0f0eb url('/teacher-still-life.png') center/cover no-repeat; }
-.workflow-copy { padding: 95px max(45px, calc((50vw - 580px) / 1.25)); padding-right: max(45px, calc((100vw - 1240px) / 2)); }
+.workflow-copy { padding: 82px clamp(42px, 5vw, 88px); }
 .workflow-copy h2 { margin-bottom: 42px; font: 700 38px/1.4 'Noto Serif SC', serif; }
 .workflow-copy ol { list-style: none; margin: 0 0 36px; padding: 0; }.workflow-copy li { display: grid; grid-template-columns: 42px 1fr; gap: 18px; padding: 22px 0; border-top: 1px solid #d4ddd8; }.workflow-copy li:last-child { border-bottom: 1px solid #d4ddd8; }.workflow-copy li > span { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; color: #fff; background: var(--brand); font-size: 12px; font-weight: 700; }.workflow-copy h3 { margin: 3px 0 8px; font-size: 17px; }.workflow-copy li p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.75; }
 .lesson-anatomy { padding-bottom: 130px; }
@@ -66,6 +66,20 @@
 .security-points { margin-top: 54px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 60px; }.security-points div { padding-top: 20px; border-top: 1px solid #45665f; }.security-points b { font-size: 15px; }.security-points p { margin: 12px 0 0; color: #b9cec8; font-size: 13px; line-height: 1.8; }
 .landing-cta { max-width: 1240px; margin: 0 auto; padding: 90px 0; display: flex; align-items: center; justify-content: space-between; gap: 50px; }.landing-cta h2 { margin-bottom: 10px; font: 700 32px 'Noto Serif SC', serif; }.landing-cta p { margin: 0; color: var(--muted); }
 .public-footer { position: relative; padding: 72px max(28px, calc((100vw - 1240px) / 2)) 36px; display: grid; grid-template-columns: 2fr repeat(3, 1fr); gap: 70px; border-top: 1px solid var(--line); background: #f0f3f0; }.public-footer > div:first-child p { max-width: 300px; margin: 20px 0 0; color: var(--muted); font-size: 13px; line-height: 1.8; }.public-footer > div:not(:first-child) { display: flex; flex-direction: column; gap: 12px; font-size: 13px; }.public-footer > div:not(:first-child) b { margin-bottom: 5px; }.public-footer a { color: var(--muted); }.public-footer a:hover { color: var(--brand); }.footer-pending-link { color: #9aa29f; cursor: not-allowed; }.footer-record { position: absolute; left: max(28px, calc((100vw - 1240px) / 2)); bottom: 28px; color: #8b9692; font-size: 11px; }
+.privacy-policy-link { padding: 0; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; text-align: left; }
+.public-nav .privacy-policy-link { color: #495653; font-size: 14px; }
+.public-nav .privacy-policy-link:hover, .public-footer .privacy-policy-link:hover { color: var(--brand); }
+.public-footer .privacy-policy-link { color: var(--muted); }
+.privacy-modal-layer { position: fixed; z-index: 120; inset: 0; display: grid; place-items: center; padding: 20px; }
+.privacy-modal-backdrop { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: rgba(17, 29, 25, .58); }
+.privacy-modal { position: relative; width: min(680px, 100%); max-height: min(760px, calc(100vh - 40px)); display: flex; flex-direction: column; overflow: hidden; border-radius: 15px; background: #fff; box-shadow: 0 28px 90px rgba(13, 31, 24, .28); }
+.privacy-modal > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 22px 24px 17px; border-bottom: 1px solid var(--line); }
+.privacy-modal h2 { margin: 0 0 5px; font-size: 21px; }
+.privacy-modal header p { margin: 0; color: var(--muted); font-size: 11px; }
+.privacy-modal header button { display: grid; place-items: center; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+.privacy-modal-content { padding: 22px 24px; overflow: auto; color: #4e5c57; font-size: 13px; line-height: 1.9; white-space: pre-wrap; }
+.privacy-modal-content p { margin: 0 0 16px; }
+.privacy-modal > footer { display: flex; justify-content: flex-end; padding: 15px 24px 20px; border-top: 1px solid var(--line); }
 
 /* Authentication and pricing */
 .auth-page { min-height: 100vh; display: grid; grid-template-columns: minmax(420px, .92fr) minmax(500px, 1.08fr); background: #fff; }
@@ -87,7 +101,7 @@
 .auth-capability-note span { color: #7b6d5c; font-size: 11px; line-height: 1.55; }
 .auth-capability-note.subtle span { color: var(--muted); }
 .code-input button:disabled { background: #f1f3f2; color: #8e9895; cursor: not-allowed; }
-.auth-consents a { color: var(--brand); text-decoration: underline; text-underline-offset: 2px; }
+.auth-consents a, .auth-consents .privacy-policy-link { color: var(--brand); text-decoration: underline; text-underline-offset: 2px; }
 .login-tools { gap: 16px; color: var(--muted); }
 .login-tools a { white-space: nowrap; }
 .form-error, .form-status { margin: -5px 0; font-size: 12px; }
@@ -100,8 +114,9 @@
 .auth-session-check .brand { margin-bottom: 8px; }
 .auth-session-check svg.spin { color: var(--brand); }
 .auth-session-check p { margin: 0; font-size: 13px; }
-.pricing-page main { max-width: 1180px; margin: 0 auto; padding: 90px 0 120px; }.pricing-heading { text-align: center; }.pricing-heading h1 { margin-bottom: 16px; font: 700 46px 'Noto Serif SC', serif; }.pricing-heading > p { color: var(--muted); }.billing-switch { width: fit-content; margin: 30px auto 0; padding: 4px; display: flex; border: 1px solid var(--line); border-radius: 8px; background: #eef2ef; }.billing-switch button { min-width: 94px; padding: 8px 12px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; }.billing-switch button.active { background: #fff; color: var(--brand-dark); box-shadow: 0 1px 4px rgba(20, 40, 34, .1); font-weight: 700; }
+.pricing-page main { max-width: 1180px; margin: 0 auto; padding: 90px 0 120px; }.pricing-heading { text-align: center; }.pricing-heading h1 { margin-bottom: 16px; font: 700 46px 'Noto Serif SC', serif; }.pricing-heading > p { color: var(--muted); }.billing-switch { width: fit-content; max-width: 100%; margin: 30px auto 0; padding: 4px; display: flex; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 8px; background: #eef2ef; }.billing-switch button { min-width: 86px; padding: 8px 12px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; }.billing-switch button.active { background: #fff; color: var(--brand-dark); box-shadow: 0 1px 4px rgba(20, 40, 34, .1); font-weight: 700; }
 .pricing-grid { margin-top: 56px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; align-items: stretch; }.pricing-grid article { min-height: 520px; padding: 32px; display: flex; flex-direction: column; border: 1px solid var(--line-strong); background: #fff; }.pricing-grid article.featured { border: 2px solid var(--brand); box-shadow: 0 16px 38px rgba(8, 127, 115, .1); }.pricing-grid h2 { margin-bottom: 8px; font-size: 21px; }.pricing-grid article > div:first-child p { color: var(--muted); font-size: 13px; }.pricing-grid .price { margin: 23px 0 28px; }.pricing-grid .price b { font-size: 40px; }.pricing-grid .price span { color: var(--muted); font-size: 12px; }.pricing-grid ul { flex: 1; margin: 0 0 28px; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 14px; }.pricing-grid li { display: flex; gap: 9px; align-items: flex-start; color: #4e5b57; font-size: 13px; }.pricing-grid li svg { color: var(--brand); flex: 0 0 auto; }.pricing-note { margin-top: 26px; padding: 22px 26px; display: flex; gap: 16px; border: 1px solid #d5e6e1; background: var(--brand-pale); }.pricing-note svg { color: var(--brand); flex: 0 0 auto; }.pricing-note b { font-size: 14px; }.pricing-note p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }.pricing-faq { max-width: 780px; margin: 90px auto 0; }.pricing-faq > h2 { margin-bottom: 28px; text-align: center; font: 700 30px 'Noto Serif SC', serif; }.pricing-faq details { border-top: 1px solid var(--line); }.pricing-faq details:last-child { border-bottom: 1px solid var(--line); }.pricing-faq summary { padding: 20px 4px; display: flex; justify-content: space-between; font-size: 14px; font-weight: 600; cursor: pointer; list-style: none; }.pricing-faq details p { padding: 0 4px 20px; color: var(--muted); line-height: 1.8; font-size: 13px; }
+.pricing-grid .price del { display: block; margin-top: 5px; color: var(--faint); font-size: 12px; }
 
 /* Teacher app shell */
 .teacher-shell { min-height: 100vh; background: var(--bg); }

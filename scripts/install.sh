@@ -198,6 +198,7 @@ umask 077
 ENV_TMP="${ENV_FILE}.tmp.$$"
 {
   printf 'DOMAIN=%s\n' "$DOMAIN"
+  printf 'PUBLIC_BASE_URL=https://%s\n' "$DOMAIN"
   printf 'OPENAI_API_KEY=%s\n' "$OPENAI_API_KEY"
   printf 'OPENAI_BASE_URL=%s\n' "$OPENAI_BASE_URL"
   printf 'OPENAI_MODEL=%s\n' "$OPENAI_MODEL"

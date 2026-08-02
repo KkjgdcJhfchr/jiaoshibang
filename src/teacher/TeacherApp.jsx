@@ -27,7 +27,6 @@ export default function TeacherApp({ path }) {
   if (path === '/register') return <AuthPage mode="register" />;
   if (path === '/forgot-password') return <PasswordRecoveryPage />;
   if (path === '/pricing') return <PricingPage />;
-  if (path === '/app/lesson/lesson-spring-001') return <LessonEditor path={path} />;
   if (path === '/app' || path.startsWith('/app/')) return <AuthenticatedTeacherRoutes path={path} />;
   return <LandingPage />;
 }

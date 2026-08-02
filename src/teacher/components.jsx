@@ -1,6 +1,5 @@
 import { createContext, useContext, useEffect, useId, useRef, useState } from 'react';
 import {
-  Bell,
   BookOpen,
   ChevronDown,
   CircleHelp,
@@ -19,18 +18,15 @@ import {
 } from 'lucide-react';
 import { Link, navigate } from '../lib/navigation.jsx';
 
-export function Logo({ compact = false, admin = false }) {
-  const destination = admin ? globalThis.location?.pathname || '/' : '/';
+export function Logo({ compact = false }) {
   return (
-    <Link to={destination} className={`brand ${compact ? 'brand-compact' : ''}`} aria-label="教师帮首页">
+    <Link to="/" className={`brand ${compact ? 'brand-compact' : ''}`} aria-label="教师帮首页">
       <span className="brand-mark" aria-hidden="true">
         <BookOpen size={22} strokeWidth={2.2} />
         <i />
       </span>
       {compact ? null : (
-        <span className="brand-name">
-          教师帮 {admin ? <small>管理后台</small> : null}
-        </span>
+        <span className="brand-name">教师帮</span>
       )}
     </Link>
   );
@@ -61,7 +57,7 @@ const nav = [
   { label: '我的教案', path: '/app/plans', icon: Files },
   { label: '智能组卷', path: '/app/papers', icon: ScrollText },
   { label: '知识图谱', path: '/app/knowledge', icon: Network },
-  { label: '备课组', path: '/app/team', icon: UsersRound },
+  { label: '教案评审', path: '/app/team', icon: UsersRound },
   { label: '资源库', path: '/app/materials', icon: Library },
   { label: '会员中心', path: '/app/membership', icon: Crown },
 ];
@@ -119,7 +115,6 @@ export function TeacherShell({ path, title, subtitle, children, contentClass = '
           </div>
           <div className="topbar-actions">
             <Link to="/#workflow" className="icon-button" aria-label="查看使用帮助" title="查看使用帮助"><CircleHelp size={19} /></Link>
-            <button className="icon-button notification-button" aria-label="通知中心尚未接入" title="通知中心尚未接入" disabled><Bell size={19} /></button>
             <button className="top-user" onClick={() => navigate('/app/settings')}><span className="avatar avatar-teacher">{avatarText}</span><span>{displayName}</span><ChevronDown size={15} /></button>
           </div>
         </header>

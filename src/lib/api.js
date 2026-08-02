@@ -44,6 +44,7 @@ async function request(path, options = {}) {
 
 export const api = {
   health: () => request('/api/health', { timeout: 8_000 }),
+  getSiteConfig: () => request('/api/site-config', { timeout: 10_000 }),
   register: (body) => request('/api/auth/register', { method: 'POST', body, timeout: 20_000 }),
   login: (body) => request('/api/auth/login', { method: 'POST', body, timeout: 20_000 }),
   sendVerificationCode: (body) => request('/api/auth/verification-codes', { method: 'POST', body, timeout: 20_000 }),
@@ -60,11 +61,6 @@ export const api = {
   getPaymentOrder: (orderId) => request(`/api/payments/orders/${encodeURIComponent(orderId)}`, { timeout: 15_000 }),
   authSession: () => request('/api/auth/session', { timeout: 10_000 }),
   logout: () => request('/api/auth/logout', { method: 'POST', body: {}, timeout: 10_000 }),
-  updateTrainingConsent: (trainingConsent) => request('/api/auth/training-consent', {
-    method: 'POST',
-    body: { trainingConsent },
-    timeout: 20_000,
-  }),
   adminBootstrap: (body) => request('/api/admin/bootstrap', { method: 'POST', body, timeout: 30_000 }),
   adminLogin: (body) => request('/api/admin/login', { method: 'POST', body, timeout: 20_000 }),
   adminVerifyMfa: (body) => request('/api/admin/mfa/verify', { method: 'POST', body, timeout: 20_000 }),
@@ -85,6 +81,13 @@ export const api = {
   getSmsSettings: () => request('/api/admin/communication/sms', { timeout: 10_000 }),
   saveSmsSettings: (body) => request('/api/admin/communication/sms', { method: 'PUT', body, timeout: 20_000 }),
   testSms: (body) => request('/api/admin/communication/sms/test', { method: 'POST', body, timeout: 20_000 }),
+  getSystemSettings: () => request('/api/admin/system/settings', { timeout: 10_000 }),
+  saveSystemSettings: (body) => request('/api/admin/system/settings', { method: 'PUT', body, timeout: 20_000 }),
+  getAdminUsers: ({ query = '', offset = 0, limit = 25 } = {}) => {
+    const search = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+    if (String(query).trim()) search.set('query', String(query).trim());
+    return request(`/api/admin/users?${search}`, { timeout: 15_000 });
+  },
   getProviders: () => request('/api/admin/providers', { timeout: 15_000 }),
   createProvider: (body) => request('/api/admin/providers', { method: 'POST', body, timeout: 30_000 }),
   updateProvider: (providerId, body) => request(`/api/admin/providers/${encodeURIComponent(providerId)}`, { method: 'PATCH', body, timeout: 20_000 }),

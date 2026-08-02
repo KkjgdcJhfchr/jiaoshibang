@@ -46,8 +46,10 @@
 .admin-payment-config-panel { margin-bottom: 16px; overflow: visible; }
 .admin-membership-catalog-panel { margin-bottom: 16px; overflow: hidden; }
 .admin-membership-catalog-count { padding: 5px 9px; border-radius: 999px; background: #e5f3eb; color: #177650; font-size: 10px; font-weight: 700; white-space: nowrap; }
+.admin-membership-catalog-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; justify-content: flex-end; }
 .admin-membership-catalog-grid { padding: 16px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
 .admin-membership-plan-form { padding: 16px; border: 1px solid #dfe6e2; border-radius: 10px; background: #fbfcfc; }
+.admin-membership-new-plan { grid-column: 1 / -1; border-color: #75b598; background: #f3faf6; }
 .admin-membership-plan-form > header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; }
 .admin-membership-plan-form > header b, .admin-membership-plan-form > header small { display: block; }
 .admin-membership-plan-form > header b { color: #2f4037; font-size: 12px; }
@@ -162,6 +164,7 @@
   .admin-payment-switch { justify-content: space-between; text-align: left; }
   .admin-payment-filters { flex-wrap: wrap; }
   .admin-membership-plan-form > footer { align-items: stretch; flex-direction: column; }
+  .admin-membership-catalog-actions { justify-content: flex-start; }
 }
 
 @media (max-width: 620px) {

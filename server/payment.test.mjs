@@ -102,10 +102,18 @@ test('服务端会员目录提供固定人民币报价和不可由浏览器覆�
   const plans = listMembershipProducts();
   assert.deepEqual(plans.map((plan) => plan.planId), [
     'pro-monthly',
+    'pro-quarterly',
+    'pro-half-yearly',
     'pro-yearly',
     'research-monthly',
+    'research-quarterly',
+    'research-half-yearly',
     'research-yearly',
   ]);
+  assert.deepEqual(
+    [...new Set(plans.map((plan) => plan.billingPeriod))].sort(),
+    ['half_year', 'month', 'quarter', 'year'],
+  );
   assert.equal(plans.find((plan) => plan.planId === 'pro-monthly').amountCents, 3900);
   const product = resolveMembershipProduct({ planId: 'pro-monthly' });
   const selection = normalizeCreateOrderInput({ provider: 'alipay', planId: 'pro-monthly', amountCents: 3900 });

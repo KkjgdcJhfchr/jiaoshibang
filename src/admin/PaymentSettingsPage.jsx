@@ -7,10 +7,10 @@ import {
   CreditCard,
   KeyRound,
   LoaderCircle,
+  Plus,
   RefreshCw,
   Save,
   ShieldCheck,
-  TestTube2,
   WalletCards,
   X,
 } from 'lucide-react';
@@ -66,12 +66,21 @@ const STATUS_LABELS = Object.freeze({
   REFUNDED: '已退款',
 });
 
+const PERIOD_LABELS = Object.freeze({ month: '月付', quarter: '季付', half_year: '半年付', year: '年付' });
+const EMPTY_PLAN_FORM = Object.freeze({
+  planId: '', name: '', tier: 'pro', tierRank: '10', billingPeriod: 'month', price: '', credits: '', durationDays: '30',
+  features: '教案生成点数\nAI 教案修改\nDOC / 打印-PDF / JSON 导出', saleable: true,
+  promotionEnabled: false, promotionLabel: '', promotionPrice: '', promotionStartsAt: '', promotionEndsAt: '',
+});
+
 export function PaymentSettingsPage({ onNotice = () => {} }) {
   const [configs, setConfigs] = useState({});
   const [forms, setForms] = useState(() => cloneEmptyForms());
   const [orders, setOrders] = useState([]);
   const [plans, setPlans] = useState([]);
   const [planForms, setPlanForms] = useState({});
+  const [creatingPlan, setCreatingPlan] = useState(false);
+  const [newPlanForm, setNewPlanForm] = useState(() => ({ ...EMPTY_PLAN_FORM }));
   const [orderTotal, setOrderTotal] = useState(0);
   const [activeProvider, setActiveProvider] = useState('wechat');
   const [providerFilter, setProviderFilter] = useState('');
@@ -168,7 +177,7 @@ export function PaymentSettingsPage({ onNotice = () => {} }) {
       if (config) setConfigs((current) => ({ ...current, [activeProvider]: config }));
       onNotice(result?.ok ? `${PROVIDERS[activeProvider].label}本地密码学校验通过` : '配置校验未通过');
     } catch (requestError) {
-      setError(requestError.message || '支付配置测试失败');
+      setError(requestError.message || '支付配置验证失败');
     } finally {
       setBusy('');
     }
@@ -216,6 +225,9 @@ export function PaymentSettingsPage({ onNotice = () => {} }) {
         body: {
           expectedUpdatedAt: plan.updatedAt,
           name: form.name,
+          tier: form.tier,
+          tierRank: Number(form.tierRank),
+          billingPeriod: form.billingPeriod,
           amountCents: yuanToCents(form.price),
           credits: Number(form.credits),
           durationDays: Number(form.durationDays),
@@ -230,6 +242,45 @@ export function PaymentSettingsPage({ onNotice = () => {} }) {
       onNotice(`${saved.name}已保存，新的下单将使用最新服务端报价`);
     } catch (requestError) {
       setError(requestError.message || '会员套餐保存失败');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function createPlan(event) {
+    event.preventDefault();
+    const planId = newPlanForm.planId.trim();
+    if (plans.some((plan) => plan.planId === planId)) {
+      setError('套餐标识已存在，请换一个唯一标识');
+      return;
+    }
+    const action = 'plan-create';
+    setBusy(action);
+    setError('');
+    try {
+      const response = await paymentRequest(`/api/admin/payments/plans/${encodeURIComponent(planId)}`, {
+        method: 'PUT',
+        body: {
+          name: newPlanForm.name,
+          tier: newPlanForm.tier,
+          tierRank: Number(newPlanForm.tierRank),
+          billingPeriod: newPlanForm.billingPeriod,
+          amountCents: yuanToCents(newPlanForm.price),
+          credits: Number(newPlanForm.credits),
+          durationDays: Number(newPlanForm.durationDays),
+          saleable: newPlanForm.saleable,
+          features: newPlanForm.features.split('\n').map((item) => item.trim()).filter(Boolean),
+          promotion: null,
+        },
+      });
+      const saved = response.data?.plan;
+      setPlans((current) => [...current.filter((item) => item.planId !== saved.planId), saved]);
+      setPlanForms((current) => ({ ...current, [saved.planId]: planToForm(saved) }));
+      setNewPlanForm({ ...EMPTY_PLAN_FORM });
+      setCreatingPlan(false);
+      onNotice(`${saved.name}已创建并写入服务端套餐目录`);
+    } catch (requestError) {
+      setError(requestError.message || '会员套餐创建失败');
     } finally {
       setBusy('');
     }
@@ -253,8 +304,8 @@ export function PaymentSettingsPage({ onNotice = () => {} }) {
 
       <section className="admin-payment-safety" aria-label="支付安全说明">
         <ShieldCheck size={23} />
-        <div><b>真实支付安全模式</b><p>“测试配置”只做本地格式、密钥签名与验签检查，不会向网关发起交易；只有通过官方异步通知验签且金额、商户身份一致，订单才会变为已支付。</p></div>
-        <span>绝不模拟成功</span>
+        <div><b>支付处理规则</b><p>回调地址由当前部署域名自动生成；订单只会在官方通知通过签名、商户身份和金额校验后更新状态。</p></div>
+        <span>系统自动配置</span>
       </section>
 
       <div className="admin-payment-summary">
@@ -303,7 +354,7 @@ export function PaymentSettingsPage({ onNotice = () => {} }) {
                 {busy === `save-${activeProvider}` ? <LoaderCircle className="spin" size={17} /> : <Save size={17} />}保存并加密校验
               </button>
               <button className="admin-button admin-button-secondary" type="button" onClick={testProvider} disabled={Boolean(busy) || !activeConfig.configured}>
-                {busy === `test-${activeProvider}` ? <LoaderCircle className="spin" size={17} /> : <TestTube2 size={17} />}测试已保存配置
+                {busy === `test-${activeProvider}` ? <LoaderCircle className="spin" size={17} /> : <BadgeCheck size={17} />}验证已保存配置
               </button>
             </div>
             <label className={`admin-payment-switch ${activeConfig.enabled ? 'on' : ''}`}>
@@ -319,16 +370,34 @@ export function PaymentSettingsPage({ onNotice = () => {} }) {
       <section className="admin-panel admin-membership-catalog-panel">
         <header className="admin-payment-orders-header">
           <div><h2>在售会员套餐</h2><p>名称、价格、点数、有效期和限时优惠均由服务端保存；已创建订单保留当时的权益快照，不受后续改价影响。</p></div>
-          <span className="admin-membership-catalog-count">{plans.filter((plan) => plan.saleable).length} 个在售</span>
+          <div className="admin-membership-catalog-actions"><span className="admin-membership-catalog-count">{plans.filter((plan) => plan.saleable).length} 个在售</span><button className="admin-button admin-button-primary" type="button" onClick={() => setCreatingPlan((value) => !value)}><Plus size={16} />{creatingPlan ? '收起新增' : '添加套餐'}</button></div>
         </header>
         <div className="admin-membership-catalog-grid">
+          {creatingPlan ? <form className="admin-membership-plan-form admin-membership-new-plan" onSubmit={createPlan}>
+            <header><div><b>新增会员套餐</b><small>套餐标识创建后不可修改</small></div><label><input type="checkbox" checked={newPlanForm.saleable} onChange={(event) => setNewPlanForm((current) => ({ ...current, saleable: event.target.checked }))} /><span>创建后在售</span></label></header>
+            <div className="admin-membership-plan-fields">
+              <TextField label="套餐标识" value={newPlanForm.planId} onChange={(value) => setNewPlanForm((current) => ({ ...current, planId: value }))} placeholder="例如 pro-quarter-2026" pattern="[A-Za-z0-9_.:-]{2,80}" required />
+              <TextField label="套餐名称" value={newPlanForm.name} onChange={(value) => setNewPlanForm((current) => ({ ...current, name: value }))} required />
+              <TextField label="会员等级标识" value={newPlanForm.tier} onChange={(value) => setNewPlanForm((current) => ({ ...current, tier: value }))} placeholder="pro" required />
+              <TextField label="等级权重" value={newPlanForm.tierRank} onChange={(value) => setNewPlanForm((current) => ({ ...current, tierRank: value }))} type="number" min="1" max="10000" required />
+              <label className="admin-payment-field"><span>付费周期</span><select value={newPlanForm.billingPeriod} onChange={(event) => setNewPlanForm((current) => ({ ...current, billingPeriod: event.target.value }))}>{Object.entries(PERIOD_LABELS).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
+              <TextField label="售价（元）" value={newPlanForm.price} onChange={(value) => setNewPlanForm((current) => ({ ...current, price: value }))} type="number" min="0.01" step="0.01" required />
+              <TextField label="发放点数" value={newPlanForm.credits} onChange={(value) => setNewPlanForm((current) => ({ ...current, credits: value }))} type="number" min="0" step="1" required />
+              <TextField label="有效天数" value={newPlanForm.durationDays} onChange={(value) => setNewPlanForm((current) => ({ ...current, durationDays: value }))} type="number" min="1" step="1" required />
+            </div>
+            <label className="admin-membership-feature-field"><span>权益说明（每行一项）</span><textarea value={newPlanForm.features} onChange={(event) => setNewPlanForm((current) => ({ ...current, features: event.target.value }))} required /></label>
+            <footer><small>创建后可继续配置限时优惠</small><button className="admin-button admin-button-primary" type="submit" disabled={Boolean(busy)}>{busy === 'plan-create' ? <LoaderCircle className="spin" size={16} /> : <Plus size={16} />}确认创建</button></footer>
+          </form> : null}
           {plans.map((plan) => {
             const form = planForms[plan.planId];
             if (!form) return null;
             return <form key={plan.planId} className="admin-membership-plan-form" onSubmit={(event) => savePlan(event, plan)}>
-              <header><div><b>{plan.planId}</b><small>{plan.billingPeriod === 'year' ? '年卡' : '月卡'} · 等级 {plan.tier}</small></div><label><input type="checkbox" checked={form.saleable} onChange={(event) => updatePlanField(plan.planId, 'saleable', event.target.checked)} /><span>前台在售</span></label></header>
+              <header><div><b>{plan.planId}</b><small>{PERIOD_LABELS[form.billingPeriod] || form.billingPeriod} · 等级 {form.tier}</small></div><label><input type="checkbox" checked={form.saleable} onChange={(event) => updatePlanField(plan.planId, 'saleable', event.target.checked)} /><span>前台在售</span></label></header>
               <div className="admin-membership-plan-fields">
                 <TextField label="套餐名称" value={form.name} onChange={(value) => updatePlanField(plan.planId, 'name', value)} required />
+                <label className="admin-payment-field"><span>付费周期</span><select value={form.billingPeriod} onChange={(event) => updatePlanField(plan.planId, 'billingPeriod', event.target.value)}>{Object.entries(PERIOD_LABELS).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
+                <TextField label="会员等级标识" value={form.tier} onChange={(value) => updatePlanField(plan.planId, 'tier', value)} required />
+                <TextField label="等级权重" value={form.tierRank} onChange={(value) => updatePlanField(plan.planId, 'tierRank', value)} type="number" min="1" max="10000" required />
                 <TextField label="售价（元）" value={form.price} onChange={(value) => updatePlanField(plan.planId, 'price', value)} type="number" min="0.01" step="0.01" required />
                 <TextField label="发放点数" value={form.credits} onChange={(value) => updatePlanField(plan.planId, 'credits', value)} type="number" min="0" step="1" required />
                 <TextField label="有效天数" value={form.durationDays} onChange={(value) => updatePlanField(plan.planId, 'durationDays', value)} type="number" min="1" step="1" required />
@@ -346,7 +415,7 @@ export function PaymentSettingsPage({ onNotice = () => {} }) {
           })}
           {!loading && !plans.length ? <div className="admin-payment-empty"><CreditCard size={28} /><b>没有可维护的套餐</b><span>请检查服务端会员目录。</span></div> : null}
         </div>
-        <p className="admin-membership-promotion-note"><ShieldCheck size={15} /> 本区限时优惠属于单套餐直接折价；优惠码、用户分群、叠加规则和领取次数限制仍待独立优惠服务接入。</p>
+        <p className="admin-membership-promotion-note"><ShieldCheck size={15} /> 限时优惠直接作用于单个套餐，成交价以开始和结束时间范围内的后台配置为准。</p>
       </section>
 
       <section className="admin-panel admin-payment-orders-panel">
@@ -404,7 +473,7 @@ function WechatFields({ form, config, updateField }) {
       <TextField label="微信支付商户号" value={form.merchantId} onChange={(value) => updateField('merchantId', value)} placeholder="纯数字商户号" required />
       <TextField label="商户 API 证书序列号" value={form.merchantCertificateSerial} onChange={(value) => updateField('merchantCertificateSerial', value)} placeholder="证书序列号（十六进制）" required />
       <TextField label="微信支付公钥 ID / 平台证书序列号" value={form.verifierSerial} onChange={(value) => updateField('verifierSerial', value)} placeholder="PUB_KEY_ID_... 或证书序列号" required wide />
-      <TextField label="异步通知地址" value={form.notifyUrl} onChange={(value) => updateField('notifyUrl', value)} placeholder="https://pay.example.com/api/payments/notify/wechat" type="url" required wide />
+      <TextField label="异步通知地址（部署时自动生成）" value={form.notifyUrl} onChange={() => {}} placeholder="保存后由部署域名自动生成" type="url" readOnly required wide />
       <SecretArea label="商户 API 私钥" value={form.merchantPrivateKeyPem} onChange={(value) => updateField('merchantPrivateKeyPem', value)} configured={config.credentials?.merchantPrivateKeyPem} hint={config.credentialHints?.merchantPrivateKeyPem} placeholder="-----BEGIN PRIVATE KEY-----" required={!config.credentials?.merchantPrivateKeyPem} />
       <SecretArea label="微信支付公钥 / 平台证书公钥" value={form.verifierPublicKeyPem} onChange={(value) => updateField('verifierPublicKeyPem', value)} configured={config.credentials?.verifierPublicKeyPem} hint={config.credentialHints?.verifierPublicKeyPem} placeholder="-----BEGIN PUBLIC KEY-----" required={!config.credentials?.verifierPublicKeyPem} />
       <TextField label="API v3 密钥" value={form.apiV3Key} onChange={(value) => updateField('apiV3Key', value)} placeholder={config.credentials?.apiV3Key ? `${config.credentialHints?.apiV3Key || '已加密保存'}，留空不更新` : '必须正好 32 字节'} type="password" autoComplete="new-password" required={!config.credentials?.apiV3Key} wide />
@@ -419,8 +488,8 @@ function AlipayFields({ form, config, updateField }) {
       <label className="admin-payment-field"><span>运行环境</span><select value={form.environment} onChange={(event) => updateField('environment', event.target.value)}><option value="production">生产环境</option><option value="sandbox">沙箱环境</option></select></label>
       <TextField label="应用 AppID" value={form.appId} onChange={(value) => updateField('appId', value)} placeholder="支付宝开放平台 AppID" required />
       <TextField label="卖家 ID（seller_id）" value={form.sellerId} onChange={(value) => updateField('sellerId', value)} placeholder="签约支付宝账号 PID" required />
-      <TextField label="异步通知地址" value={form.notifyUrl} onChange={(value) => updateField('notifyUrl', value)} placeholder="https://pay.example.com/api/payments/notify/alipay" type="url" required wide />
-      <TextField label="支付完成返回地址" value={form.returnUrl} onChange={(value) => updateField('returnUrl', value)} placeholder="https://example.com/payment/result（可选）" type="url" wide />
+      <TextField label="异步通知地址（部署时自动生成）" value={form.notifyUrl} onChange={() => {}} placeholder="保存后由部署域名自动生成" type="url" readOnly required wide />
+      <TextField label="支付完成返回地址（部署时自动生成）" value={form.returnUrl} onChange={() => {}} placeholder="保存后由部署域名自动生成" type="url" readOnly wide />
       <SecretArea label="应用私钥" value={form.appPrivateKeyPem} onChange={(value) => updateField('appPrivateKeyPem', value)} configured={config.credentials?.appPrivateKeyPem} hint={config.credentialHints?.appPrivateKeyPem} placeholder="-----BEGIN PRIVATE KEY-----" required={!config.credentials?.appPrivateKeyPem} />
       <SecretArea label="支付宝公钥" value={form.alipayPublicKeyPem} onChange={(value) => updateField('alipayPublicKeyPem', value)} configured={config.credentials?.alipayPublicKeyPem} hint={config.credentialHints?.alipayPublicKeyPem} placeholder="-----BEGIN PUBLIC KEY-----" required={!config.credentials?.alipayPublicKeyPem} />
     </div>
@@ -482,6 +551,9 @@ function emptyPublicConfig(provider) {
 function planToForm(plan) {
   return {
     name: plan.name || '',
+    tier: plan.tier || 'pro',
+    tierRank: String(Number(plan.tierRank || 10)),
+    billingPeriod: plan.billingPeriod || 'month',
     price: (Number(plan.regularAmountCents ?? plan.amountCents ?? 0) / 100).toFixed(2),
     credits: String(Number(plan.credits || 0)),
     durationDays: String(Number(plan.durationDays || 0)),

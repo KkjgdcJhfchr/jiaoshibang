@@ -1,101 +1,200 @@
 import { useMemo, useState } from 'react';
 import {
-  AlertTriangle,
-  ArrowRight,
   BookOpenCheck,
   Building2,
   CheckCircle2,
-  CircleGauge,
   Database,
-  FileSpreadsheet,
   GitMerge,
   Network,
-  Plus,
   School,
   Search,
   ShieldCheck,
   Sparkles,
-  Upload,
   UsersRound,
 } from 'lucide-react';
 import './admin-domain.css';
 
-const graphPoints = [
-  { name: '多感官描写', questions: 3, confidence: 96, x: 38, y: 18 },
-  { name: '比喻与拟人', questions: 3, confidence: 94, x: 58, y: 34 },
-  { name: '文章结构', questions: 2, confidence: 91, x: 30, y: 51 },
-  { name: '情感线索', questions: 1, confidence: 86, x: 62, y: 67 },
-  { name: '迁移表达', questions: 2, confidence: 89, x: 41, y: 82 },
+const referenceGraphPoints = [
+  { name: '学习目标', detail: '教案定义', x: 37, y: 18, questionY: 20 },
+  { name: '核心概念', detail: '章节知识', x: 59, y: 32, questionY: 35 },
+  { name: '学习方法', detail: '能力与策略', x: 31, y: 52, questionY: 50 },
+  { name: '易错表现', detail: '诊断依据', x: 62, y: 68, questionY: 65 },
+  { name: '迁移任务', detail: '应用场景', x: 42, y: 83, questionY: 80 },
 ];
 
-export function KnowledgeGraphAdminPage({ onNotice }) {
+const referenceQuestionNodes = [
+  { name: '基础检测', y: 20 },
+  { name: '课堂活动', y: 50 },
+  { name: '迁移任务', y: 80 },
+];
+
+const conflictReferenceRows = [
+  ['知识点重名', '同学科同学段出现近似名称', '保留原关系并进入人工核对', '确认主名称与别名'],
+  ['题目挂接矛盾', '题目解析与关联知识点不一致', '暂停用于推荐与组卷', '由教研人员确认正确关系'],
+  ['关系依据不足', '来源、证据或审核记录不完整', '保持草稿状态', '补齐证据后重新审核'],
+];
+
+export function KnowledgeGraphAdminPage() {
   return <>
-    <div className="admin-page-heading"><div><div><h1>教学认知图谱</h1><p>管理教案、知识点与题目关系，监控覆盖率并处理冲突挂接</p></div><span className="admin-domain-stage"><Sparkles size={14} /> MVP 数据结构预览</span></div><div className="admin-page-actions"><button className="admin-button admin-button-secondary" type="button" onClick={() => onNotice('已完成当前样例的只读结构检查，未修改任何数据')}><CircleGauge size={17} />运行只读体检</button><button className="admin-button admin-button-primary" type="button" disabled title="等待题库持久化与导入事务接口"><Upload size={17} />批量导入待接入</button></div></div>
-    <div className="admin-domain-metrics">
-      <article><span><Network size={19} /></span><div><small>可见知识点节点</small><strong>{graphPoints.length}</strong><p>当前演示教案</p></div></article>
-      <article><span><GitMerge size={19} /></span><div><small>可见关系样例</small><strong>{graphPoints.length + graphPoints.reduce((sum, point) => sum + Math.min(point.questions, 3), 0)}</strong><p>教案教授 + 题目考察</p></div></article>
-      <article><span><CheckCircle2 size={19} /></span><div><small>题目标注率</small><strong>100%</strong><p>10 / 10 已关联</p></div></article>
-      <article><span><AlertTriangle size={19} /></span><div><small>待仲裁冲突</small><strong>2</strong><p>不会自动合并</p></div></article>
+    <div className="admin-page-heading">
+      <div>
+        <div><h1>教学认知图谱</h1><p>规划教案、知识点与题目的关系模型和治理规则</p></div>
+        <span className="admin-domain-stage"><Network size={14} /> 只读规划</span>
+      </div>
     </div>
+
+    <section className="admin-domain-intro">
+      <ShieldCheck size={20} />
+      <div><b>参考结构</b><p>本页用于确认数据边界、关系类型与审核规则，不读取线上教案、题目或教师数据，也不执行写操作。</p></div>
+    </section>
+
+    <div className="admin-domain-reference-grid">
+      <article><span><Network size={19} /></span><div><h3>实体边界</h3><p>区分教案、知识点、题目和教学任务，避免不同对象共用同一状态。</p></div></article>
+      <article><span><GitMerge size={19} /></span><div><h3>关系来源</h3><p>每条关系需要记录来源、创建方式、审核状态和最后更新时间。</p></div></article>
+      <article><span><CheckCircle2 size={19} /></span><div><h3>发布约束</h3><p>只有证据完整且审核通过的关系，才可用于教师端推荐和智能组卷。</p></div></article>
+    </div>
+
     <div className="admin-domain-layout">
       <section className="admin-panel admin-graph-panel">
-        <header className="admin-panel-header"><div><h2>关系图谱预览</h2><p>七年级语文 · 《春》第一课时</p></div><label className="admin-domain-select"><span>预览范围</span><select value="lesson" disabled title="跨教案图谱查询尚未接入"><option value="lesson">当前演示教案</option></select></label></header>
+        <header className="admin-panel-header"><div><h2>关系模型参考结构</h2><p>节点仅说明建议的数据关系，不对应任何线上教案或题目</p></div></header>
         <div className="admin-graph-canvas">
-          <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">{graphPoints.map((point) => <line key={point.name} x1="14" y1="50" x2={point.x} y2={point.y} />)}{graphPoints.flatMap((point, pointIndex) => Array.from({ length: Math.min(point.questions, 3) }, (_, index) => <line className="question" key={`${point.name}-${index}`} x1={point.x} y1={point.y} x2={82} y2={16 + (pointIndex * 2 + index) * 7} />))}</svg>
-          <div className="admin-graph-root"><BookOpenCheck size={20} /><b>《春》第一课时</b><small>教案节点</small></div>
-          {graphPoints.map((point) => <button key={point.name} className="admin-kp-node" style={{ left: `${point.x}%`, top: `${point.y}%` }} type="button" disabled title="知识点详情待接入"><b>{point.name}</b><small>{point.questions} 道题 · {point.confidence}%</small></button>)}
-          {Array.from({ length: 10 }, (_, index) => <button className="admin-question-node" style={{ left: '82%', top: `${16 + index * 7}%` }} type="button" key={index + 1} disabled title="题目详情待接入">Q{index + 1}</button>)}
-          <div className="admin-graph-legend"><span><i className="lesson" />教案</span><span><i className="knowledge" />知识点</span><span><i className="question" />题目</span></div>
+          <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+            {referenceGraphPoints.map((point) => <line key={`lesson-${point.name}`} x1="14" y1="50" x2={point.x} y2={point.y} />)}
+            {referenceGraphPoints.map((point) => <line className="question" key={`question-${point.name}`} x1={point.x} y1={point.y} x2="82" y2={point.questionY} />)}
+          </svg>
+          <div className="admin-graph-root"><BookOpenCheck size={20} /><b>教案实体</b><small>章节与课时</small></div>
+          {referenceGraphPoints.map((point) => <div key={point.name} className="admin-kp-node" style={{ left: `${point.x}%`, top: `${point.y}%` }}><b>{point.name}</b><small>{point.detail}</small></div>)}
+          {referenceQuestionNodes.map((node) => <div className="admin-question-node" style={{ left: '82%', top: `${node.y}%` }} key={node.name}>{node.name}</div>)}
+          <div className="admin-graph-legend"><span><i className="lesson" />教案实体</span><span><i className="knowledge" />知识点实体</span><span><i className="question" />题目实体</span></div>
         </div>
       </section>
-      <aside className="admin-panel admin-graph-health">
-        <header className="admin-panel-header"><div><h2>图谱健康度</h2><p>仅统计已审核关系</p></div><span className="admin-health-score">92</span></header>
-        <div className="admin-health-list"><div><p><span>知识点覆盖率</span><b>94%</b></p><i><span style={{ width: '94%' }} /></i></div><div><p><span>关系平均置信度</span><b>91%</b></p><i><span style={{ width: '91%' }} /></i></div><div><p><span>孤立节点占比</span><b>3%</b></p><i className="reverse"><span style={{ width: '3%' }} /></i></div><div><p><span>争议关系占比</span><b>2%</b></p><i className="reverse"><span style={{ width: '2%' }} /></i></div></div>
-        <div className="admin-health-note"><ShieldCheck size={17} /><p><b>治理原则</b><span>低置信关系只能进入待审核池，不能直接影响教师端推荐。</span></p></div>
+
+      <aside className="admin-panel admin-governance-panel">
+        <header className="admin-panel-header"><div><h2>关系治理规则</h2><p>进入业务流程前需要满足的条件</p></div></header>
+        <ol className="admin-governance-list">
+          <li><span>01</span><div><b>来源可追溯</b><p>记录教材、教案、人工录入或模型建议等来源。</p></div></li>
+          <li><span>02</span><div><b>审核可复核</b><p>保留审核人、审核结论和变更原因。</p></div></li>
+          <li><span>03</span><div><b>发布有边界</b><p>草稿与争议关系不参与推荐和组卷。</p></div></li>
+          <li><span>04</span><div><b>变更有记录</b><p>合并、撤回和重新挂接均写入审计记录。</p></div></li>
+        </ol>
+        <div className="admin-health-note"><ShieldCheck size={17} /><p><b>治理原则</b><span>不以单一置信分数代替人工审核，也不在证据不足时自动合并知识点。</span></p></div>
       </aside>
     </div>
-    <section className="admin-panel admin-conflict-panel"><header className="admin-panel-header"><div><h2>冲突仲裁台</h2><p>当前仅展示结构样例；审计日志和仲裁事务接入前不会执行写操作</p></div><button className="admin-link-button" type="button" disabled title="冲突列表接口尚未接入">查看全部（待接入） <ArrowRight size={15} /></button></header><div className="admin-conflict-table"><div className="admin-conflict-row head"><span>冲突关系</span><span>冲突原因</span><span>影响题目</span><span>置信度</span><span>建议动作</span><span /></div><div className="admin-conflict-row"><span><b>多感官描写</b><small>可能重复：感官描写</small></span><span>名称相似度 96%</span><span>8 道</span><span>88%</span><span>合并并保留别名</span><span><button disabled title="等待审计事务接口">待接入</button></span></div><div className="admin-conflict-row"><span><b>文章主旨</b><small>疑似错误挂接：Q8</small></span><span>与题目解析不一致</span><span>1 道</span><span>62%</span><span>转教研员复核</span><span><button disabled title="等待审计事务接口">待接入</button></span></div></div></section>
+
+    <section className="admin-panel admin-conflict-panel">
+      <header className="admin-panel-header"><div><h2>冲突处理参考结构</h2><p>用于确认识别、隔离、复核和发布的规则，不代表当前存在这些冲突</p></div></header>
+      <div className="admin-conflict-table">
+        <div className="admin-conflict-row reference head"><span>参考场景</span><span>识别信号</span><span>默认处理</span><span>审核输出</span></div>
+        {conflictReferenceRows.map((row) => <div className="admin-conflict-row reference" key={row[0]}>{row.map((cell, index) => <span key={cell}>{index === 0 ? <b>{cell}</b> : cell}</span>)}</div>)}
+      </div>
+    </section>
   </>;
 }
 
-const questionRows = [
-  ['Q-10001', '下列加点字读音完全正确的一项是（ ）', '选择题', '字音', 'AI 生成题', '1/5', '待审核'],
-  ['Q-10002', '结合语境解释“山朗润起来了”中“朗润”的意思。', '填空题', '词语理解', '教材录入', '1/5', '已审核'],
-  ['Q-10003', '全文可以分为哪三个部分？请用三个短语概括。', '简答题', '文章结构', 'AI 生成题', '2/5', '待审核'],
-  ['Q-10004', '赏析“小草偷偷地从土里钻出来”的表达效果。', '赏析题', '拟人', '校本题', '2/5', '已审核'],
-  ['Q-10005', '作者为什么在写完景物后还要写“迎春图”？', '探究题', '情感线索', 'AI 生成题', '3/5', '待审核'],
+const questionSchemaRows = [
+  { field: '题目内容', type: '内容字段', purpose: '题干、选项、答案和解析分别保存，便于导出不同版本。', rule: '题干必填；答案与解析在发布前完整。', level: '必填' },
+  { field: '题型与难度', type: '教学属性', purpose: '支持选择、填空、简答、探究和写作等题型。', rule: '采用统一枚举；难度需要有可解释依据。', level: '必填' },
+  { field: '知识点关系', type: '图谱关系', purpose: '关联主要知识点、次要知识点和考查目标。', rule: '争议关系不参与自动推荐。', level: '必填' },
+  { field: '题目来源', type: '溯源字段', purpose: '区分教材录入、校本内容、人工编写和模型建议。', rule: '保留原始来源与版权说明。', level: '必填' },
+  { field: '审核记录', type: '治理字段', purpose: '保存审核结论、审核人、时间和修改说明。', rule: '发布、退回和撤回均形成记录。', level: '必填' },
+  { field: '适用范围', type: '推荐属性', purpose: '描述学段、学科、教材版本和教学环节。', rule: '缺失时仅允许人工检索，不自动推荐。', level: '建议' },
 ];
 
-export function QuestionBankAdminPage({ onNotice }) {
+export function QuestionBankAdminPage() {
   const [query, setQuery] = useState('');
   const visibleRows = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    return questionRows.filter((row) => !normalized || row.join(' ').toLowerCase().includes(normalized));
+    return questionSchemaRows.filter((row) => !normalized || Object.values(row).join(' ').toLowerCase().includes(normalized));
   }, [query]);
-  const approvedCount = questionRows.filter((row) => row[6] === '已审核').length;
-  const generatedCount = questionRows.filter((row) => row[4] === 'AI 生成题').length;
+
   return <>
-    <div className="admin-page-heading"><div><div><h1>题库管理</h1><p>管理题源、知识点标注、审核状态与批量导入</p></div><span className="admin-domain-stage"><Database size={14} /> 当前仅展示种子题</span></div><div className="admin-page-actions"><button className="admin-button admin-button-secondary" type="button" disabled title="导入模板文件尚未生成"><FileSpreadsheet size={17} />导入模板待接入</button><button className="admin-button admin-button-primary" type="button" disabled title="等待题库持久化与审核事务接口"><Upload size={17} />批量导入待接入</button></div></div>
-    <div className="admin-domain-metrics"><article><span><Database size={19} /></span><div><small>题目样例</small><strong>{questionRows.length}</strong><p>当前 MVP 种子题</p></div></article><article><span><CheckCircle2 size={19} /></span><div><small>样例已审核</small><strong>{approvedCount}</strong><p>{Math.round(approvedCount / questionRows.length * 100)}% 样例覆盖率</p></div></article><article><span><Sparkles size={19} /></span><div><small>AI 生成题样例</small><strong>{generatedCount}</strong><p>不可冒充真题</p></div></article><article><span><AlertTriangle size={19} /></span><div><small>样例待处理</small><strong>{questionRows.length - approvedCount}</strong><p>含题源与解析复核</p></div></article></div>
-    <section className="admin-panel admin-bank-panel"><header className="admin-panel-header"><div><h2>种子题列表</h2><p>教材题、校本题与 AI 生成题分开标识；详情审核尚未接入</p></div><label className="admin-bank-search"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="筛选题干、知识点或题目 ID" /></label></header><div className="admin-bank-table"><div className="admin-bank-row head"><span>题目 ID</span><span>题干</span><span>题型</span><span>知识点</span><span>题源</span><span>难度</span><span>状态</span></div>{visibleRows.map((row) => <button className="admin-bank-row" type="button" key={row[0]} disabled title="题目审核详情待接入">{row.map((cell, index) => <span key={`${row[0]}-${index}`} className={index === 6 ? `bank-status ${cell === '已审核' ? 'approved' : ''}` : ''}>{index === 1 ? <b>{cell}</b> : cell}</span>)}</button>)}{!visibleRows.length ? <p className="admin-domain-empty">没有符合筛选条件的种子题</p> : null}</div></section>
+    <div className="admin-page-heading">
+      <div>
+        <div><h1>题库管理</h1><p>规划题目字段、来源追踪、审核状态和发布边界</p></div>
+        <span className="admin-domain-stage"><Database size={14} /> 只读规划</span>
+      </div>
+    </div>
+
+    <section className="admin-domain-intro">
+      <ShieldCheck size={20} />
+      <div><b>参考结构</b><p>本页展示题库应具备的字段和治理要求，不展示线上题量、审核率或题目记录。</p></div>
+    </section>
+
+    <div className="admin-domain-reference-grid">
+      <article><span><Database size={19} /></span><div><h3>内容分层</h3><p>学生可见内容、教师答案和内部审核信息分开保存与授权。</p></div></article>
+      <article><span><Sparkles size={19} /></span><div><h3>来源标识</h3><p>模型建议题不得冒充教材题或校本题，所有来源均可追溯。</p></div></article>
+      <article><span><CheckCircle2 size={19} /></span><div><h3>审核闭环</h3><p>草稿、待审核、已发布和已归档使用明确的状态流转。</p></div></article>
+    </div>
+
+    <section className="admin-panel admin-bank-panel">
+      <header className="admin-panel-header">
+        <div><h2>题库字段参考结构</h2><p>用于产品、教研和研发共同确认字段含义与校验要求</p></div>
+        <label className="admin-bank-search"><Search size={16} /><input aria-label="筛选题库参考字段" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="筛选字段、用途或规则" /></label>
+      </header>
+      <div className="admin-bank-table">
+        <div className="admin-bank-row schema head"><span>字段</span><span>类型</span><span>用途</span><span>校验与治理要求</span><span>级别</span></div>
+        {visibleRows.map((row) => <div className="admin-bank-row schema" key={row.field}><span><b>{row.field}</b></span><span>{row.type}</span><span>{row.purpose}</span><span>{row.rule}</span><span><i className={`admin-reference-tag ${row.level === '必填' ? 'required' : ''}`}>{row.level}</i></span></div>)}
+        {!visibleRows.length ? <p className="admin-domain-empty">没有符合筛选条件的参考字段</p> : null}
+      </div>
+    </section>
+
+    <section className="admin-panel admin-lifecycle-panel">
+      <header className="admin-panel-header"><div><h2>题目状态参考</h2><p>状态名称应与权限和可见范围保持一致</p></div></header>
+      <ol className="admin-lifecycle-list">
+        <li><span>1</span><div><b>草稿</b><p>仅创建者和授权审核人员可见。</p></div></li>
+        <li><span>2</span><div><b>待审核</b><p>内容冻结，等待教研人员给出结论。</p></div></li>
+        <li><span>3</span><div><b>已发布</b><p>可用于检索、推荐、组卷和导出。</p></div></li>
+        <li><span>4</span><div><b>已归档</b><p>不再进入新任务，但保留历史引用。</p></div></li>
+      </ol>
+    </section>
   </>;
 }
 
-const organizations = [
-  { name: '教师帮内测试点校', type: '学校', plan: '校版·标准', teams: 5, teachers: 42, expires: '2027-07-31', status: '内测中' },
-  { name: '七年级语文备课组', type: '教研组', plan: '教研组版', teams: 1, teachers: 12, expires: '2027-02-28', status: '正常' },
-  { name: '区域教研云演示空间', type: '区域', plan: '区域演示', teams: 18, teachers: 236, expires: '2026-12-31', status: '演示' },
+const organizationSchemaRows = [
+  { field: '组织标识', type: '全局唯一标识', purpose: '作为学校、区域或教研组的数据隔离边界。', boundary: '创建后不可复用给其他组织。', level: '必填' },
+  { field: '组织层级', type: '层级关系', purpose: '表达区域、学校、年级组和备课组的归属。', boundary: '跨层级移动需要权限校验和审计记录。', level: '必填' },
+  { field: '成员角色', type: '权限关系', purpose: '区分组织管理员、教研负责人和普通教师。', boundary: '权限按组织范围生效，不继承无关租户数据。', level: '必填' },
+  { field: '套餐归属', type: '权益关系', purpose: '定义组织可用功能、有效期和购买来源。', boundary: '历史订单和权益快照不可被后续改价覆盖。', level: '必填' },
+  { field: '额度策略', type: '资源规则', purpose: '定义组织总额度、个人额度与发放方式。', boundary: '每次发放、扣除和退回均可追溯。', level: '建议' },
+  { field: '组织状态', type: '生命周期', purpose: '控制新登录、数据写入和到期后的只读策略。', boundary: '停用组织不等于立即删除历史数据。', level: '必填' },
 ];
 
-export function OrganizationsAdminPage({ onNotice }) {
+export function OrganizationsAdminPage() {
   const [query, setQuery] = useState('');
-  const visibleOrganizations = useMemo(() => {
+  const visibleRows = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    return organizations.filter((item) => !normalized || Object.values(item).join(' ').toLowerCase().includes(normalized));
+    return organizationSchemaRows.filter((row) => !normalized || Object.values(row).join(' ').toLowerCase().includes(normalized));
   }, [query]);
+
   return <>
-    <div className="admin-page-heading"><div><div><h1>学校与组织</h1><p>管理学校、区域、备课组、成员角色与组织级额度</p></div><span className="admin-domain-stage"><Building2 size={14} /> 多租户 MVP</span></div><div className="admin-page-actions"><button className="admin-button admin-button-primary" type="button" disabled title="等待多租户数据库与角色权限接口"><Plus size={17} />新建组织待接入</button></div></div>
-    <div className="admin-domain-metrics"><article><span><School size={19} /></span><div><small>学校样例</small><strong>{organizations.filter((item) => item.type === '学校').length}</strong><p>内测租户字段</p></div></article><article><span><Building2 size={19} /></span><div><small>区域样例</small><strong>{organizations.filter((item) => item.type === '区域').length}</strong><p>演示租户字段</p></div></article><article><span><UsersRound size={19} /></span><div><small>备课组字段合计</small><strong>{organizations.reduce((sum, item) => sum + item.teams, 0)}</strong><p>仅为结构样例</p></div></article><article><span><ShieldCheck size={19} /></span><div><small>教师字段合计</small><strong>{organizations.reduce((sum, item) => sum + item.teachers, 0)}</strong><p>并非真实账号数</p></div></article></div>
-    <section className="admin-panel admin-organization-panel"><header className="admin-panel-header"><div><h2>组织列表</h2><p>以下为字段结构样例；正式数据将由 PostgreSQL 租户、成员和角色表提供</p></div><label className="admin-bank-search"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="筛选学校、区域或备课组" /></label></header><div className="admin-organization-table"><div className="admin-organization-row head"><span>组织</span><span>类型</span><span>套餐</span><span>备课组</span><span>教师</span><span>到期时间</span><span>状态</span></div>{visibleOrganizations.map((item) => <button className="admin-organization-row" type="button" key={item.name} disabled title="租户详情待接入"><span><b>{item.name}</b><small>组织数据隔离空间</small></span><span>{item.type}</span><span>{item.plan}</span><span>{item.teams}</span><span>{item.teachers}</span><span>{item.expires}</span><span>{item.status}</span></button>)}{!visibleOrganizations.length ? <p className="admin-domain-empty">没有符合筛选条件的组织样例</p> : null}</div></section>
+    <div className="admin-page-heading">
+      <div>
+        <div><h1>学校与组织</h1><p>规划租户隔离、组织层级、成员角色和组织级权益</p></div>
+        <span className="admin-domain-stage"><Building2 size={14} /> 只读规划</span>
+      </div>
+    </div>
+
+    <section className="admin-domain-intro">
+      <ShieldCheck size={20} />
+      <div><b>参考结构</b><p>本页用于确认组织模型与权限边界，不展示线上学校、成员、套餐或额度统计。</p></div>
+    </section>
+
+    <div className="admin-domain-reference-grid">
+      <article><span><School size={19} /></span><div><h3>租户隔离</h3><p>业务数据始终归属明确组织，跨组织访问必须经过授权。</p></div></article>
+      <article><span><UsersRound size={19} /></span><div><h3>角色最小权限</h3><p>不同角色只获得完成职责所需的菜单、数据和操作权限。</p></div></article>
+      <article><span><ShieldCheck size={19} /></span><div><h3>变更可审计</h3><p>成员加入、角色调整、额度发放和组织停用均保留记录。</p></div></article>
+    </div>
+
+    <section className="admin-panel admin-organization-panel">
+      <header className="admin-panel-header">
+        <div><h2>组织字段参考结构</h2><p>用于确认多组织数据模型，不对应任何线上学校或账号</p></div>
+        <label className="admin-bank-search"><Search size={16} /><input aria-label="筛选组织参考字段" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="筛选字段、用途或权限边界" /></label>
+      </header>
+      <div className="admin-organization-table">
+        <div className="admin-organization-row schema head"><span>字段</span><span>类型</span><span>用途</span><span>权限与数据边界</span><span>级别</span></div>
+        {visibleRows.map((row) => <div className="admin-organization-row schema" key={row.field}><span><b>{row.field}</b></span><span>{row.type}</span><span>{row.purpose}</span><span>{row.boundary}</span><span><i className={`admin-reference-tag ${row.level === '必填' ? 'required' : ''}`}>{row.level}</i></span></div>)}
+        {!visibleRows.length ? <p className="admin-domain-empty">没有符合筛选条件的参考字段</p> : null}
+      </div>
+    </section>
   </>;
 }

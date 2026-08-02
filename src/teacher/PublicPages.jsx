@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   ArrowRight,
   ArrowLeft,
@@ -29,11 +30,88 @@ const PASSWORD_RECOVERY_AVAILABLE = import.meta.env.VITE_PASSWORD_RECOVERY_ENABL
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MOBILE_PATTERN = /^1[3-9]\d{9}$/;
 
-function accountError(identifier) {
+function accountError(identifier, { allowUsername = false } = {}) {
   const value = identifier.trim();
   if (!value) return '请输入手机号或邮箱。';
+  if (allowUsername && /^\S{3,100}$/u.test(value)) return '';
   if (!EMAIL_PATTERN.test(value) && !MOBILE_PATTERN.test(value)) return '请输入有效的中国大陆手机号或邮箱地址。';
   return '';
+}
+
+const FALLBACK_PRIVACY_POLICY = {
+  title: '数据与隐私说明',
+  content: '教师帮仅为账号、安全验证、教案生成、导出和订单处理使用你主动提交的信息。平台会采用访问控制、传输加密和敏感配置加密存储等措施。关于教材、教案与服务改进的具体处理范围，请以当前公布的完整说明为准。',
+  updatedAt: '',
+};
+
+export function PrivacyPolicyLink({ children = '数据与隐私说明', className = '', policy: suppliedPolicy = null }) {
+  const [open, setOpen] = useState(false);
+  const [policy, setPolicy] = useState(FALLBACK_PRIVACY_POLICY);
+  const [loading, setLoading] = useState(false);
+  const triggerRef = useRef(null);
+  const dialogRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const appRoot = document.getElementById('root');
+    const rootWasInert = appRoot?.hasAttribute('inert') || false;
+    const previousAriaHidden = appRoot?.getAttribute('aria-hidden');
+    const previousOverflow = document.body.style.overflow;
+    if (appRoot) {
+      appRoot.setAttribute('inert', '');
+      appRoot.setAttribute('aria-hidden', 'true');
+    }
+    document.body.style.overflow = 'hidden';
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setOpen(false);
+        return;
+      }
+      if (event.key !== 'Tab' || !dialogRef.current) return;
+      const focusable = [...dialogRef.current.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+        .filter((element) => !element.disabled && element.getAttribute('aria-hidden') !== 'true');
+      if (!focusable.length) {
+        event.preventDefault();
+        dialogRef.current.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (event.shiftKey && (document.activeElement === first || !dialogRef.current.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || !dialogRef.current.contains(document.activeElement))) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    window.requestAnimationFrame(() => dialogRef.current?.focus());
+    if (suppliedPolicy?.content) {
+      setPolicy({ ...FALLBACK_PRIVACY_POLICY, ...suppliedPolicy });
+      setLoading(false);
+    } else {
+      setLoading(true);
+      api.getSiteConfig().then((response) => {
+        const value = response.data?.privacyPolicy;
+        if (value?.content) setPolicy({ ...FALLBACK_PRIVACY_POLICY, ...value });
+      }).catch(() => {}).finally(() => setLoading(false));
+    }
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.body.style.overflow = previousOverflow;
+      if (appRoot) {
+        if (!rootWasInert) appRoot.removeAttribute('inert');
+        if (previousAriaHidden === null) appRoot.removeAttribute('aria-hidden');
+        else appRoot.setAttribute('aria-hidden', previousAriaHidden);
+      }
+      triggerRef.current?.focus();
+    };
+  }, [open, suppliedPolicy]);
+
+  const dialog = open ? createPortal(<div className="privacy-modal-layer"><button className="privacy-modal-backdrop" tabIndex={-1} type="button" onClick={() => setOpen(false)} aria-label="关闭数据与隐私说明" /><section ref={dialogRef} tabIndex={-1} className="privacy-modal" role="dialog" aria-modal="true" aria-labelledby="privacy-modal-title"><header><div><h2 id="privacy-modal-title">{policy.title}</h2><p>{policy.updatedAt ? `更新于 ${new Date(policy.updatedAt).toLocaleDateString('zh-CN')}` : '请在创建账号前完整阅读'}</p></div><button type="button" onClick={() => setOpen(false)} aria-label="关闭"><X size={20} /></button></header><div className="privacy-modal-content">{loading ? <p>正在读取最新说明…</p> : policy.content.split(/\n{2,}/).map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</div><footer><Button type="button" onClick={() => setOpen(false)}>我已阅读</Button></footer></section></div>, document.body) : null;
+  return <><button ref={triggerRef} className={`privacy-policy-link ${className}`.trim()} type="button" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setOpen(true); }}>{children}</button>{dialog}</>;
 }
 
 function consumeAuthReturnTarget() {
@@ -51,7 +129,7 @@ function PublicHeader() {
         <Link to="/#features">功能</Link>
         <Link to="/#workflow">使用方式</Link>
         <Link to="/pricing">会员方案</Link>
-        <Link to="/#security">数据与隐私</Link>
+        <PrivacyPolicyLink>数据与隐私</PrivacyPolicyLink>
       </nav>
       <div className="public-actions">
         <Link to="/login" className="text-link">登录</Link>
@@ -132,9 +210,9 @@ export function LandingPage() {
           <div className="workflow-copy">
             <h2>四步，准备好下一堂课</h2>
             <ol>
-              <li><span>1</span><div><h3>上传教材章节</h3><p>手机拍照或 PDF 均可，自动检查模糊、反光与漏页。</p></div></li>
+              <li><span>1</span><div><h3>上传教材章节</h3><p>手机拍照或 PDF 均可，请确保图片清晰、端正、无反光并按页码上传。</p></div></li>
               <li><span>2</span><div><h3>确认学情和课堂偏好</h3><p>选择年级、课时与教学风格，也可以补充班级特点。</p></div></li>
-              <li><span>3</span><div><h3>生成、修改、定稿</h3><p>生成过程可离开页面，完成后继续对话修改，满意再定稿。</p></div></li>
+              <li><span>3</span><div><h3>生成、修改、定稿</h3><p>生成完成后可继续对话修改课堂流程、提问和习题，满意再定稿。</p></div></li>
               <li><span>4</span><div><h3>沉淀知识点并智能组卷</h3><p>校验知识点关系，完成选题、排序、双版本导出或提交备课组评审。</p></div></li>
             </ol>
             <Button icon={ImageUp} onClick={() => navigate('/register')}>上传一章试试看</Button>
@@ -157,11 +235,11 @@ export function LandingPage() {
         </section>
 
         <section className="landing-section security-section" id="security">
-          <div className="security-heading"><ShieldCheck size={30} /><h2>你的教材和教案，默认只属于你</h2></div>
+          <div className="security-heading"><ShieldCheck size={30} /><h2>教材与教案如何使用，规则清晰可查</h2></div>
           <div className="security-points">
-            <div><b>服务使用与训练授权分开</b><p>不勾选训练授权，也能完整使用生成、修改和导出。</p></div>
-            <div><b>素材可删除、可设置保留期</b><p>上传文件和最终教案分开管理，删除操作有清晰反馈。</p></div>
-            <div><b>模型密钥只保存在服务端</b><p>管理员后台仅显示尾号，调用日志不记录完整教材和密钥。</p></div>
+            <div><b>数据用途公开说明</b><p>注册前可查看完整的数据与隐私说明，了解账号、教材和教案的处理范围。</p></div>
+            <div><b>教材与教案分开处理</b><p>上传内容仅用于完成你发起的备课流程，并按公布的保留规则进行管理。</p></div>
+            <div><b>敏感凭据隔离保护</b><p>密码、支付凭据和通信密钥采用独立保护措施，不会写入教案内容。</p></div>
           </div>
         </section>
 
@@ -176,13 +254,21 @@ export function LandingPage() {
 }
 
 function PublicFooter() {
+  const [siteInfo, setSiteInfo] = useState({ siteName: '教师帮', supportEmail: '' });
+  useEffect(() => {
+    let active = true;
+    api.getSiteConfig().then((response) => {
+      if (active) setSiteInfo((current) => ({ ...current, ...(response.data || {}) }));
+    }).catch(() => {});
+    return () => { active = false; };
+  }, []);
   return (
     <footer className="public-footer">
       <div><Logo /><p>让每一位教师，都有一位懂课堂的备课伙伴。</p></div>
       <div><b>产品</b><Link to="/#features">功能介绍</Link><Link to="/pricing">会员方案</Link><Link to="/app/lesson/lesson-spring-001">教案示例</Link></div>
-      <div><b>支持</b><Link to="/#workflow">使用帮助</Link><a href="mailto:support@jiaoshibang.cn">联系我们</a><Link to="/#security">数据安全说明</Link></div>
-      <div><b>规则</b><span className="footer-pending-link" title="正式法律文本尚待发布">用户协议（待发布）</span><Link to="/#security">数据与隐私说明</Link><Link to="/#security">AI 数据授权说明</Link></div>
-      <p className="footer-record">© 2026 教师帮 · 演示版本</p>
+      <div><b>支持</b><Link to="/#workflow">使用帮助</Link>{siteInfo.supportEmail ? <a href={`mailto:${siteInfo.supportEmail}`}>联系我们</a> : null}<PrivacyPolicyLink>数据安全说明</PrivacyPolicyLink></div>
+      <div><b>规则</b><PrivacyPolicyLink>用户协议与隐私规则</PrivacyPolicyLink><PrivacyPolicyLink>数据与隐私说明</PrivacyPolicyLink></div>
+      <p className="footer-record">© 2026 {siteInfo.siteName || '教师帮'}</p>
     </footer>
   );
 }
@@ -201,21 +287,44 @@ export function AuthPage({ mode = 'login' }) {
   const register = mode === 'register';
   const [method, setMethod] = useState(register ? 'code' : 'password');
   const [accepted, setAccepted] = useState(false);
-  const [training, setTraining] = useState(false);
+  const [siteConfig, setSiteConfig] = useState({ registrationOpen: true, registrationVerificationRequired: true, privacyPolicy: FALLBACK_PRIVACY_POLICY });
+  const [siteConfigReady, setSiteConfigReady] = useState(!register);
   const [error, setError] = useState('');
   const [status, setStatus] = useState('');
   const [loading, setLoading] = useState(false);
   const [sendingCode, setSendingCode] = useState(false);
   const [verificationId, setVerificationId] = useState('');
   const [form, setForm] = useState({ identifier: '', verificationCode: '', password: '', subject: '语文' });
-  const codeMode = method === 'code';
+  const codeMode = register ? siteConfig.registrationVerificationRequired !== false : method === 'code';
+
+  useEffect(() => {
+    if (!register) return;
+    let active = true;
+    api.getSiteConfig().then((response) => {
+      if (!active) return;
+      setSiteConfig((current) => ({ ...current, ...(response.data || {}) }));
+      setSiteConfigReady(true);
+    }).catch(() => {
+      if (active) setError('注册规则暂时无法读取，请刷新页面后重试。');
+    });
+    return () => { active = false; };
+  }, [register]);
 
   function update(field) {
-    return (event) => setForm((current) => ({ ...current, [field]: event.target.value }));
+    return (event) => {
+      const value = event.target.value;
+      setForm((current) => field === 'identifier'
+        ? { ...current, identifier: value, verificationCode: '' }
+        : { ...current, [field]: value });
+      if (field === 'identifier') {
+        setVerificationId('');
+        setStatus('');
+      }
+    };
   }
 
   async function sendCode() {
-    if (!VERIFICATION_AUTH_AVAILABLE || sendingCode) return;
+    if (!VERIFICATION_AUTH_AVAILABLE || sendingCode || (register && !siteConfigReady)) return;
     const validationError = accountError(form.identifier);
     if (validationError) { setError(validationError); return; }
     setError(''); setStatus(''); setSendingCode(true);
@@ -238,7 +347,11 @@ export function AuthPage({ mode = 'login' }) {
   async function submit(event) {
     event.preventDefault();
     if (loading) return;
-    const validationError = accountError(form.identifier);
+    if (register && !siteConfigReady) {
+      setError('正在读取最新注册规则，请稍后再试。');
+      return;
+    }
+    const validationError = accountError(form.identifier, { allowUsername: !register && !codeMode });
     if (validationError) { setError(validationError); return; }
     if (codeMode && !VERIFICATION_AUTH_AVAILABLE) {
       setError('验证码服务尚未配置，请改用密码方式。');
@@ -256,6 +369,10 @@ export function AuthPage({ mode = 'login' }) {
       setError('请先阅读当前的数据与隐私说明并确认同意。');
       return;
     }
+    if (register && siteConfig.registrationOpen === false) {
+      setError('当前暂未开放新账号注册。');
+      return;
+    }
     setError(''); setStatus(''); setLoading(true);
     try {
       if (register) {
@@ -263,7 +380,8 @@ export function AuthPage({ mode = 'login' }) {
           identifier: form.identifier.trim(),
           password: form.password,
           subject: form.subject,
-          trainingConsent: training === true,
+          privacyAccepted: true,
+          privacyPolicyUpdatedAt: siteConfig.privacyPolicy?.updatedAt || '',
           ...(codeMode ? { verificationCode: form.verificationCode.trim(), verificationId } : {}),
         });
       } else if (codeMode) {
@@ -287,28 +405,26 @@ export function AuthPage({ mode = 'login' }) {
           <div className="auth-mobile-logo"><Logo /></div>
           <h2>{register ? '创建教师账号' : '欢迎回来'}</h2>
           <p>{register ? '注册即送 3 次完整教案生成额度' : '登录后继续你的备课工作'}</p>
-          {register ? <div className="auth-capability-note subtle"><CircleAlert size={17} /><p><b>手机号或邮箱验证注册</b><span>先获取验证码，再设置登录密码；验证码只在短时间内有效且只能使用一次。</span></p></div> : <div className="auth-method-tabs" role="tablist" aria-label="登录方式">
+          {register ? <div className="auth-capability-note subtle"><CircleAlert size={17} /><p><b>{codeMode ? '手机号或邮箱验证注册' : '手机号或邮箱注册'}</b><span>{codeMode ? '先获取验证码，再设置登录密码；验证码只在短时间内有效且只能使用一次。' : '设置登录密码后即可创建账号。'}</span></p></div> : <div className="auth-method-tabs" role="tablist" aria-label="登录方式">
             <button type="button" role="tab" aria-selected={!codeMode} className={!codeMode ? 'active' : ''} onClick={() => { setMethod('password'); setError(''); setStatus(''); }}>密码登录</button>
-            <button type="button" role="tab" aria-selected={codeMode} className={codeMode ? 'active' : ''} onClick={() => { setMethod('code'); setError(''); setStatus(''); }}>验证码登录<small>{VERIFICATION_AUTH_AVAILABLE ? '' : '待接入'}</small></button>
+            {VERIFICATION_AUTH_AVAILABLE ? <button type="button" role="tab" aria-selected={codeMode} className={codeMode ? 'active' : ''} onClick={() => { setMethod('code'); setError(''); setStatus(''); }}>验证码登录</button> : null}
           </div>}
-          {codeMode && !VERIFICATION_AUTH_AVAILABLE ? <div className="auth-capability-note"><CircleAlert size={17} /><p><b>验证码服务尚未配置</b><span>界面与 API 契约已经预留，短信或邮件服务接入后即可启用；现在请使用密码方式。</span></p></div> : null}
+          {codeMode && !VERIFICATION_AUTH_AVAILABLE ? <div className="auth-capability-note"><CircleAlert size={17} /><p><b>验证码登录暂不可用</b><span>请使用密码方式登录。</span></p></div> : null}
           <form onSubmit={submit} aria-busy={loading}>
-            <Field label="手机号或邮箱"><input type="text" value={form.identifier} onChange={update('identifier')} autoComplete="username" placeholder="请输入手机号或邮箱" required disabled={loading} /></Field>
-            {codeMode ? <Field label="验证码"><div className="code-input"><input type="text" value={form.verificationCode} onChange={update('verificationCode')} inputMode="numeric" autoComplete="one-time-code" placeholder="6 位验证码" required disabled={loading || !VERIFICATION_AUTH_AVAILABLE} /><button type="button" onClick={sendCode} disabled={loading || sendingCode || !VERIFICATION_AUTH_AVAILABLE}>{!VERIFICATION_AUTH_AVAILABLE ? '尚未配置' : sendingCode ? '发送中…' : '获取验证码'}</button></div></Field> : null}
+            <Field label={register || codeMode ? '手机号或邮箱' : '手机号、邮箱或管理员账号'}><input type="text" value={form.identifier} onChange={update('identifier')} autoComplete="username" placeholder={register || codeMode ? '请输入手机号或邮箱' : '请输入登录账号'} required disabled={loading} /></Field>
+            {codeMode ? <Field label="验证码"><div className="code-input"><input type="text" value={form.verificationCode} onChange={update('verificationCode')} inputMode="numeric" autoComplete="one-time-code" placeholder="6 位验证码" required disabled={loading || !VERIFICATION_AUTH_AVAILABLE || (register && !siteConfigReady)} /><button type="button" onClick={sendCode} disabled={loading || sendingCode || !VERIFICATION_AUTH_AVAILABLE || (register && !siteConfigReady)}>{!VERIFICATION_AUTH_AVAILABLE ? '暂不可用' : register && !siteConfigReady ? '读取中…' : sendingCode ? '发送中…' : '获取验证码'}</button></div></Field> : null}
             {(!codeMode || register) ? <Field label="密码"><input type="password" value={form.password} onChange={update('password')} autoComplete={register ? 'new-password' : 'current-password'} placeholder={register ? '至少 8 位，包含字母和数字' : '请输入密码'} required minLength={8} disabled={loading} /></Field> : null}
             {register ? <Field label="任教学科（可选）"><select value={form.subject} onChange={update('subject')} disabled={loading}><option>语文</option><option>数学</option><option>英语</option><option>物理</option><option>化学</option><option>其他</option></select></Field> : null}
-            {register ? (
-              <div className="auth-consents">
-                <label><input type="checkbox" checked={accepted} onChange={(event) => setAccepted(event.target.checked)} /><span>我已阅读当前的<Link to="/#security">数据与隐私说明</Link>，并同意创建账号</span></label>
-                <label><input type="checkbox" checked={training} onChange={(event) => setTraining(event.target.checked)} /><span>我愿意将去标识化后的最终教案用于改进模型（可随时撤回，不影响使用）</span></label>
-              </div>
+          {register ? (
+            <div className="auth-consents">
+                <label><input type="checkbox" checked={accepted} disabled={!siteConfigReady || loading} onChange={(event) => setAccepted(event.target.checked)} /><span>我已阅读当前的<PrivacyPolicyLink policy={siteConfig.privacyPolicy}>数据与隐私说明</PrivacyPolicyLink>，并同意创建账号</span></label>
+            </div>
             ) : <div className="login-tools"><span>登录状态将在此设备保留 7 天</span><Link to="/forgot-password">忘记密码？</Link></div>}
             {status ? <p className="form-status" role="status">{status}</p> : null}
             {error ? <p className="form-error" role="alert">{error}</p> : null}
-            <Button size="lg" className="auth-submit" type="submit" icon={loading ? LoaderCircle : undefined} disabled={loading || (codeMode && !VERIFICATION_AUTH_AVAILABLE)}>{loading ? (register ? '正在注册…' : '正在登录…') : codeMode && !VERIFICATION_AUTH_AVAILABLE ? '请改用密码方式' : register ? '注册并免费开始' : '登录'}</Button>
+            <Button size="lg" className="auth-submit" type="submit" icon={loading ? LoaderCircle : undefined} disabled={loading || (register && !siteConfigReady) || siteConfig.registrationOpen === false || (codeMode && !VERIFICATION_AUTH_AVAILABLE)}>{loading ? (register ? '正在注册…' : '正在登录…') : register && !siteConfigReady ? '正在读取注册规则…' : siteConfig.registrationOpen === false ? '当前暂停注册' : codeMode && !VERIFICATION_AUTH_AVAILABLE ? '请改用密码方式' : register ? '注册并免费开始' : '登录'}</Button>
           </form>
           <div className="auth-switch">{register ? '已有账号？' : '还没有账号？'} <Link to={register ? '/login' : '/register'}>{register ? '直接登录' : '免费注册'}</Link></div>
-          {!register ? <><div className="auth-divider"><span>第三方登录</span></div><button className="wechat-login" disabled title="微信开放平台尚未接入">微信登录（尚未接入）</button></> : null}
         </div>
       </main>
     </div>
@@ -360,13 +476,13 @@ export function PasswordRecoveryPage() {
           <Link to="/login" className="auth-back"><ArrowLeft size={16} /> 返回登录</Link>
           <h2>找回密码</h2>
           <p>通过注册手机号或邮箱接收验证码并设置新密码。</p>
-          {!PASSWORD_RECOVERY_AVAILABLE ? <div className="auth-capability-note"><CircleAlert size={17} /><p><b>在线找回尚未配置</b><span>短信、邮件发送和重置令牌接口仍待接入；当前不会收集账号，也不会假装发送成功。</span></p></div> : null}
+          {!PASSWORD_RECOVERY_AVAILABLE ? <div className="auth-capability-note"><CircleAlert size={17} /><p><b>在线找回暂不可用</b><span>请联系客服协助核验账号。</span></p></div> : null}
           <form onSubmit={submit} aria-busy={loading}>
             <Field label="手机号或邮箱"><input value={identifier} onChange={(event) => setIdentifier(event.target.value)} placeholder="请输入注册账号" disabled={loading || !PASSWORD_RECOVERY_AVAILABLE || step !== 'request'} /></Field>
             {step === 'confirm' ? <><Field label="验证码"><input value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" placeholder="6 位验证码" required /></Field><Field label="新密码"><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" placeholder="至少 8 位，包含字母和数字" required minLength={8} /></Field></> : null}
             {status ? <p className="form-status" role="status">{status}</p> : null}
             {error ? <p className="form-error" role="alert">{error}</p> : null}
-            {step === 'done' ? <Button size="lg" className="auth-submit" type="button" onClick={() => navigate('/login')}>返回登录</Button> : <Button size="lg" className="auth-submit" type="submit" icon={loading ? LoaderCircle : undefined} disabled={loading || !PASSWORD_RECOVERY_AVAILABLE}>{PASSWORD_RECOVERY_AVAILABLE ? loading ? '正在处理…' : step === 'request' ? '发送验证码' : '确认重置密码' : '重置服务尚未配置'}</Button>}
+            {step === 'done' ? <Button size="lg" className="auth-submit" type="button" onClick={() => navigate('/login')}>返回登录</Button> : <Button size="lg" className="auth-submit" type="submit" icon={loading ? LoaderCircle : undefined} disabled={loading || !PASSWORD_RECOVERY_AVAILABLE}>{PASSWORD_RECOVERY_AVAILABLE ? loading ? '正在处理…' : step === 'request' ? '发送验证码' : '确认重置密码' : '暂不可用'}</Button>}
           </form>
         </div>
       </main>
@@ -374,29 +490,51 @@ export function PasswordRecoveryPage() {
   );
 }
 
-const pricingPlans = [
-  { name: '免费版', price: '0', unit: '长期可用', desc: '适合先体验完整流程', features: ['注册赠送 3 次生成', '每次最多 10 页教材', '基础教案模板', '导出带品牌标记'], cta: '免费注册' },
-  { name: '专业版', price: '39', unit: '/ 月', desc: '适合日常高频备课', features: ['20 次教案生成点数', 'AI 教案反复修改', '多图片与 PDF 教材上传', '可用模型通道自动路由', 'DOC / 打印-PDF / JSON 导出', '历史版本本地保存'], cta: '注册后查看', featured: true },
-  { name: '教研版', price: '99', unit: '/ 月', desc: '适合备课组与教研骨干', features: ['每月 80 次完整生成', '不限 AI 修改次数', '共享优质教案模板', '模型质量评测报告', '优先客服支持'], cta: '注册后查看' },
-];
+const BILLING_PERIODS = Object.freeze([
+  ['month', '月付'], ['quarter', '季付'], ['half_year', '半年付'], ['year', '年付'],
+]);
 
 export function PricingPage() {
-  const [annual, setAnnual] = useState(true);
+  const [period, setPeriod] = useState('month');
+  const [plans, setPlans] = useState([]);
+  const [plansStatus, setPlansStatus] = useState('loading');
+
+  useEffect(() => {
+    let active = true;
+    api.getPaymentPlans().then((response) => {
+      const next = Array.isArray(response.data?.plans) ? response.data.plans.filter((plan) => plan.saleable) : [];
+      if (active) {
+        setPlans(next);
+        setPlansStatus('ready');
+      }
+    }).catch(() => {
+      if (active) {
+        setPlans([]);
+        setPlansStatus('error');
+      }
+    });
+    return () => { active = false; };
+  }, []);
+
+  const visiblePlans = plans.filter((plan) => plan.billingPeriod === period);
   return (
     <div className="public-page pricing-page">
       <PublicHeader />
       <main>
-        <section className="pricing-heading"><h1>把时间还给课堂</h1><p>从免费体验到高频备课，每一项权益都围绕真实教学流程设计。</p><div className="billing-switch"><button className={!annual ? 'active' : ''} onClick={() => setAnnual(false)}>按月</button><button className={annual ? 'active' : ''} onClick={() => setAnnual(true)}>按年 · 省 30%</button></div></section>
+        <section className="pricing-heading"><h1>把时间还给课堂</h1><p>所有价格均为本次实际支付总额，一次性购买，不会自动续费。</p><div className="billing-switch" aria-label="选择付费周期">{BILLING_PERIODS.map(([value, label]) => <button type="button" aria-pressed={period === value} className={period === value ? 'active' : ''} onClick={() => setPeriod(value)} key={value}>{label}</button>)}</div></section>
         <section className="pricing-grid">
-          {pricingPlans.map((plan) => {
-            const price = annual && plan.price !== '0' ? Math.round(Number(plan.price) * 0.7) : plan.price;
-            return <article key={plan.name} className={plan.featured ? 'featured' : ''}><div><h2>{plan.name}</h2><p>{plan.desc}</p></div><div className="price"><b>¥{price}</b><span>{plan.unit}</span></div><ul>{plan.features.map((item) => <li key={item}><Check size={16} />{item}</li>)}</ul><Button variant={plan.featured ? 'primary' : 'secondary'} size="lg" onClick={() => navigate('/register')}>{plan.cta}</Button></article>;
-          })}
+          <article><div><h2>免费版</h2><p>适合先体验完整备课流程</p></div><div className="price"><b>¥0</b><span>长期可用</span></div><ul>{['注册赠送体验点数', '基础教案生成与修改', '结构化教案导出'].map((item) => <li key={item}><Check size={16} />{item}</li>)}</ul><Button variant="secondary" size="lg" onClick={() => navigate('/register')}>免费注册</Button></article>
+          {visiblePlans.map((plan, index) => <article key={plan.planId} className={index === 0 ? 'featured' : ''}><div><h2>{plan.name}</h2><p>{plan.credits} 次教案生成点数 · 有效 {plan.durationDays} 天</p></div><div className="price"><b>{formatPlanPrice(plan.amountCents)}</b><span>本次支付</span>{plan.promotion?.active ? <del>{formatPlanPrice(plan.regularAmountCents)}</del> : null}</div><ul>{(plan.features || []).map((item) => <li key={item}><Check size={16} />{item}</li>)}</ul><Button variant={index === 0 ? 'primary' : 'secondary'} size="lg" onClick={() => navigate('/register')}>注册后购买</Button></article>)}
+          {!visiblePlans.length ? <article className="pricing-empty-period"><div><h2>{BILLING_PERIODS.find(([value]) => value === period)?.[1]}套餐</h2><p>{plansStatus === 'loading' ? '正在读取可购买套餐…' : plansStatus === 'error' ? '会员套餐暂时无法读取，请稍后刷新页面' : '当前周期暂未上架套餐'}</p></div>{period !== 'month' && plansStatus === 'ready' ? <Button variant="secondary" size="lg" onClick={() => setPeriod('month')}>查看月付套餐</Button> : null}</article> : null}
         </section>
-        <section className="pricing-note"><Layers3 size={22} /><div><b>套餐权益会在购买时形成快照</b><p>管理员调整后续套餐时，不会静默减少你已经购买的权益；额度失败自动退回，明细随时可查。</p></div></section>
-        <section className="pricing-faq"><h2>常见问题</h2>{['一次生成包含什么？', 'AI 修改会消耗生成次数吗？', '不授权训练还能使用吗？', '支持学校统一采购吗？'].map((question) => <details key={question}><summary>{question}<ChevronDown size={18} /></summary><p>{question === '不授权训练还能使用吗？' ? '可以。提供服务所必需的数据处理与训练授权完全分开，训练授权默认不勾选，且可以在隐私设置中随时撤回。' : '每项权益都会在确认生成或购买前清晰展示；具体规则可在会员中心和额度明细中查看。'}</p></details>)}</section>
+        <section className="pricing-note"><Layers3 size={22} /><div><b>已购买权益不会被后续调整</b><p>下单时的套餐名称、金额、点数和有效期会随订单保存；生成失败时，预占点数会自动退回。</p></div></section>
+        <section className="pricing-faq"><h2>常见问题</h2>{['一次生成包含什么？', 'AI 修改会消耗生成次数吗？', '套餐会自动续费吗？', '支持学校统一采购吗？'].map((question) => <details key={question}><summary>{question}<ChevronDown size={18} /></summary><p>{question === '套餐会自动续费吗？' ? '不会。当前套餐均为一次性购买，付款前会再次显示本次支付总额、点数和有效期。' : '每项权益都会在确认生成或购买前清晰展示；具体规则可在会员中心和额度明细中查看。'}</p></details>)}</section>
       </main>
       <PublicFooter />
     </div>
   );
+}
+
+function formatPlanPrice(cents) {
+  return new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'CNY', maximumFractionDigits: 2 }).format(Number(cents || 0) / 100);
 }

@@ -8,10 +8,18 @@ const MAX_PRODUCTS = 50;
 const DEFAULT_PRODUCTS = Object.freeze([
   defaultProduct('pro-monthly', '专业版月卡', 'pro', 10, 'month', 3_900, 30, 20,
     ['20 次教案生成点数', 'AI 教案修改', 'DOC / 打印-PDF / JSON 导出', '历史版本长期保存']),
+  defaultProduct('pro-quarterly', '专业版季卡', 'pro', 10, 'quarter', 10_500, 90, 60,
+    ['60 次教案生成点数', 'AI 教案修改', 'DOC / 打印-PDF / JSON 导出', '历史版本长期保存']),
+  defaultProduct('pro-half-yearly', '专业版半年卡', 'pro', 10, 'half_year', 19_800, 180, 120,
+    ['120 次教案生成点数', 'AI 教案修改', 'DOC / 打印-PDF / JSON 导出', '历史版本长期保存']),
   defaultProduct('pro-yearly', '专业版年卡', 'pro', 10, 'year', 32_400, 365, 240,
     ['240 次教案生成点数', 'AI 教案修改', 'DOC / 打印-PDF / JSON 导出', '历史版本长期保存']),
   defaultProduct('research-monthly', '教研版月卡', 'research', 20, 'month', 9_900, 30, 80,
     ['80 次教案生成点数', '共享教案模板库', '模型质量报告', '优先客服支持']),
+  defaultProduct('research-quarterly', '教研版季卡', 'research', 20, 'quarter', 26_700, 90, 240,
+    ['240 次教案生成点数', '共享教案模板库', '模型质量报告', '优先客服支持']),
+  defaultProduct('research-half-yearly', '教研版半年卡', 'research', 20, 'half_year', 49_800, 180, 480,
+    ['480 次教案生成点数', '共享教案模板库', '模型质量报告', '优先客服支持']),
   defaultProduct('research-yearly', '教研版年卡', 'research', 20, 'year', 82_800, 365, 960,
     ['960 次教案生成点数', '共享教案模板库', '模型质量报告', '优先客服支持']),
 ]);
@@ -155,7 +163,9 @@ function normalizeProduct(planId, input, existing, timestamp, actor) {
   if (name.length < 2) throw catalogError(422, 'MEMBERSHIP_PRODUCT_NAME_INVALID', '套餐名称至少需要 2 个字符');
   if (!/^[a-z0-9_.:-]{2,40}$/.test(tier)) throw catalogError(422, 'MEMBERSHIP_PRODUCT_TIER_INVALID', '会员等级标识格式无效');
   if (!Number.isSafeInteger(tierRank) || tierRank < 1 || tierRank > 10_000) throw catalogError(422, 'MEMBERSHIP_PRODUCT_TIER_RANK_INVALID', '会员等级权重需为 1-10000 的整数');
-  if (!['month', 'year'].includes(billingPeriod)) throw catalogError(422, 'MEMBERSHIP_PRODUCT_PERIOD_INVALID', '计费周期只能是月卡或年卡');
+  if (!['month', 'quarter', 'half_year', 'year'].includes(billingPeriod)) {
+    throw catalogError(422, 'MEMBERSHIP_PRODUCT_PERIOD_INVALID', '计费周期只能是月付、季付、半年付或年付');
+  }
   if (!Number.isSafeInteger(amountCents) || amountCents < 1 || amountCents > 100_000_000) throw catalogError(422, 'MEMBERSHIP_PRODUCT_PRICE_INVALID', '套餐价格需为 1-100000000 分的整数');
   if (!Number.isSafeInteger(durationDays) || durationDays < 1 || durationDays > 3_660) throw catalogError(422, 'MEMBERSHIP_PRODUCT_DURATION_INVALID', '套餐有效期需为 1-3660 天');
   if (!Number.isSafeInteger(credits) || credits < 0 || credits > 1_000_000) throw catalogError(422, 'MEMBERSHIP_PRODUCT_CREDITS_INVALID', '套餐点数需为 0-1000000 的整数');
@@ -193,6 +203,11 @@ function readCatalog(filename) {
     seen.add(planId);
     return normalizeProduct(planId, product, null, product.updatedAt || DEFAULT_CATALOG_DATE, product.updatedBy || 'admin');
   });
+  for (const product of DEFAULT_PRODUCTS) {
+    if (seen.has(product.planId)) continue;
+    parsed.products.push(structuredClone(product));
+    seen.add(product.planId);
+  }
   return parsed;
 }
 

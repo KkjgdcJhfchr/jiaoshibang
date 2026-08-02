@@ -7,7 +7,6 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
-  CircleAlert,
   Clock3,
   Download,
   Eye,
@@ -15,7 +14,6 @@ import {
   FileText,
   Filter,
   GitBranch,
-  GraduationCap,
   ListChecks,
   MessageSquareText,
   Network,
@@ -103,7 +101,7 @@ export function KnowledgeMapPage({ path }) {
     try {
       const response = await api.buildKnowledgeMap({ lessonPlan: lesson });
       const count = response.data?.nodes?.length || response.data?.knowledgePoints?.length || points.length;
-      setToast(`服务端结构校验完成，共返回 ${count} 个关系节点；当前预览仍按本地教案渲染`);
+      setToast(`关系校验完成，共识别 ${count} 个关系节点`);
     } catch (requestError) {
       setToast(`重新提取失败：${requestError.message}`);
     } finally { setExtracting(false); }
@@ -117,14 +115,14 @@ export function KnowledgeMapPage({ path }) {
             <span className="workflow-icon"><Network size={25} /></span>
             <div><p>当前教案</p><h2>{lessonTitle(lesson)}</h2><small>{lesson.metadata?.grade} · {lesson.metadata?.subject} · 自动关联 {questions.length} 道题</small></div>
           </div>
-          <div className="workflow-hero-actions"><Button variant="secondary" onClick={() => navigate(`/app/lesson/${lesson.id || 'lesson-spring-001'}`)}>返回教案</Button><Button icon={Sparkles} onClick={reextract} disabled={extracting}>{extracting ? '正在校验…' : '服务端校验结构'}</Button></div>
+          <div className="workflow-hero-actions"><Button variant="secondary" onClick={() => navigate(`/app/lesson/${lesson.id || 'lesson-spring-001'}`)}>返回教案</Button><Button icon={Sparkles} onClick={reextract} disabled={extracting}>{extracting ? '正在校验…' : '重新分析关系'}</Button></div>
         </section>
 
         <div className="knowledge-metrics">
           <article><span><GitBranch size={18} /></span><div><small>知识点节点</small><strong>{points.length}</strong><p>来自目标、重难点与习题标注</p></div></article>
           <article><span><ListChecks size={18} /></span><div><small>已关联题目</small><strong>{questions.length}</strong><p>题目均保留答案与解析</p></div></article>
-          <article><span><ShieldCheck size={18} /></span><div><small>题目标注率</small><strong>{Math.round((questions.filter((item) => (item.knowledge_points || item.knowledgePoints || []).length).length / Math.max(questions.length, 1)) * 100)}%</strong><p>低置信关系需教研员复核</p></div></article>
-          <article><span><CircleAlert size={18} /></span><div><small>待仲裁冲突</small><strong>0</strong><p>当前教案未发现重复挂接</p></div></article>
+          <article><span><ShieldCheck size={18} /></span><div><small>题目标注率</small><strong>{Math.round((questions.filter((item) => (item.knowledge_points || item.knowledgePoints || []).length).length / Math.max(questions.length, 1)) * 100)}%</strong><p>关联结果建议结合教材复核</p></div></article>
+          <article><span><Clock3 size={18} /></span><div><small>教学环节</small><strong>{lesson.timeline?.length || 0}</strong><p>按课堂流程组织知识点关系</p></div></article>
         </div>
 
         <section className="knowledge-workbench">
@@ -152,22 +150,22 @@ export function KnowledgeMapPage({ path }) {
               </div>
             ) : (
               <div className="knowledge-list-view">
-                <div className="knowledge-list-row head"><span>知识点</span><span>认知层级</span><span>教学环节</span><span>关联题目</span><span>置信度</span></div>
+                <div className="knowledge-list-row head"><span>知识点</span><span>认知层级</span><span>教学环节</span><span>关联题目</span><span>关联完整度</span></div>
                 {points.map((point) => <button className={`knowledge-list-row ${selected?.id === point.id ? 'selected' : ''}`} key={point.id} onClick={() => setSelected(point)}><span><b>{point.name}</b><small>{lesson.metadata?.subject} · {lesson.metadata?.grade}</small></span><span>{point.cognitive}</span><span>{point.phase}</span><span>{point.questionIds.length} 道</span><span>{point.confidence}%</span></button>)}
               </div>
             )}
             <aside className="knowledge-detail">
               {selected ? <>
                 <header><span><Network size={17} /></span><div><small>已选知识点</small><h3>{selected.name}</h3></div></header>
-                <dl><div><dt>认知层级</dt><dd>{selected.cognitive}</dd></div><div><dt>适用环节</dt><dd>{selected.phase}</dd></div><div><dt>关系置信度</dt><dd>{selected.confidence}%</dd></div><div><dt>关联习题</dt><dd>{linkedQuestions.length} 道</dd></div></dl>
-                <div className="knowledge-confidence"><p><span>图谱健康度</span><b>{selected.confidence}%</b></p><i><span style={{ width: `${selected.confidence}%` }} /></i><small>来源：教案目标、重难点与题目标注交叉验证</small></div>
+                <dl><div><dt>认知层级</dt><dd>{selected.cognitive}</dd></div><div><dt>适用环节</dt><dd>{selected.phase}</dd></div><div><dt>关联完整度</dt><dd>{selected.confidence}%</dd></div><div><dt>关联习题</dt><dd>{linkedQuestions.length} 道</dd></div></dl>
+                <div className="knowledge-confidence"><p><span>关联完整度</span><b>{selected.confidence}%</b></p><i><span style={{ width: `${selected.confidence}%` }} /></i><small>依据教案目标、重难点与题目标注综合计算</small></div>
                 <div className="linked-question-list"><h4>关联题目</h4>{linkedQuestions.slice(0, 4).map((question, index) => <button key={question.id || index} onClick={() => navigate('/app/papers')}><span>{question.id?.replace('q', '') || index + 1}</span><p><b>{question.stem}</b><small>{question.type} · 难度 {question.difficulty}/5</small></p><ArrowRight size={14} /></button>)}{!linkedQuestions.length ? <p className="empty-linked">暂无直接关联题目，建议人工确认后补充。</p> : null}</div>
                 <Button icon={FileText} onClick={() => navigate('/app/papers')}>基于该知识点组卷</Button>
               </> : <div className="knowledge-detail-empty"><BookOpen size={27} /><h3>{lesson.metadata?.chapter}</h3><p>请选择一个知识点查看详情。</p></div>}
             </aside>
           </div>
         </section>
-        <p className="workflow-disclosure"><ShieldCheck size={15} /> 当前为 MVP 规则图谱：关系来自结构化教案与题目标注；待接入知识点 ID、Embedding 与教研员仲裁后再用于规模化推荐。</p>
+        <p className="workflow-disclosure"><ShieldCheck size={15} /> 图谱关系依据当前教案的目标、重难点与题目标注生成，请结合教材内容复核后使用。</p>
       </div>
       {toast ? <Toast message={toast} onClose={() => setToast('')} /> : null}
     </TeacherShell>
@@ -262,7 +260,7 @@ export function PaperBuilderPage({ path }) {
 
         <div className="paper-builder-layout">
           <section className="question-bank-panel">
-            <header className="workflow-panel-head"><div><h3>教案习题</h3><p>当前按知识点数量与难度生成规则匹配值，不代表教师行为推荐。</p></div><span className="mvp-badge"><Sparkles size={13} /> MVP 规则匹配</span></header>
+            <header className="workflow-panel-head"><div><h3>教案习题</h3><p>匹配值依据知识点标注、题目难度与答案完整性计算。</p></div><span className="mvp-badge"><Sparkles size={13} /> 教案规则匹配</span></header>
             <div className="question-filters">
               <label><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索题干或知识点" /></label>
               <select value={difficulty} onChange={(event) => setDifficulty(event.target.value)} aria-label="筛选难度"><option>全部难度</option>{[1, 2, 3, 4, 5].map((item) => <option key={item} value={item}>难度 {item}/5</option>)}</select>
@@ -288,10 +286,10 @@ export function PaperBuilderPage({ path }) {
             <dl className="paper-health"><div><dt>知识点覆盖</dt><dd>{knowledgeCoverage} 个</dd></div><div><dt>题干完全重复</dt><dd className={duplicateCount ? '' : 'healthy'}>{duplicateCount} 道</dd></div><div><dt>答案与解析</dt><dd className={answersComplete ? 'healthy' : ''}>{answersComplete ? '完整' : '需补充'}</dd></div><div><dt>人工审核</dt><dd>导出前确认</dd></div></dl>
             <div className="paper-outline-list"><h4>题目顺序</h4>{selectedQuestions.map((question, index) => <button key={question.id} onClick={() => toggleQuestion(question.id)}><span>{index + 1}</span><p><b>{question.type}</b><small>{question.stem}</small></p><X size={14} /></button>)}</div>
             <div className="paper-actions"><Button variant="secondary" icon={Eye} onClick={() => setPreview(true)}>预览试卷</Button><Button icon={Download} onClick={() => { downloadFile(paperHtml(title, selectedQuestions, true), `${title}-答案版.doc`); setToast('答案版 Word 已开始下载'); }}>导出答案版</Button></div>
-            <button className="publish-team" onClick={() => { localStorage.setItem('pending-team-paper', JSON.stringify({ title, questions: selectedQuestions, createdAt: new Date().toISOString() })); navigate('/app/team'); }}><Share2 size={15} /> 保存为本地评审草稿</button>
+            <button className="publish-team" onClick={() => { localStorage.setItem('pending-team-paper', JSON.stringify({ title, questions: selectedQuestions, createdAt: new Date().toISOString() })); navigate('/app/team'); }}><Share2 size={15} /> 保存为评审草稿</button>
           </aside>
         </div>
-        <p className="workflow-disclosure"><ShieldCheck size={15} /> 当前题目来自本教案的结构化习题；不冒充名校真题。后续接入授权题库、向量召回和教师行为偏好后再升级排序模型。</p>
+        <p className="workflow-disclosure"><ShieldCheck size={15} /> 当前题目均来自本教案的结构化习题，请在导出前核对题干、答案与难度是否符合本班学情。</p>
       </div>
       {preview ? <div className="paper-preview-layer"><button className="paper-preview-backdrop" onClick={() => setPreview(false)} aria-label="关闭预览" /><section className="paper-preview-modal" role="dialog" aria-modal="true" aria-label="试卷预览"><header><div><small>学生卷预览</small><h2>{title}</h2></div><button onClick={() => setPreview(false)} aria-label="关闭"><X size={20} /></button></header><div className="paper-sheet"><h1>{title}</h1><p className="paper-sheet-meta">姓名：________　班级：________　得分：________　时间：45分钟　满分：{selectedQuestions.length * 10}分</p>{selectedQuestions.map((question, index) => <section key={question.id}><h3>{index + 1}. [{question.type}] {question.stem} <small>（10分）</small></h3>{question.options?.length ? <ol type="A">{question.options.map((option) => <li key={option}>{option}</li>)}</ol> : <div className="paper-answer-space" />}</section>)}</div><footer><Button variant="secondary" onClick={() => setPreview(false)}>继续调整</Button><Button icon={Download} onClick={() => { downloadFile(paperHtml(title, selectedQuestions, false), `${title}-学生版.doc`); setToast('学生版 Word 已开始下载'); setPreview(false); }}>导出学生版</Button></footer></section></div> : null}
       {toast ? <Toast message={toast} onClose={() => setToast('')} /> : null}
@@ -332,11 +330,11 @@ export function TeamWorkspacePage({ path }) {
   }
   function startReview() {
     const baseTitle = lessonTitle(lesson);
-    if (reviews.some((item) => item.title === baseTitle && item.status === '草稿')) return setToast('当前教案已有一条本地评审草稿');
+    if (reviews.some((item) => item.title === baseTitle && item.status === '草稿')) return setToast('当前教案已有一条评审草稿');
     const review = { title: baseTitle, owner: '当前教师', subject: `${lesson.metadata?.grade || ''}${lesson.metadata?.subject || ''}`, reviewers: [], comments: 0, status: '草稿', updated: '刚刚' };
     replaceReviews((items) => [review, ...items]);
     setSelectedTitle(review.title);
-    setToast('评审草稿已保存在当前浏览器；多人送审尚未接入');
+    setToast('评审草稿已保存');
   }
   function submitComment() {
     const value = comment.trim();
@@ -350,17 +348,17 @@ export function TeamWorkspacePage({ path }) {
     if (!selectedReview) return;
     replaceReviews((items) => items.map((item) => item.title === selectedReview.title ? { ...item, status, updated: '刚刚' } : item));
     setActivities((items) => [{ author: '系统', text: status === '已通过' ? '评审已通过' : '已退回作者修改', time: '刚刚' }, ...items]);
-    setToast(status === '已通过' ? '当前任务已在本地标记为通过' : '当前任务已在本地标记为退回修改');
+    setToast(status === '已通过' ? '当前任务已标记为通过' : '当前任务已标记为退回修改');
   }
   return (
-    <TeacherShell path={path} title="备课组工作台" subtitle="共享教案、集中评审，让每次修改都可追溯">
+    <TeacherShell path={path} title="教案评审" subtitle="集中查看草稿、记录批注，让每次修改都有依据">
       <div className="workflow-page team-page">
-        <section className="workflow-hero team-hero"><div><span className="workflow-icon"><UsersRound size={25} /></span><div><p>{lesson.metadata?.grade} {lesson.metadata?.subject} · 本地评审工作区</p><h2>把个人备课沉淀为团队教学资产</h2><small>{reviews.length} 项本地评审任务 · {reviews.filter((item) => item.status === '待评审').length} 项等待处理</small></div></div><div className="workflow-hero-actions"><Button variant="secondary" icon={Share2} disabled title="组织成员服务尚未接入">邀请成员（待接入）</Button><Button icon={FileCheck2} onClick={startReview}>创建本地评审草稿</Button></div></section>
-        <div className="team-metrics"><article><span><FileText size={18} /></span><div><strong>{reviews.length}</strong><small>评审任务</small></div><p>保存在当前浏览器</p></article><article><span><MessageSquareText size={18} /></span><div><strong>{reviews.reduce((sum, item) => sum + Number(item.comments || 0), 0)}</strong><small>评审批注</small></div><p>随任务保留</p></article><article><span><CheckCircle2 size={18} /></span><div><strong>{reviews.filter((item) => item.status === '已通过').length}</strong><small>已通过</small></div><p>状态可追溯</p></article><article><span><GraduationCap size={18} /></span><div><strong>—</strong><small>组织成员</small></div><p>等待组织服务接入</p></article></div>
-        <div className="team-layout"><section className="review-queue"><header className="workflow-panel-head"><div><h3>本地评审队列</h3><p>支持本地筛选、批注和状态标记；多人权限接入前不会伪装已正式送审。</p></div><div className="view-switch">{['全部', '待我处理', '我发起的'].map((item) => <button key={item} className={filter === item ? 'active' : ''} onClick={() => setFilter(item)}>{item}</button>)}</div></header><div className="review-table"><div className="review-row head"><span>教案</span><span>发起人</span><span>评审人</span><span>批注</span><span>状态</span><span>更新</span></div>{visibleReviews.map((review) => <button className={`review-row ${selectedReview?.title === review.title ? 'selected' : ''}`} key={review.title} onClick={() => setSelectedTitle(review.title)}><span><b>{review.title}</b><small>{review.subject}</small></span><span>{review.owner}</span><span className="reviewer-stack">{review.reviewers.length ? review.reviewers.map((reviewer) => <i key={reviewer}>{reviewer}</i>) : <small>未分配</small>}</span><span>{review.comments} 条</span><span><Status>{review.status === '待评审' ? '审核中' : review.status === '已通过' ? '已完成' : review.status === '修改中' ? '修改中' : '草稿'}</Status></span><span>{review.updated}</span></button>)}{!visibleReviews.length ? <p className="review-empty">当前筛选下没有本地评审任务。</p> : null}</div></section>
-          <aside className="team-activity"><header><div><h3>评审动态</h3><p>当前选中：{selectedReview?.title || '暂无任务'}</p></div><span>{selectedReview?.status || '—'}</span></header><div className="activity-stream">{activities.map((activity, index) => <article key={`${activity.time}-${index}`}><span>{activity.author === '系统' ? <Clock3 size={15} /> : activity.author.slice(0, 1)}</span><div><p><b>{activity.author}</b></p><blockquote>{activity.text}</blockquote><small>{activity.time}</small></div></article>)}{!activities.length ? <article><span className="system"><Clock3 size={15} /></span><div><p><b>系统</b> 等待新的本地评审动作</p><small>当前会话</small></div></article> : null}</div><div className="team-comment"><textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder="写下具体、可执行的评审意见…" /><Button size="sm" icon={Send} disabled={!comment.trim() || !selectedReview} onClick={submitComment}>保存本地批注</Button></div><div className="review-decision"><button onClick={() => decide('修改中')} disabled={!selectedReview}>本地标记退回</button><button onClick={() => decide('已通过')} disabled={!selectedReview}><CheckCircle2 size={16} /> 本地标记通过</button></div></aside>
+        <section className="workflow-hero team-hero"><div><span className="workflow-icon"><UsersRound size={25} /></span><div><p>{lesson.metadata?.grade} {lesson.metadata?.subject} · 评审工作区</p><h2>通过评审记录持续打磨教学内容</h2><small>{reviews.length} 项评审任务 · {reviews.filter((item) => item.status === '待评审').length} 项等待处理</small></div></div><div className="workflow-hero-actions"><Button icon={FileCheck2} onClick={startReview}>创建评审草稿</Button></div></section>
+        <div className="team-metrics"><article><span><FileText size={18} /></span><div><strong>{reviews.length}</strong><small>评审任务</small></div><p>保存在当前浏览器</p></article><article><span><MessageSquareText size={18} /></span><div><strong>{reviews.reduce((sum, item) => sum + Number(item.comments || 0), 0)}</strong><small>评审批注</small></div><p>随任务保留</p></article><article><span><CheckCircle2 size={18} /></span><div><strong>{reviews.filter((item) => item.status === '已通过').length}</strong><small>已通过</small></div><p>状态可追溯</p></article><article><span><FileCheck2 size={18} /></span><div><strong>{reviews.filter((item) => item.status === '草稿').length}</strong><small>待完善草稿</small></div><p>可继续补充批注</p></article></div>
+        <div className="team-layout"><section className="review-queue"><header className="workflow-panel-head"><div><h3>评审队列</h3><p>可在当前浏览器中筛选任务、记录批注并更新评审状态。</p></div><div className="view-switch">{['全部', '待我处理', '我发起的'].map((item) => <button key={item} className={filter === item ? 'active' : ''} onClick={() => setFilter(item)}>{item}</button>)}</div></header><div className="review-table"><div className="review-row head"><span>教案</span><span>发起人</span><span>评审人</span><span>批注</span><span>状态</span><span>更新</span></div>{visibleReviews.map((review) => <button className={`review-row ${selectedReview?.title === review.title ? 'selected' : ''}`} key={review.title} onClick={() => setSelectedTitle(review.title)}><span><b>{review.title}</b><small>{review.subject}</small></span><span>{review.owner}</span><span className="reviewer-stack">{review.reviewers.length ? review.reviewers.map((reviewer) => <i key={reviewer}>{reviewer}</i>) : <small>未分配</small>}</span><span>{review.comments} 条</span><span><Status>{review.status === '待评审' ? '审核中' : review.status === '已通过' ? '已完成' : review.status === '修改中' ? '修改中' : '草稿'}</Status></span><span>{review.updated}</span></button>)}{!visibleReviews.length ? <p className="review-empty">当前筛选下没有评审任务。</p> : null}</div></section>
+          <aside className="team-activity"><header><div><h3>评审动态</h3><p>当前选中：{selectedReview?.title || '暂无任务'}</p></div><span>{selectedReview?.status || '—'}</span></header><div className="activity-stream">{activities.map((activity, index) => <article key={`${activity.time}-${index}`}><span>{activity.author === '系统' ? <Clock3 size={15} /> : activity.author.slice(0, 1)}</span><div><p><b>{activity.author}</b></p><blockquote>{activity.text}</blockquote><small>{activity.time}</small></div></article>)}{!activities.length ? <article><span className="system"><Clock3 size={15} /></span><div><p><b>系统</b> 等待新的评审记录</p><small>当前会话</small></div></article> : null}</div><div className="team-comment"><textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder="写下具体、可执行的评审意见…" /><Button size="sm" icon={Send} disabled={!comment.trim() || !selectedReview} onClick={submitComment}>保存批注</Button></div><div className="review-decision"><button onClick={() => decide('修改中')} disabled={!selectedReview}>标记退回</button><button onClick={() => decide('已通过')} disabled={!selectedReview}><CheckCircle2 size={16} /> 标记通过</button></div></aside>
         </div>
-        <p className="workflow-disclosure"><ShieldCheck size={15} /> 当前交付为可交互的协作 MVP；正式多人实时协同、学校租户与细粒度权限将在 PostgreSQL 数据层接入后启用。</p>
+        <p className="workflow-disclosure"><ShieldCheck size={15} /> 草稿、批注与评审状态保存在当前浏览器，请及时导出或备份重要内容。</p>
       </div>
       {toast ? <Toast message={toast} onClose={() => setToast('')} /> : null}
     </TeacherShell>

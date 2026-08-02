@@ -43,6 +43,7 @@ const child = spawn(process.execPath, ['server/index.mjs'], {
     SESSION_SECRET: 'admin-entry-test-session-secret'.padEnd(64, 's'),
     SAFETY_ID_SALT: 'admin-entry-test-safety-salt'.padEnd(64, 'p'),
     ADMIN_ENTRY_PATH: adminEntryPath,
+    PUBLIC_BASE_URL: 'https://admin-entry.test',
     TRUST_PROXY: 'false',
   },
   stdio: ['ignore', 'pipe', 'pipe'],

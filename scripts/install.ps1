@@ -108,6 +108,7 @@ try {
 
   $Lines = @(
     "DOMAIN=$Domain"
+    "PUBLIC_BASE_URL=https://$Domain"
     "OPENAI_API_KEY=$OpenAIKey"
     "OPENAI_BASE_URL=$OpenAIBaseUrl"
     "OPENAI_MODEL=$OpenAIModel"

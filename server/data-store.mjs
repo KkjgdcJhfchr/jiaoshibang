@@ -34,6 +34,41 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
     return usersState.users.find((user) => user.id === userId) || null;
   }
 
+  function listUsersForAdmin({ query = '', offset = 0, limit = 25 } = {}) {
+    const normalizedQuery = String(query || '').trim().slice(0, 100).toLocaleLowerCase('zh-CN');
+    const safeOffset = Math.max(0, Number.isSafeInteger(offset) ? offset : 0);
+    const safeLimit = Math.max(1, Math.min(200, Number.isSafeInteger(limit) ? limit : 25));
+    const ordered = [...usersState.users].sort((left, right) => (
+      String(right.createdAt || '').localeCompare(String(left.createdAt || ''))
+      || String(left.id || '').localeCompare(String(right.id || ''))
+    ));
+    const matched = normalizedQuery
+      ? ordered.filter((user) => [user.account, user.displayName, user.subject]
+        .some((value) => String(value || '').toLocaleLowerCase('zh-CN').includes(normalizedQuery)))
+      : ordered;
+    const visibleUsers = matched
+      .slice(safeOffset, safeOffset + safeLimit)
+      .map(toAdminUserListItem);
+    const summary = {
+      total: usersState.users.length,
+      verified: 0,
+      activeMembers: 0,
+      creditsRemaining: 0,
+      generations: 0,
+    };
+    for (const user of usersState.users) {
+      if (user.verifiedAt) summary.verified += 1;
+      if (currentMembership(user.membershipGrants)) summary.activeMembers += 1;
+      summary.creditsRemaining += nonNegativeNumber(user.credits);
+      summary.generations += nonNegativeNumber(user.generationCount);
+    }
+    return {
+      items: visibleUsers,
+      summary,
+      pagination: { offset: safeOffset, limit: safeLimit, total: matched.length },
+    };
+  }
+
   function registerUser({
     account,
     accountKey,
@@ -42,6 +77,8 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
     password,
     credits,
     trainingConsent,
+    privacyAcceptedAt = null,
+    privacyPolicyUpdatedAt = null,
     verifiedAt = null,
     verifiedChannel = null,
   }) {
@@ -58,10 +95,50 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
       generationCount: 0,
       trainingConsent: Boolean(trainingConsent),
       trainingConsentAt: trainingConsent ? now : null,
+      privacyAcceptedAt,
+      privacyPolicyUpdatedAt,
       verifiedAt,
       verifiedChannel,
       createdAt: now,
       updatedAt: now,
+    };
+    usersState.users.push(user);
+    writeState(usersFile, usersState);
+    return user;
+  }
+
+  function ensureAdminTeacherUser({ account, accountKey, password, credits }) {
+    const existing = findUserByAccountKey(accountKey);
+    const timestamp = new Date().toISOString();
+    if (existing) {
+      if (existing.role !== 'admin_teacher') return null;
+      existing.account = account;
+      existing.displayName = existing.displayName || '平台管理员';
+      existing.password = password;
+      existing.verifiedAt = existing.verifiedAt || timestamp;
+      existing.verifiedChannel = existing.verifiedChannel || 'admin_credentials';
+      existing.updatedAt = timestamp;
+      writeState(usersFile, usersState);
+      return existing;
+    }
+    const user = {
+      id: `usr_${randomUUID()}`,
+      account,
+      accountKey,
+      displayName: '平台管理员',
+      subject: '',
+      password,
+      credits,
+      generationCount: 0,
+      role: 'admin_teacher',
+      trainingConsent: true,
+      trainingConsentAt: timestamp,
+      privacyAcceptedAt: timestamp,
+      privacyPolicyUpdatedAt: null,
+      verifiedAt: timestamp,
+      verifiedChannel: 'admin_credentials',
+      createdAt: timestamp,
+      updatedAt: timestamp,
     };
     usersState.users.push(user);
     writeState(usersFile, usersState);
@@ -88,17 +165,6 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
     return user;
   }
 
-  function setTrainingConsent(userId, value) {
-    const user = findUserById(userId);
-    if (!user) return null;
-    const now = new Date().toISOString();
-    user.trainingConsent = Boolean(value);
-    user.trainingConsentAt = value ? now : null;
-    user.updatedAt = now;
-    writeState(usersFile, usersState);
-    return user;
-  }
-
   function grantMembershipPurchase({ orderId, userId, planId, entitlement, paidAt }) {
     const normalizedOrderId = String(orderId || '').trim();
     const normalizedPlanId = String(planId || '').trim();
@@ -116,7 +182,7 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
     const grantedAtDate = validDate(paidAt) || validDate(now()) || new Date();
     let startsAtDate = grantedAtDate;
     for (const grant of grants) {
-      // MVP does not calculate upgrade/downgrade proration. Queue every paid
+      // The current billing model does not calculate upgrade/downgrade proration. Queue every paid
       // membership after the latest existing grant so users never lose days.
       if (grant.status === 'revoked') continue;
       const candidate = validDate(grant.expiresAt);
@@ -334,7 +400,7 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
       candidate.sample.authorization.trainingAllowed = false;
       candidate.sample.authorization.revokedAt = now;
       candidate.sample.eligibility.eligible = false;
-      candidate.sample.eligibility.reasons = ['用户已撤回训练授权'];
+      candidate.sample.eligibility.reasons = ['数据用途状态已撤回'];
       candidate.sample.updatedAt = now;
       count += 1;
     }
@@ -349,9 +415,11 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
     findChannel,
     findUserByAccountKey,
     findUserById,
+    ensureAdminTeacherUser,
     grantMembershipPurchase,
     initializeAdmin,
     listChannels,
+    listUsersForAdmin,
     listTrainingCandidates,
     markUserVerified,
     readAdmin,
@@ -360,13 +428,42 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
     releaseGeneration,
     reserveGeneration,
     revokeTrainingCandidates,
-    setTrainingConsent,
     saveSmtpConfig,
     trainingSummary,
     updateChannel,
     updateAdmin,
     updateUserPassword,
   };
+}
+
+function toAdminUserListItem(user) {
+  const membership = currentMembership(user?.membershipGrants);
+  return {
+    id: String(user?.id || ''),
+    account: String(user?.account || ''),
+    displayName: String(user?.displayName || ''),
+    subject: String(user?.subject || ''),
+    credits: nonNegativeNumber(user?.credits),
+    generationCount: nonNegativeNumber(user?.generationCount),
+    verified: Boolean(user?.verifiedAt),
+    verifiedAt: user?.verifiedAt || null,
+    verifiedChannel: user?.verifiedChannel || null,
+    membership: membership ? {
+      planId: membership.planId,
+      tier: membership.tier,
+      billingPeriod: membership.billingPeriod,
+      startsAt: membership.startsAt,
+      expiresAt: membership.expiresAt,
+      status: membership.status,
+    } : null,
+    createdAt: user?.createdAt || null,
+    updatedAt: user?.updatedAt || null,
+  };
+}
+
+function nonNegativeNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(0, number) : 0;
 }
 
 export function publicUser(user) {
@@ -379,8 +476,7 @@ export function publicUser(user) {
     subject: user.subject || '',
     credits: Number(user.credits || 0),
     generationCount: Number(user.generationCount || 0),
-    trainingConsent: Boolean(user.trainingConsent),
-    trainingConsentAt: user.trainingConsentAt || null,
+    privacyAcceptedAt: user.privacyAcceptedAt || null,
     verifiedAt: user.verifiedAt || null,
     verifiedChannel: user.verifiedChannel || null,
     membership,

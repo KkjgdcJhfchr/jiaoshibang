@@ -163,9 +163,9 @@ export function createMessageService(options = {}) {
   async function sendTestEmail({ to }) {
     return sendEmail({
       to,
-      subject: '教师帮 SMTP 测试邮件',
+      subject: '教师帮发信验证邮件',
       text: [
-        '这是一封来自教师帮管理后台的 SMTP 测试邮件。',
+        '这是一封来自教师帮管理端的发信验证邮件。',
         '',
         `发送时间：${new Date().toISOString()}`,
         '收到此邮件说明当前通信配置可以正常发信。',

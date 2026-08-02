@@ -156,6 +156,7 @@ try {
     ALLOW_PRIVATE_PROVIDER_NETWORKS: 'true',
     ALLOW_INSECURE_SMTP: 'true',
     AUTH_RATE_LIMIT_IP_MAX: '100',
+    REGISTRATION_VERIFICATION_REQUIRED: 'false',
     AI_RATE_LIMIT_USER_MAX: '3',
     AI_RATE_LIMIT_IP_MAX: '100',
     AI_MAX_CONCURRENCY: '1',
@@ -244,9 +245,21 @@ try {
   await waitForHealth(appPort, () => appLog);
 
   const client = createClient(appPort);
+  const initialSiteConfig = await client.json('/api/site-config');
+  assert.equal(initialSiteConfig.status, 200);
+  assert.equal(initialSiteConfig.body.data.registrationOpen, true);
+  assert.ok(initialSiteConfig.body.data.privacyPolicy.content.length >= 100);
+  assert.match(initialSiteConfig.body.data.privacyPolicy.updatedAt, /^\d{4}-\d{2}-\d{2}T/);
+  let currentPrivacyPolicyUpdatedAt = initialSiteConfig.body.data.privacyPolicy.updatedAt;
   const publicPaymentPlans = await client.json('/api/payments/plans');
   assert.equal(publicPaymentPlans.status, 200);
-  assert.equal(publicPaymentPlans.body.data.plans.length, 4);
+  assert.equal(publicPaymentPlans.body.data.plans.length, 8);
+  assert.deepEqual(
+    [...new Set(publicPaymentPlans.body.data.plans.map((plan) => plan.billingPeriod))].sort(),
+    ['half_year', 'month', 'quarter', 'year'],
+  );
+  assert.equal(publicPaymentPlans.body.data.plans.filter((plan) => plan.tier === 'pro').length, 4);
+  assert.equal(publicPaymentPlans.body.data.plans.filter((plan) => plan.tier === 'research').length, 4);
   assert.equal(publicPaymentPlans.body.data.providers.every((provider) => provider.enabled === false), true);
   assert.equal(publicPaymentPlans.body.data.checkoutVerificationRequired, false);
   const unauthenticatedGeneration = await client.json('/api/ai/generate', {
@@ -269,18 +282,31 @@ try {
       password: 'TeacherPass1',
       displayName: '集成测试教师',
       subject: '语文',
-      trainingConsent: false,
+      privacyAccepted: true,
+      privacyPolicyUpdatedAt: currentPrivacyPolicyUpdatedAt,
     },
   });
   assert.equal(registration.status, 201);
   assert.equal(registration.body.data.user.credits, 3);
+  assert.ok(registration.body.data.user.privacyAcceptedAt);
+  for (const internalField of ['trainingConsent', 'trainingConsentAt', 'role']) {
+    assert.equal(Object.hasOwn(registration.body.data.user, internalField), false, `教师会话不得返回内部字段 ${internalField}`);
+  }
+  const registeredUserRecord = JSON.parse(readFileSync(join(dataDir, 'users.json'), 'utf8')).users
+    .find((user) => user.account === 'teacher@example.com');
+  assert.equal(registeredUserRecord.privacyPolicyUpdatedAt, currentPrivacyPolicyUpdatedAt);
   const userCookie = cookiePair(registration.headers.get('set-cookie'));
   assert.match(registration.headers.get('set-cookie'), /HttpOnly/);
   assert.match(registration.headers.get('set-cookie'), /SameSite=Strict/);
 
   const weakUserPassword = await client.json('/api/auth/register', {
     method: 'POST',
-    body: { identifier: 'weak-password@example.com', password: 'passwordonly' },
+    body: {
+      identifier: 'weak-password@example.com',
+      password: 'passwordonly',
+      privacyAccepted: true,
+      privacyPolicyUpdatedAt: currentPrivacyPolicyUpdatedAt,
+    },
   });
   assert.equal(weakUserPassword.status, 400);
   assert.equal(weakUserPassword.body.error.code, 'WEAK_PASSWORD');
@@ -301,7 +327,8 @@ try {
     body: { identifier: 'not-registered@example.com', purpose: 'register' },
   });
   assert.equal(knownRegistrationProbe.status, 202);
-  assert.equal(unknownRegistrationProbe.status, 202, '注册验证码也不得通过通道故障状态暴露账号是否存在');
+  assert.equal(unknownRegistrationProbe.status, 503, '新账号注册时通道故障必须明确失败，不能返回无法收到的验证码');
+  assert.equal(unknownRegistrationProbe.body.error.code, 'VERIFICATION_DELIVERY_UNAVAILABLE');
 
   const tamperedCookie = `${userCookie.slice(0, -1)}x`;
   const tamperedSession = await client.json('/api/auth/session', { cookie: tamperedCookie });
@@ -355,6 +382,162 @@ try {
   });
   assert.equal(adminLogin.status, 200);
   const adminCookie = cookiePair(adminLogin.headers.get('set-cookie'));
+
+  const adminTeacherLogin = await client.json('/api/auth/login', {
+    method: 'POST',
+    body: { identifier: 'admin', password: adminPassword },
+  });
+  assert.equal(adminTeacherLogin.status, 200);
+  assert.equal(adminTeacherLogin.body.data.user.account, 'admin');
+  assert.equal(Object.hasOwn(adminTeacherLogin.body.data.user, 'role'), false);
+  const adminTeacherCookie = cookiePair(adminTeacherLogin.headers.get('set-cookie'));
+  assert.match(adminTeacherLogin.headers.get('set-cookie'), /^teacher_helper_session=/);
+  const adminTeacherSession = await client.json('/api/auth/session', { cookie: adminTeacherCookie });
+  assert.equal(adminTeacherSession.status, 200);
+  assert.equal(Object.hasOwn(adminTeacherSession.body.data.user, 'role'), false);
+  const adminApiDeniedForTeacherSession = await client.json('/api/admin/system/settings', {
+    cookie: adminTeacherCookie,
+  });
+  assert.equal(adminApiDeniedForTeacherSession.status, 401);
+  assert.equal(adminApiDeniedForTeacherSession.body.error.code, 'ADMIN_AUTH_REQUIRED');
+
+  const unauthenticatedUsers = await client.json('/api/admin/users');
+  assert.equal(unauthenticatedUsers.status, 401);
+  assert.equal(unauthenticatedUsers.body.error.code, 'ADMIN_AUTH_REQUIRED');
+  const adminUsersDeniedForTeacherSession = await client.json('/api/admin/users', {
+    cookie: adminTeacherCookie,
+  });
+  assert.equal(adminUsersDeniedForTeacherSession.status, 401);
+  assert.equal(adminUsersDeniedForTeacherSession.body.error.code, 'ADMIN_AUTH_REQUIRED');
+  const firstAdminUsersPage = await client.json('/api/admin/users?offset=0&limit=1', {
+    cookie: adminCookie,
+  });
+  assert.equal(firstAdminUsersPage.status, 200);
+  assert.equal(firstAdminUsersPage.body.data.items.length, 1);
+  assert.equal(firstAdminUsersPage.body.data.pagination.total, 2);
+  assert.equal(firstAdminUsersPage.body.data.pagination.limit, 1);
+  assert.equal(firstAdminUsersPage.body.data.summary.total, 2);
+  assert.equal(firstAdminUsersPage.body.data.summary.verified, 1);
+  assert.equal(firstAdminUsersPage.body.data.summary.creditsRemaining, 5);
+  assert.equal(firstAdminUsersPage.body.data.summary.generations, 1);
+  const serializedAdminUsers = JSON.stringify(firstAdminUsersPage.body.data);
+  for (const privateField of ['password', 'accountKey', 'trainingConsent', 'trainingConsentAt', 'privacyAcceptedAt', 'privacyPolicyUpdatedAt', 'role']) {
+    assert.equal(serializedAdminUsers.includes(`\"${privateField}\"`), false, `管理员用户列表不得返回 ${privateField}`);
+  }
+  const searchedAdminUsers = await client.json('/api/admin/users?query=teacher%40example.com&offset=0&limit=20', {
+    cookie: adminCookie,
+  });
+  assert.equal(searchedAdminUsers.status, 200);
+  assert.equal(searchedAdminUsers.body.data.pagination.total, 1);
+  assert.equal(searchedAdminUsers.body.data.items[0].account, 'teacher@example.com');
+  assert.equal(searchedAdminUsers.body.data.items[0].generationCount, 1);
+  assert.equal(searchedAdminUsers.body.data.items[0].verified, false);
+
+  const unauthenticatedSystemSettings = await client.json('/api/admin/system/settings');
+  assert.equal(unauthenticatedSystemSettings.status, 401);
+  assert.equal(unauthenticatedSystemSettings.body.error.code, 'ADMIN_AUTH_REQUIRED');
+  const adminSystemSettings = await client.json('/api/admin/system/settings', { cookie: adminCookie });
+  assert.equal(adminSystemSettings.status, 200);
+  assert.equal(adminSystemSettings.body.data.settings.registrationOpen, true);
+  assert.equal(
+    adminSystemSettings.body.data.settings.privacyPolicyUpdatedAt,
+    currentPrivacyPolicyUpdatedAt,
+  );
+
+  await delay(5);
+  const updatedPrivacyPolicyContent = '教师帮仅为完成账号注册、安全验证、教案生成、导出与订单处理使用用户主动提交的信息，并采用访问控制和加密措施保护数据。'.repeat(4);
+  const closedSystemSettings = await client.json('/api/admin/system/settings', {
+    method: 'PUT',
+    cookie: adminCookie,
+    body: {
+      expectedUpdatedAt: adminSystemSettings.body.data.settings.updatedAt,
+      siteName: '教师帮集成测试站点',
+      supportEmail: 'support@example.com',
+      registrationOpen: false,
+      registrationVerificationRequired: false,
+      privacyPolicyTitle: '集成测试数据与隐私说明',
+      privacyPolicyContent: updatedPrivacyPolicyContent,
+    },
+  });
+  assert.equal(closedSystemSettings.status, 200);
+  assert.equal(closedSystemSettings.body.data.settings.registrationOpen, false);
+  assert.equal(closedSystemSettings.body.data.settings.updatedBy, 'admin');
+  assert.notEqual(
+    closedSystemSettings.body.data.settings.privacyPolicyUpdatedAt,
+    currentPrivacyPolicyUpdatedAt,
+  );
+
+  const closedPublicSettings = await client.json('/api/site-config');
+  assert.equal(closedPublicSettings.status, 200);
+  assert.equal(closedPublicSettings.body.data.registrationOpen, false);
+  assert.equal(closedPublicSettings.body.data.supportEmail, 'support@example.com');
+  assert.equal(closedPublicSettings.body.data.privacyPolicy.content, updatedPrivacyPolicyContent);
+  assert.equal(
+    closedPublicSettings.body.data.privacyPolicy.updatedAt,
+    closedSystemSettings.body.data.settings.privacyPolicyUpdatedAt,
+  );
+  const closedRegistrationCode = await client.json('/api/auth/verification-codes', {
+    method: 'POST',
+    body: { identifier: 'closed-code@example.com', purpose: 'register' },
+  });
+  assert.equal(closedRegistrationCode.status, 403);
+  assert.equal(closedRegistrationCode.body.error.code, 'REGISTRATION_CLOSED');
+  const closedRegistration = await client.json('/api/auth/register', {
+    method: 'POST',
+    body: {
+      identifier: 'closed@example.com',
+      password: 'ClosedPass1',
+      privacyAccepted: true,
+      privacyPolicyUpdatedAt: closedPublicSettings.body.data.privacyPolicy.updatedAt,
+    },
+  });
+  assert.equal(closedRegistration.status, 403);
+  assert.equal(closedRegistration.body.error.code, 'REGISTRATION_CLOSED');
+
+  const staleSystemSettingsUpdate = await client.json('/api/admin/system/settings', {
+    method: 'PUT',
+    cookie: adminCookie,
+    body: {
+      expectedUpdatedAt: adminSystemSettings.body.data.settings.updatedAt,
+      registrationOpen: true,
+    },
+  });
+  assert.equal(staleSystemSettingsUpdate.status, 409);
+  assert.equal(staleSystemSettingsUpdate.body.error.code, 'SITE_SETTINGS_CONFLICT');
+  const reopenedSystemSettings = await client.json('/api/admin/system/settings', {
+    method: 'PUT',
+    cookie: adminCookie,
+    body: {
+      expectedUpdatedAt: closedSystemSettings.body.data.settings.updatedAt,
+      registrationOpen: true,
+    },
+  });
+  assert.equal(reopenedSystemSettings.status, 200);
+  assert.equal(reopenedSystemSettings.body.data.settings.registrationOpen, true);
+  assert.equal(
+    reopenedSystemSettings.body.data.settings.privacyPolicyUpdatedAt,
+    closedSystemSettings.body.data.settings.privacyPolicyUpdatedAt,
+    '只切换注册开关时不应改变隐私说明版本',
+  );
+  const reopenedPublicSettings = await client.json('/api/site-config');
+  assert.equal(reopenedPublicSettings.body.data.registrationOpen, true);
+  assert.equal(
+    reopenedPublicSettings.body.data.privacyPolicy.updatedAt,
+    reopenedSystemSettings.body.data.settings.privacyPolicyUpdatedAt,
+  );
+  const stalePrivacyRegistration = await client.json('/api/auth/register', {
+    method: 'POST',
+    body: {
+      identifier: 'stale-policy@example.com',
+      password: 'StalePolicyPass1',
+      privacyAccepted: true,
+      privacyPolicyUpdatedAt: currentPrivacyPolicyUpdatedAt,
+    },
+  });
+  assert.equal(stalePrivacyRegistration.status, 409);
+  assert.equal(stalePrivacyRegistration.body.error.code, 'PRIVACY_POLICY_CHANGED');
+  currentPrivacyPolicyUpdatedAt = reopenedPublicSettings.body.data.privacyPolicy.updatedAt;
+
   const adminPlans = await client.json('/api/admin/payments/plans', { cookie: adminCookie });
   assert.equal(adminPlans.status, 200);
   const proMonthly = adminPlans.body.data.plans.find((plan) => plan.planId === 'pro-monthly');
@@ -412,7 +595,8 @@ try {
   assert.equal(smtpTest.body.data.sent, true);
   assert.ok(smtpTest.body.data.smtp.testedAt);
   assert.equal(smtpMessages.length, 1);
-  assert.match(smtpMessages[0], /SMTP 测试邮件/);
+  assert.equal(extractEmailSubject(smtpMessages[0]), '教师帮发信验证邮件');
+  assert.match(smtpMessages[0], /发信验证邮件/);
   assert.equal(smtpAuthentications.at(-1), `\0smtp-user\0${smtpPassword}`);
 
   const unchangedSmtp = await client.json('/api/admin/communication/smtp', {
@@ -471,6 +655,7 @@ try {
   });
   assert.equal(registrationCodeRequest.status, 202);
   assert.match(registrationCodeRequest.body.data.verificationId, /^vfy_/);
+  assert.equal(extractEmailSubject(smtpMessages.at(-1)), '教师帮注册账号验证码');
   const registrationCode = extractEmailCode(smtpMessages.at(-1));
   const verifiedRegistration = await client.json('/api/auth/register', {
     method: 'POST',
@@ -479,11 +664,17 @@ try {
       password: 'VerifiedPass1',
       verificationId: registrationCodeRequest.body.data.verificationId,
       verificationCode: registrationCode,
+      privacyAccepted: true,
+      privacyPolicyUpdatedAt: currentPrivacyPolicyUpdatedAt,
     },
   });
   assert.equal(verifiedRegistration.status, 201);
   assert.equal(verifiedRegistration.body.data.user.verifiedChannel, 'email');
   assert.ok(verifiedRegistration.body.data.user.verifiedAt);
+  const verifiedUserRecord = JSON.parse(readFileSync(join(dataDir, 'users.json'), 'utf8')).users
+    .find((user) => user.account === 'verified@example.com');
+  assert.equal(verifiedUserRecord.privacyPolicyUpdatedAt, currentPrivacyPolicyUpdatedAt);
+  assert.ok(verifiedUserRecord.privacyAcceptedAt);
 
   const codeLoginRequest = await client.json('/api/auth/verification-codes', {
     method: 'POST',
@@ -768,20 +959,11 @@ try {
   assert.equal(upstreamRequests.at(-1).model, 'stored-provider-model');
   assert.equal(upstreamRequests.at(-1).authorization, `Bearer ${providerKey}`);
 
-  const trainingDenied = await client.json('/api/training/candidates', {
-    method: 'POST',
-    cookie: userCookie,
-    body: { lessonPlan: secondGeneration.body.data.lessonPlan, trainingConsent: false },
-  });
-  assert.equal(trainingDenied.status, 403);
-  assert.equal(trainingDenied.body.error.code, 'TRAINING_CONSENT_REQUIRED');
-
   const candidateCreated = await client.json('/api/training/candidates', {
     method: 'POST',
     cookie: userCookie,
     body: {
       lessonPlan: secondGeneration.body.data.lessonPlan,
-      trainingConsent: true,
       rightsConfirmed: true,
     },
   });
@@ -794,7 +976,6 @@ try {
     cookie: userCookie,
     body: {
       lessonPlan: secondGeneration.body.data.lessonPlan,
-      trainingConsent: true,
       rightsConfirmed: true,
     },
   });
@@ -825,7 +1006,12 @@ try {
 
   const secondRegistration = await client.json('/api/auth/register', {
     method: 'POST',
-    body: { identifier: 'second@example.com', password: 'SecondPass1' },
+    body: {
+      identifier: 'second@example.com',
+      password: 'SecondPass1',
+      privacyAccepted: true,
+      privacyPolicyUpdatedAt: currentPrivacyPolicyUpdatedAt,
+    },
   });
   const secondCookie = cookiePair(secondRegistration.headers.get('set-cookie'));
   const slowRevision = client.json('/api/ai/revise', {
@@ -845,7 +1031,12 @@ try {
 
   const thirdRegistration = await client.json('/api/auth/register', {
     method: 'POST',
-    body: { identifier: 'third@example.com', password: 'ThirdPass1' },
+    body: {
+      identifier: 'third@example.com',
+      password: 'ThirdPass1',
+      privacyAccepted: true,
+      privacyPolicyUpdatedAt: currentPrivacyPolicyUpdatedAt,
+    },
   });
   const thirdCookie = cookiePair(thirdRegistration.headers.get('set-cookie'));
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -895,6 +1086,10 @@ try {
       verificationEnumerationAndSingleUseProtection: true,
       adminStatsAndList: true,
       authoritativeMembershipCatalog: true,
+      adminTeacherSessionIsolation: true,
+      secureAdminUserManagement: true,
+      systemSettingsRegistrationAndPrivacyVersioning: true,
+      verificationEmailSubject: true,
     },
   }));
 } finally {
@@ -922,6 +1117,12 @@ function extractEmailCode(message) {
   const code = String(message || '').match(/验证码是：(\d{6})/)?.[1];
   assert.match(code || '', /^\d{6}$/, '测试邮件中应包含 6 位验证码');
   return code;
+}
+
+function extractEmailSubject(message) {
+  const header = String(message || '').match(/^Subject:\s*(.+)$/mi)?.[1]?.trim() || '';
+  const encoded = header.match(/^=\?UTF-8\?B\?([^?]+)\?=$/i);
+  return encoded ? Buffer.from(encoded[1], 'base64').toString('utf8') : header;
 }
 
 function createClient(port) {

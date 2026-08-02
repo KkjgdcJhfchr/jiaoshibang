@@ -26,6 +26,7 @@ export function createPaymentService({
   now = () => new Date(),
   gatewayTimeoutMs = 15_000,
   resolveProduct,
+  publicBaseUrl = '',
   fulfillPaidOrder,
   confirmCheckout,
 }) {
@@ -357,8 +358,9 @@ export function createPaymentService({
   };
 
   function requireConfiguredConfig(provider) {
-    const config = store.getConfigWithSecrets(provider);
-    if (!config) throw new PaymentError(503, 'PAYMENT_PROVIDER_NOT_CONFIGURED', `${providerName(provider)}尚未配置`);
+    const storedConfig = store.getConfigWithSecrets(provider);
+    if (!storedConfig) throw new PaymentError(503, 'PAYMENT_PROVIDER_NOT_CONFIGURED', `${providerName(provider)}尚未配置`);
+    const config = withAutomaticCallbackUrls(provider, storedConfig, publicBaseUrl);
     const result = testPaymentConfig(provider, config);
     if (!result.ok) throw new PaymentError(503, 'PAYMENT_PROVIDER_CONFIG_INVALID', `${providerName(provider)}配置未通过本地校验`, { errors: result.errors });
     return config;
@@ -389,6 +391,16 @@ export function createPaymentService({
     if (!product) throw new PaymentError(404, 'PAYMENT_PRODUCT_NOT_FOUND', '所选会员套餐不存在或已停止销售');
     return applyAuthoritativeProductQuote(selection, product);
   }
+}
+
+function withAutomaticCallbackUrls(provider, config, publicBaseUrl) {
+  const baseUrl = String(publicBaseUrl || '').replace(/\/+$/, '');
+  if (!baseUrl) return config;
+  return {
+    ...config,
+    notifyUrl: `${baseUrl}/api/payments/notify/${provider}`,
+    ...(provider === 'alipay' ? { returnUrl: `${baseUrl}/app/membership?payment=completed` } : {}),
+  };
 }
 
 function safeJson(value, status = 502, code = 'PAYMENT_GATEWAY_RESPONSE_INVALID', message = '支付网关返回了无效数据') {

@@ -185,7 +185,7 @@
   .quick-create-panel::after { display: none; }
   .dashboard-layout { grid-template-columns: minmax(550px, 1fr) 230px; }
 }
-@media (max-width: 1020px) {
+@media (max-width: 1060px) {
   .public-nav { margin-left: 34px; gap: 19px; }
   .landing-hero { grid-template-columns: 1fr; padding-top: 70px; }
   .hero-copy { max-width: 720px; }
