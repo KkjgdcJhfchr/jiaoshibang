@@ -91,6 +91,9 @@ export const api = {
   deleteAnnouncement: (announcementId, body = {}) => request(`/api/admin/announcements/${encodeURIComponent(announcementId)}`, { method: 'DELETE', body, timeout: 20_000 }),
   saveTutorial: (body) => request('/api/admin/tutorial', { method: 'PUT', body, timeout: 20_000 }),
   getAppContentBootstrap: () => request('/api/app/content/bootstrap', { timeout: 15_000 }),
+  getReferralOverview: () => request('/api/app/referrals', { timeout: 15_000 }),
+  uploadLessonMaterial: (body) => request('/api/app/material-uploads', { method: 'POST', body, timeout: 60_000 }),
+  deleteLessonMaterial: (attachmentId) => request(`/api/app/material-uploads/${encodeURIComponent(attachmentId)}`, { method: 'DELETE', body: {}, timeout: 20_000 }),
   acknowledgeAnnouncement: (announcementId, body) => request(`/api/app/announcements/${encodeURIComponent(announcementId)}/acknowledge`, { method: 'POST', body, timeout: 15_000 }),
   saveTutorialProgress: (body) => request('/api/app/tutorial/progress', { method: 'PUT', body, timeout: 15_000 }),
   getAdminUsers: ({ query = '', offset = 0, limit = 25 } = {}) => {
@@ -98,6 +101,14 @@ export const api = {
     if (String(query).trim()) search.set('query', String(query).trim());
     return request(`/api/admin/users?${search}`, { timeout: 15_000 });
   },
+  deleteAdminUser: (userId) => request(`/api/admin/users/${encodeURIComponent(userId)}`, { method: 'DELETE', body: {}, timeout: 20_000 }),
+  bulkDeleteAdminUsers: (userIds) => request('/api/admin/users/bulk-delete', { method: 'POST', body: { userIds }, timeout: 30_000 }),
+  getAdminMarketing: () => request('/api/admin/marketing', { timeout: 15_000 }),
+  createAdminMarketingAd: (body) => request('/api/admin/marketing/ads', { method: 'POST', body, timeout: 30_000 }),
+  updateAdminMarketingAd: (adId, body) => request(`/api/admin/marketing/ads/${encodeURIComponent(adId)}`, { method: 'PUT', body, timeout: 30_000 }),
+  deleteAdminMarketingAd: (adId) => request(`/api/admin/marketing/ads/${encodeURIComponent(adId)}`, { method: 'DELETE', body: {}, timeout: 20_000 }),
+  reorderAdminMarketingAds: (ids) => request('/api/admin/marketing/ads/order', { method: 'PUT', body: { ids }, timeout: 20_000 }),
+  saveAdminReferralSettings: (body) => request('/api/admin/marketing/referral-settings', { method: 'PUT', body, timeout: 20_000 }),
   getAdminPaymentConfigs: () => request('/api/admin/payments/configs', { timeout: 15_000 }),
   saveAdminPaymentConfig: (provider, body) => request(`/api/admin/payments/configs/${encodeURIComponent(provider)}`, { method: 'PUT', body, timeout: 30_000 }),
   testAdminPaymentConfig: (provider) => request(`/api/admin/payments/configs/${encodeURIComponent(provider)}/test`, { method: 'POST', body: {}, timeout: 20_000 }),

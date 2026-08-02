@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   BadgeCheck,
@@ -10,6 +10,7 @@ import {
   RefreshCw,
   Search,
   ShieldCheck,
+  Trash2,
   UserRoundCheck,
   Users,
   X,
@@ -40,7 +41,7 @@ const TIER_LABELS = {
   research: '教研版',
 };
 
-export function UserManagementPage({ query: controlledQuery, onQueryChange }) {
+export function UserManagementPage({ query: controlledQuery, onQueryChange, onNotice = () => {} }) {
   const [items, setItems] = useState([]);
   const [summary, setSummary] = useState(EMPTY_SUMMARY);
   const [pagination, setPagination] = useState({ offset: 0, limit: PAGE_SIZE, total: 0 });
@@ -49,7 +50,12 @@ export function UserManagementPage({ query: controlledQuery, onQueryChange }) {
   const [offset, setOffset] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState('');
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteError, setDeleteError] = useState('');
+  const selectAllRef = useRef(null);
   const isQueryControlled = typeof controlledQuery === 'string' && typeof onQueryChange === 'function';
   const query = isQueryControlled ? controlledQuery.trim() : localQuery;
 
@@ -63,6 +69,7 @@ export function UserManagementPage({ query: controlledQuery, onQueryChange }) {
     let active = true;
     setLoading(true);
     setError('');
+    setSelectedIds(new Set());
     api.getAdminUsers({ query, offset, limit: PAGE_SIZE })
       .then((response) => {
         if (!active) return;
@@ -96,6 +103,65 @@ export function UserManagementPage({ query: controlledQuery, onQueryChange }) {
     setOffset(0);
     if (isQueryControlled) onQueryChange('');
     else setLocalQuery('');
+  }
+
+  const selectableItems = items.filter((user) => user.deletable !== false);
+  const allVisibleSelected = selectableItems.length > 0 && selectableItems.every((user) => selectedIds.has(user.id));
+  const someVisibleSelected = selectableItems.some((user) => selectedIds.has(user.id));
+
+  useEffect(() => {
+    if (selectAllRef.current) selectAllRef.current.indeterminate = someVisibleSelected && !allVisibleSelected;
+  }, [allVisibleSelected, someVisibleSelected]);
+
+  function toggleUser(userId, checked) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (checked) next.add(userId);
+      else next.delete(userId);
+      return next;
+    });
+  }
+
+  function toggleAllVisible(checked) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      for (const user of selectableItems) {
+        if (checked) next.add(user.id);
+        else next.delete(user.id);
+      }
+      return next;
+    });
+  }
+
+  function openDeleteDialog(target) {
+    setError('');
+    setDeleteError('');
+    setDeleteTarget(target);
+  }
+
+  function closeDeleteDialog() {
+    setDeleteError('');
+    setDeleteTarget(null);
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget || deleting) return;
+    const ids = deleteTarget.mode === 'bulk' ? deleteTarget.userIds : [deleteTarget.user.id];
+    setDeleting(true);
+    setDeleteError('');
+    try {
+      if (deleteTarget.mode === 'bulk') await api.bulkDeleteAdminUsers(ids);
+      else await api.deleteAdminUser(ids[0]);
+      setSelectedIds(new Set());
+      closeDeleteDialog();
+      onNotice(ids.length > 1 ? `已删除 ${ids.length} 个用户` : '用户已删除');
+      if (items.length <= ids.length && offset > 0) setOffset((value) => Math.max(0, value - PAGE_SIZE));
+      else setReloadKey((value) => value + 1);
+    } catch (requestError) {
+      setDeleteError(requestError.message || '用户删除失败');
+    } finally {
+      setDeleting(false);
+    }
   }
 
   const firstVisible = pagination.total ? pagination.offset + 1 : 0;
@@ -132,14 +198,19 @@ export function UserManagementPage({ query: controlledQuery, onQueryChange }) {
           </form>
         </header>
 
+        <div className={`admin-users-bulkbar ${selectedIds.size ? 'has-selection' : ''}`}>
+          <span>{selectedIds.size ? `已选择 ${selectedIds.size} 个用户` : '可勾选当前页的普通用户进行批量删除'}</span>
+          <button className="admin-button admin-users-delete-button" type="button" disabled={!selectedIds.size || loading || deleting} onClick={() => openDeleteDialog({ mode: 'bulk', userIds: [...selectedIds] })}><Trash2 size={16} />批量删除</button>
+        </div>
+
         <div className="admin-table-wrap admin-users-table-wrap">
           <table className="admin-table admin-users-table">
             <caption className="admin-sr-only">平台注册用户列表</caption>
-            <thead><tr><th>用户</th><th>任教学科</th><th>账号验证</th><th>会员套餐</th><th>剩余额度</th><th>累计生成</th><th>最后登录</th><th>累计在线</th><th>注册时间</th></tr></thead>
+            <thead><tr><th className="admin-users-select-cell"><input ref={selectAllRef} type="checkbox" aria-label="选择当前页全部可删除用户" checked={allVisibleSelected} disabled={!selectableItems.length || loading || deleting} onChange={(event) => toggleAllVisible(event.target.checked)} /></th><th>用户</th><th>任教学科</th><th>账号验证</th><th>会员套餐</th><th>剩余额度</th><th>累计生成</th><th>最后登录</th><th>累计在线</th><th>注册时间</th><th>操作</th></tr></thead>
             <tbody>
-              {!loading ? items.map((user) => <UserRow key={user.id} user={user} />) : null}
-              {loading ? <tr><td className="admin-users-state" colSpan="9"><LoaderCircle className="spin" size={20} />正在读取用户数据…</td></tr> : null}
-              {!loading && !error && items.length === 0 ? <tr><td className="admin-users-empty" colSpan="9"><Users size={25} /><b>{query ? '没有匹配的用户' : '尚无注册用户'}</b><span>{query ? '请更换账号、姓名或学科关键词后再搜索。' : '用户完成注册后会自动显示在这里。'}</span></td></tr> : null}
+              {!loading ? items.map((user) => <UserRow key={user.id} user={user} selected={selectedIds.has(user.id)} deleting={deleting} onSelect={(checked) => toggleUser(user.id, checked)} onDelete={() => openDeleteDialog({ mode: 'single', user })} />) : null}
+              {loading ? <tr><td className="admin-users-state" colSpan="11"><LoaderCircle className="spin" size={20} />正在读取用户数据…</td></tr> : null}
+              {!loading && !error && items.length === 0 ? <tr><td className="admin-users-empty" colSpan="11"><Users size={25} /><b>{query ? '没有匹配的用户' : '尚无注册用户'}</b><span>{query ? '请更换账号、姓名或学科关键词后再搜索。' : '用户完成注册后会自动显示在这里。'}</span></td></tr> : null}
             </tbody>
           </table>
         </div>
@@ -155,6 +226,7 @@ export function UserManagementPage({ query: controlledQuery, onQueryChange }) {
       </section>
 
       <p className="admin-users-security-note"><ShieldCheck size={16} />本页面只读取业务管理所需字段，不返回密码、内部权限标记或模型改进相关记录。</p>
+      {deleteTarget ? <UserDeleteDialog target={deleteTarget} error={deleteError} busy={deleting} onCancel={closeDeleteDialog} onConfirm={confirmDelete} /> : null}
     </div>
   );
 }
@@ -163,12 +235,14 @@ function SummaryCard({ icon: Icon, label, value, note }) {
   return <article className="admin-panel admin-users-summary-card"><span><Icon size={20} /></span><div><small>{label}</small><strong>{formatNumber(value)}</strong><p>{note}</p></div></article>;
 }
 
-function UserRow({ user }) {
+function UserRow({ user, selected, deleting, onSelect, onDelete }) {
   const displayName = user.displayName || '未设置姓名';
   const verifyChannel = VERIFY_CHANNEL_LABELS[user.verifiedChannel] || '已验证';
   const membershipLabel = user.membership ? (user.membership.planName || TIER_LABELS[user.membership.tier] || user.membership.tier || '有效会员') : '免费版';
+  const deletable = user.deletable !== false;
   return (
-    <tr>
+    <tr className={selected ? 'admin-users-row-selected' : ''}>
+      <td className="admin-users-select-cell"><input type="checkbox" aria-label={`选择用户 ${user.account}`} checked={selected} disabled={!deletable || deleting} title={deletable ? '选择用户' : '管理员前台账号受保护，不可删除'} onChange={(event) => onSelect(event.target.checked)} /></td>
       <td><div className="admin-users-identity"><span>{displayName.slice(0, 1).toUpperCase()}</span><div><b>{displayName}</b><small>{user.account}</small></div></div></td>
       <td>{user.subject || '未设置'}</td>
       <td>{user.verified ? <span className="admin-users-verified"><BadgeCheck size={14} />{verifyChannel}</span> : <span className="admin-users-unverified">未验证</span>}</td>
@@ -178,7 +252,25 @@ function UserRow({ user }) {
       <td><div className="admin-users-membership"><b>{user.lastLoginAt ? formatDate(user.lastLoginAt) : '尚未登录'}</b><small>{user.loginCount ? `累计登录 ${formatNumber(user.loginCount)} 次` : '暂无登录记录'}</small></div></td>
       <td>{formatDuration(user.onlineSeconds)}</td>
       <td>{formatDate(user.createdAt)}</td>
+      <td className="admin-users-action-cell">{deletable ? <button type="button" aria-label={`删除用户 ${user.account}`} title="删除用户" disabled={deleting} onClick={onDelete}><Trash2 size={15} /></button> : <span title="管理员前台账号受保护，不可删除"><ShieldCheck size={15} />受保护</span>}</td>
     </tr>
+  );
+}
+
+function UserDeleteDialog({ target, error, busy, onCancel, onConfirm }) {
+  const count = target.mode === 'bulk' ? target.userIds.length : 1;
+  const account = target.mode === 'single' ? target.user.account : '';
+  return (
+    <div className="admin-users-dialog-layer">
+      <button className="admin-users-dialog-backdrop" type="button" onClick={onCancel} aria-label="取消删除用户" disabled={busy} />
+      <section className="admin-users-delete-dialog" role="alertdialog" aria-modal="true" aria-labelledby="admin-users-delete-title">
+        <span><Trash2 size={24} /></span>
+        <h2 id="admin-users-delete-title">{count > 1 ? `删除选中的 ${count} 个用户？` : '删除这个用户？'}</h2>
+        <p>{count > 1 ? '这些账号将无法继续登录，相关个人资料会按服务端删除规则处理。' : `账号“${account}”将无法继续登录，相关个人资料会按服务端删除规则处理。`} 此操作不可撤销。</p>
+        {error ? <div className="admin-users-dialog-error" role="alert"><AlertTriangle size={18} /><span>{error}</span></div> : null}
+        <footer><button className="admin-button admin-button-secondary" type="button" onClick={onCancel} disabled={busy}>取消</button><button className="admin-button admin-users-delete-button" type="button" onClick={onConfirm} disabled={busy}>{busy ? <LoaderCircle className="spin" size={17} /> : <Trash2 size={17} />}{busy ? '正在删除…' : '确认删除'}</button></footer>
+      </section>
+    </div>
   );
 }
 

@@ -18,6 +18,7 @@ import {
   ListChecks,
   LoaderCircle,
   Menu,
+  Megaphone,
   Network,
   Plus,
   ReceiptText,
@@ -38,6 +39,7 @@ import { MembershipPlansPage, OrdersPage, PaymentChannelsPage, PromotionsPage } 
 import { SystemSettingsPage } from './SystemSettingsPage.jsx'
 import { UserManagementPage } from './UserManagementPage.jsx'
 import { ContentManagementPage } from './ContentManagementPage.jsx'
+import { MarketingPage } from './MarketingPage.jsx'
 import './admin.css'
 
 const navigationItems = [
@@ -45,6 +47,7 @@ const navigationItems = [
   { id: 'organizations', label: '学校与组织', icon: Building2 },
   { id: 'plans', label: '套餐设置', icon: GraduationCap },
   { id: 'promotions', label: '优惠活动', icon: BadgePercent },
+  { id: 'marketing', label: '广告宣传营销', icon: Megaphone },
   { id: 'announcements', label: '公告管理', icon: Bell },
   { id: 'tutorial', label: '新手教程', icon: BookOpenCheck },
   { id: 'knowledgeGraph', label: '教学认知图谱', icon: Network },
@@ -834,13 +837,14 @@ export default function AdminApp() {
 
   let pageContent
   if (activePage === 'models') pageContent = <ModelChannelsPage query={query} onNotice={setNotice} />
-  else if (activePage === 'users') pageContent = <UserManagementPage query={query} onQueryChange={setQuery} />
+  else if (activePage === 'users') pageContent = <UserManagementPage query={query} onQueryChange={setQuery} onNotice={setNotice} />
   else if (activePage === 'training') pageContent = <TrainingMaterialsPage query={query} />
   else if (activePage === 'knowledgeGraph') pageContent = <KnowledgeGraphAdminPage onNotice={setNotice} />
   else if (activePage === 'questionBank') pageContent = <QuestionBankAdminPage onNotice={setNotice} />
   else if (activePage === 'organizations') pageContent = <OrganizationsAdminPage onNotice={setNotice} />
   else if (activePage === 'plans') pageContent = <MembershipPlansPage onNotice={setNotice} />
   else if (activePage === 'promotions') pageContent = <PromotionsPage onNotice={setNotice} />
+  else if (activePage === 'marketing') pageContent = <MarketingPage onNotice={setNotice} />
   else if (activePage === 'announcements') pageContent = <ContentManagementPage initialSection="announcements" onNotice={setNotice} />
   else if (activePage === 'tutorial') pageContent = <ContentManagementPage initialSection="tutorial" onNotice={setNotice} />
   else if (activePage === 'paymentChannels') pageContent = <PaymentChannelsPage onNotice={setNotice} />

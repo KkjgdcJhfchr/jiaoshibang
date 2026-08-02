@@ -14,13 +14,17 @@
 .admin-users-table-header { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 17px 18px; border-bottom: 1px solid var(--admin-border); }
 .admin-users-table-header h2 { margin: 0 0 3px; color: #2e3c35; font-size: 15px; }
 .admin-users-table-header p { margin: 0; color: #818b86; font-size: 10px; }
+.admin-users-bulkbar { min-height: 48px; padding: 8px 18px; display: flex; align-items: center; justify-content: space-between; gap: 14px; border-bottom: 1px solid var(--admin-border); background: #fafbfa; color: #7a8680; font-size: 10px; }
+.admin-users-bulkbar.has-selection { background: #f1f8f4; color: #276a50; }
+.admin-users-delete-button { border-color: #c85b54; background: #c85b54; color: #fff; }
+.admin-users-delete-button:hover:not(:disabled) { border-color: #aa443e; background: #aa443e; }
 .admin-users-search { display: flex; align-items: center; gap: 7px; width: min(480px, 52%); min-height: 39px; padding-left: 11px; border: 1px solid #dce3df; border-radius: 9px; background: #fff; color: #738079; }
 .admin-users-search:focus-within { border-color: #54a17f; box-shadow: 0 0 0 3px rgba(36, 139, 94, .1); }
 .admin-users-search input { min-width: 0; flex: 1; height: 37px; padding: 0; border: 0; outline: 0; background: transparent; color: #2f3e36; font: inherit; font-size: 11px; }
 .admin-users-search .admin-button { min-height: 33px; margin-right: 3px; padding-inline: 14px; }
 .admin-users-clear { display: grid; place-items: center; width: 26px; height: 26px; border: 0; border-radius: 6px; background: transparent; color: #7d8983; cursor: pointer; }
 .admin-users-clear:hover { background: #f0f4f2; color: #35443c; }
-.admin-users-table { min-width: 920px; }
+.admin-users-table { min-width: 1040px; }
 .admin-users-table td { height: 54px; }
 .admin-users-identity { display: flex; align-items: center; gap: 10px; min-width: 220px; }
 .admin-users-identity > span { display: grid; place-items: center; width: 32px; height: 32px; flex: 0 0 auto; border-radius: 50%; background: #e8f2ed; color: #1b7655; font-size: 12px; font-weight: 700; }
@@ -33,6 +37,15 @@
 .admin-users-membership b { color: #2b6e53; font-size: 10.5px; }
 .admin-users-membership small { margin-top: 3px; color: #85908a; font-size: 9px; }
 .admin-users-number { color: #425149; font-weight: 650; }
+.admin-users-select-cell { width: 44px; padding-inline: 13px !important; text-align: center !important; }
+.admin-users-select-cell input { width: 15px; height: 15px; margin: 0; accent-color: var(--admin-jade); cursor: pointer; }
+.admin-users-select-cell input:disabled { cursor: not-allowed; opacity: .45; }
+.admin-users-row-selected td { background: #f3f9f6; }
+.admin-users-action-cell { width: 78px; text-align: center !important; }
+.admin-users-action-cell > button { width: 31px; height: 31px; display: inline-grid; place-items: center; border: 1px solid #edd4d1; border-radius: 7px; background: #fff8f7; color: #b64c46; cursor: pointer; }
+.admin-users-action-cell > button:hover:not(:disabled) { border-color: #c85b54; background: #fff1ef; }
+.admin-users-action-cell > button:disabled { opacity: .45; cursor: not-allowed; }
+.admin-users-action-cell > span { display: inline-flex; align-items: center; gap: 4px; color: #318062; font-size: 9px; white-space: nowrap; }
 .admin-users-state { height: 150px !important; color: #738079; text-align: center !important; }
 .admin-users-state svg { margin-right: 7px; vertical-align: middle; }
 .admin-users-empty { height: 185px !important; color: #7c8882; text-align: center !important; }
@@ -46,5 +59,15 @@
 .admin-users-pages span { min-width: 88px; color: #6f7b75; text-align: center; }
 .admin-users-security-note { display: flex; align-items: center; gap: 7px; margin: 0; color: #7b8781; font-size: 10px; }
 .admin-users-security-note svg { color: #30815f; }
+.admin-users-dialog-layer { position: fixed; z-index: 135; inset: 0; display: grid; place-items: center; padding: 20px; }
+.admin-users-dialog-backdrop { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: rgba(16, 30, 26, .54); backdrop-filter: blur(3px); }
+.admin-users-delete-dialog { position: relative; width: min(440px, 100%); padding: 28px; border: 1px solid rgba(255, 255, 255, .65); border-radius: 13px; background: #fff; box-shadow: 0 28px 80px rgba(8, 34, 28, .25); text-align: center; }
+.admin-users-delete-dialog > span { width: 50px; height: 50px; margin: 0 auto 15px; display: grid; place-items: center; border-radius: 50%; background: #fff0f1; color: #bc4d47; }
+.admin-users-delete-dialog h2 { margin: 0; color: #2c3832; font-size: 19px; }
+.admin-users-delete-dialog p { margin: 10px 0 24px; color: #737f79; font-size: 11px; line-height: 1.7; }
+.admin-users-dialog-error { display: flex; align-items: flex-start; gap: 9px; margin: -8px 0 20px; padding: 11px 12px; border: 1px solid #efc8bd; border-radius: 8px; background: #fff7f4; color: #9c3e28; font-size: 12px; line-height: 1.55; text-align: left; }
+.admin-users-dialog-error svg { flex: 0 0 auto; margin-top: 2px; }
+.admin-users-dialog-error span { flex: 1; }
+.admin-users-delete-dialog footer { display: flex; justify-content: center; gap: 9px; }
 @media (max-width: 1100px) { .admin-users-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 760px) { .admin-users-heading .admin-button { width: 100%; } .admin-users-summary { grid-template-columns: 1fr; } .admin-users-table-header { align-items: stretch; flex-direction: column; } .admin-users-search { width: 100%; box-sizing: border-box; } .admin-users-footer { align-items: flex-start; flex-direction: column; } .admin-users-pages { width: 100%; justify-content: space-between; } }
+@media (max-width: 760px) { .admin-users-heading .admin-button { width: 100%; } .admin-users-summary { grid-template-columns: 1fr; } .admin-users-table-header { align-items: stretch; flex-direction: column; } .admin-users-search { width: 100%; box-sizing: border-box; } .admin-users-bulkbar { align-items: stretch; flex-direction: column; } .admin-users-bulkbar .admin-button { width: 100%; } .admin-users-footer { align-items: flex-start; flex-direction: column; } .admin-users-pages { width: 100%; justify-content: space-between; } .admin-users-dialog-layer { padding: 0; align-items: end; } .admin-users-delete-dialog { width: 100%; border-radius: 14px 14px 0 0; } .admin-users-delete-dialog footer { flex-direction: column-reverse; } .admin-users-delete-dialog footer .admin-button { width: 100%; } }

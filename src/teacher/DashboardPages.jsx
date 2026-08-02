@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowRight,
   BadgeCheck,
@@ -7,9 +7,8 @@ import {
   ChevronRight,
   CircleDollarSign,
   Clock3,
-  CloudUpload,
+  Copy,
   Crown,
-  FileImage,
   FileText,
   Gift,
   GraduationCap,
@@ -22,6 +21,7 @@ import {
   ReceiptText,
   RotateCcw,
   Search,
+  Share2,
   ShieldCheck,
   Sparkles,
   Trash2,
@@ -43,6 +43,7 @@ const draftDefaults = {
 };
 
 let pendingGeneration = null;
+const MATERIAL_UPLOAD_CONCURRENCY = 3;
 
 function safeRead(key, fallback) {
   try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
@@ -100,42 +101,56 @@ async function toAttachment(file) {
   return { name: file.name, type: file.type, size: file.size, dataUrl };
 }
 
+function fileSizeLabel(bytes) {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function materialMimeType(file) {
+  const declared = String(file.type || '').toLowerCase();
+  if (['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'application/pdf'].includes(declared)) return declared;
+  const extension = String(file.name || '').split('.').pop()?.toLowerCase();
+  return ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', pdf: 'application/pdf' })[extension] || '';
+}
+
+function UploadMaterialCard({ item, onRemove, onRetry }) {
+  const stateLabel = {
+    queued: '等待上传',
+    uploading: '上传中',
+    uploaded: '上传成功',
+    failed: '上传失败',
+    deleting: '删除中',
+  }[item.status] || '等待上传';
+  return (
+    <article className={`upload-material-card status-${item.status}`} role="listitem">
+      <div className="upload-material-preview">
+        {item.previewUrl ? <img src={item.previewUrl} alt={`${item.name}预览`} /> : <span><FileText size={28} /><b>PDF</b></span>}
+        {item.status === 'uploading' || item.status === 'deleting' ? <i className="upload-material-spinner"><LoaderCircle className="spin" size={18} /></i> : null}
+        {item.status === 'uploaded' ? <i className="upload-material-success"><Check size={15} /></i> : null}
+      </div>
+      <div className="upload-material-copy">
+        <b title={item.name}>{item.name}</b>
+        <small>{fileSizeLabel(item.size)} · <span>{stateLabel}</span></small>
+        {item.error ? <em title={item.error}>{item.error}</em> : null}
+      </div>
+      <div className="upload-material-actions">
+        {item.status === 'failed' ? <button type="button" onClick={() => onRetry(item.clientId)} aria-label={`重新上传 ${item.name}`} title="重新上传"><RotateCcw size={15} /></button> : null}
+        <button type="button" onClick={() => onRemove(item)} disabled={item.status === 'deleting'} aria-label={`删除 ${item.name}`} title="删除"><X size={16} /></button>
+      </div>
+    </article>
+  );
+}
+
 export function DashboardPage({ path }) {
   const account = useAccount();
   const displayName = accountDisplayName(account);
   const credits = Number(account?.credits || 0);
   const lessons = loadLessonLibrary().slice(0, 5);
-  const [quickDraft, setQuickDraft] = useState(() => ({
-    subject: draftDefaults.subject,
-    grade: draftDefaults.grade,
-    durationMinutes: draftDefaults.durationMinutes,
-  }));
-
-  function startQuickCreate() {
-    saveDraft({ ...draftDefaults, ...readDraft(), ...quickDraft });
-    navigate('/app/create');
-  }
 
   return (
     <TeacherShell path={path} title={`你好，${displayName}`} subtitle="今天也一起备好一堂课。">
       <div className="dashboard-layout">
         <div className="dashboard-main-column">
-          <section className="quick-create-panel">
-            <div className="quick-create-copy"><h2>从教材开始，备好一堂课</h2><p>上传教材章节图片或 PDF，AI 帮你生成贴合学情的详细教案。</p></div>
-            <div className="quick-create-form">
-              <button className="quick-upload" onClick={startQuickCreate}>
-                <span><CloudUpload size={28} /></span><b>进入教材上传向导</b><small>下一步可选择或拖入 JPG / PNG / WEBP / PDF</small>
-              </button>
-              <div className="quick-fields">
-                <Field label="学科"><select value={quickDraft.subject} onChange={(event) => setQuickDraft((current) => ({ ...current, subject: event.target.value }))}><option>语文</option><option>数学</option><option>英语</option><option>物理</option><option>化学</option></select></Field>
-                <Field label="年级"><select value={quickDraft.grade} onChange={(event) => setQuickDraft((current) => ({ ...current, grade: event.target.value }))}><option>一年级</option><option>五年级</option><option>七年级</option><option>九年级</option><option>高一</option></select></Field>
-                <Field label="课时时长"><select value={quickDraft.durationMinutes} onChange={(event) => setQuickDraft((current) => ({ ...current, durationMinutes: Number(event.target.value) }))}><option value="40">40 分钟</option><option value="45">45 分钟</option><option value="60">60 分钟</option><option value="90">90 分钟</option></select></Field>
-              </div>
-            </div>
-            <Button size="lg" icon={Sparkles} onClick={startQuickCreate}>填写信息并上传教材</Button>
-            <p className="privacy-line"><LockKeyhole size={14} /> 上传内容与账号凭据分开保护，具体处理规则可在“数据与隐私”中查看</p>
-          </section>
-
           <section className="recent-panel">
             <header><div><h2>最近教案</h2><p>继续编辑、查看生成进度或导出定稿。</p></div><Button variant="ghost" onClick={() => navigate('/app/plans')}>查看全部 <ChevronRight size={16} /></Button></header>
             <div className="lesson-list lesson-list-header"><span>教案名称</span><span>学科 / 年级</span><span>更新时间</span><span>状态</span><span /></div>
@@ -158,53 +173,295 @@ export function DashboardPage({ path }) {
   );
 }
 
+function referralStatusLabel(value) {
+  const status = String(value || '').toLowerCase();
+  if (['rewarded', 'credited', 'completed', 'success'].includes(status)) return '已到账';
+  if (['rejected', 'invalid', 'cancelled'].includes(status)) return '已退回';
+  if (['registered', 'qualified'].includes(status)) return '已注册';
+  return '审核中';
+}
+
+function referralDate(value) {
+  const date = new Date(value || '');
+  return Number.isFinite(date.getTime()) ? date.toLocaleDateString('zh-CN') : '—';
+}
+
+export function ReferralPage({ path }) {
+  const [state, setState] = useState({ loading: true, error: '', overview: null });
+  const [copyStatus, setCopyStatus] = useState('');
+  const copyTimerRef = useRef(null);
+
+  useEffect(() => {
+    let active = true;
+    api.getReferralOverview().then((response) => {
+      if (!active) return;
+      const payload = response.data?.overview || response.data || {};
+      const program = payload.settings || payload.program || payload.referralProgram || {};
+      const referralCode = String(payload.referralCode || payload.inviteCode || payload.code || '').trim();
+      const referralLink = String(payload.shareUrl || payload.referralLink || payload.inviteLink || payload.link || (referralCode ? `${window.location.origin}/register?ref=${encodeURIComponent(referralCode)}` : '')).trim();
+      setState({
+        loading: false,
+        error: '',
+        overview: {
+          program,
+          referralCode,
+          referralLink,
+          stats: payload.stats || payload.summary || {},
+          records: Array.isArray(payload.records) ? payload.records : Array.isArray(payload.referrals) ? payload.referrals : [],
+        },
+      });
+    }).catch((requestError) => {
+      if (active) setState({ loading: false, error: requestError.message || '推广数据暂时无法读取，请稍后重试。', overview: null });
+    });
+    return () => {
+      active = false;
+      window.clearTimeout(copyTimerRef.current);
+    };
+  }, []);
+
+  async function copyText(value, label) {
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+    } catch {
+      const textarea = document.createElement('textarea');
+      textarea.value = value;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      textarea.remove();
+    }
+    setCopyStatus(`${label}已复制`);
+    window.clearTimeout(copyTimerRef.current);
+    copyTimerRef.current = window.setTimeout(() => setCopyStatus(''), 2_400);
+  }
+
+  const overview = state.overview;
+  const program = overview?.program || {};
+  const stats = overview?.stats || {};
+  const records = overview?.records || [];
+  const inviterReward = Number(program.inviterRewardCredits ?? program.referrerCredits ?? program.rewardCredits ?? 0);
+  const inviteeReward = Number(program.inviteeRewardCredits ?? program.newUserCredits ?? 0);
+  const rules = Array.isArray(program.rules)
+    ? program.rules
+    : String(program.rules || program.description || '好友通过你的邀请链接完成注册并符合活动规则后，奖励将自动发放到账户。').split(/\n+/).filter(Boolean);
+
+  return (
+    <TeacherShell path={path} title="推广有礼" subtitle="邀请更多教师一起高效备课，符合规则后获得平台额度。" contentClass="referral-shell">
+      <div className="referral-page">
+        {state.loading ? <div className="referral-loading" role="status"><LoaderCircle className="spin" size={24} /><span>正在读取推广信息…</span></div> : null}
+        {state.error ? <div className="referral-error" role="alert"><p>{state.error}</p><Button variant="secondary" onClick={() => window.location.reload()}>重新加载</Button></div> : null}
+        {overview ? <>
+          <section className="referral-hero-card">
+            <div className="referral-hero-copy"><span><Gift size={20} /> 邀请奖励</span><h2>{program.headline || program.title || '邀请好友，双方都有礼'}</h2><p>{program.subtitle || program.description || '分享你的专属邀请链接，好友完成注册并满足活动条件后，奖励自动到账。'}</p><div className="referral-reward-pills"><b>邀请人 +{inviterReward} 额度</b>{inviteeReward > 0 ? <b>新用户 +{inviteeReward} 额度</b> : null}</div></div>
+            <div className="referral-share-box">
+              <label><span>我的邀请码</span><div><strong>{overview.referralCode || '暂未生成'}</strong><button type="button" disabled={!overview.referralCode} onClick={() => void copyText(overview.referralCode, '邀请码')}><Copy size={16} /> 复制</button></div></label>
+              <label><span>专属邀请链接</span><div><input readOnly value={overview.referralLink} aria-label="专属邀请链接" /><button type="button" disabled={!overview.referralLink} onClick={() => void copyText(overview.referralLink, '邀请链接')}><Share2 size={16} /> 复制链接</button></div></label>
+              {copyStatus ? <p className="referral-copy-status" role="status"><Check size={15} /> {copyStatus}</p> : null}
+            </div>
+          </section>
+
+          <section className="referral-stats" aria-label="推广统计">
+            <article><small>累计邀请</small><b>{Number(stats.invitedCount ?? stats.totalInvites ?? stats.total ?? records.length)}</b><span>人</span></article>
+            <article><small>奖励人数</small><b>{Number(stats.rewardedCount ?? stats.qualifiedInvites ?? stats.successful ?? stats.completed ?? 0)}</b><span>人</span></article>
+            <article><small>已获奖励</small><b>{Number(stats.creditsEarned ?? stats.rewardCredits ?? stats.credited ?? stats.totalReward ?? 0)}</b><span>额度</span></article>
+            <article><small>剩余可奖励</small><b>{stats.remainingRewards === null ? '不限' : Number(stats.remainingRewards ?? 0)}</b><span>{stats.remainingRewards === null ? '' : '人'}</span></article>
+          </section>
+
+          <div className="referral-content-grid">
+            <section className="referral-rules"><header><h2>活动规则</h2><p>奖励发放以当前活动配置及实际审核结果为准。</p></header><ol>{rules.map((rule, index) => <li key={`${index}-${rule}`}><span>{index + 1}</span><p>{rule}</p></li>)}</ol></section>
+            <section className="referral-records"><header><h2>邀请记录</h2><p>这里会显示好友注册及奖励到账进度。</p></header>{records.length ? <div className="referral-record-list">{records.map((record, index) => <article key={record.id || `${record.account || record.invitee || 'record'}-${index}`}><div><b>{record.displayName || record.maskedAccount || record.account || record.invitee || '受邀用户'}</b><small>{referralDate(record.registeredAt || record.createdAt)}</small></div><span>{Number(record.rewardCredits ?? record.reward ?? inviterReward)} 额度</span><Status>{referralStatusLabel(record.status)}</Status></article>)}</div> : <EmptyState icon={UserRound} title="还没有邀请记录" text="复制上方邀请链接分享给好友，成功邀请后会显示在这里。" />}</section>
+          </div>
+        </> : null}
+      </div>
+    </TeacherShell>
+  );
+}
+
 const wizardSteps = ['课程信息', '上传教材', '生成偏好', '确认生成'];
 
 export function CreateLessonPage({ path }) {
   const [step, setStep] = useState(0);
   const [draft, setDraft] = useState(() => ({ ...draftDefaults, ...readDraft() }));
-  const [files, setFiles] = useState([]);
+  const [materials, setMaterials] = useState([]);
+  const [activeUploads, setActiveUploads] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [rights, setRights] = useState(false);
   const [error, setError] = useState('');
   const fileInput = useRef(null);
+  const mountedRef = useRef(true);
+  const materialsRef = useRef([]);
+  const preserveAttachmentsRef = useRef(false);
+  const previewUrlsRef = useRef(new Set());
+  const uploadingIdsRef = useRef(new Set());
+  const removedIdsRef = useRef(new Set());
+  materialsRef.current = materials;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (!preserveAttachmentsRef.current) {
+        materialsRef.current.forEach((item) => {
+          removedIdsRef.current.add(item.clientId);
+          if (item.attachment?.id) void api.deleteLessonMaterial(item.attachment.id).catch(() => {});
+        });
+      }
+      previewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+      previewUrlsRef.current.clear();
+    };
+  }, []);
+
+  const uploadMaterial = useCallback(async (item) => {
+    try {
+      const encoded = await toAttachment(item.file);
+      const payload = {
+        ...encoded,
+        type: item.type,
+        dataUrl: encoded.dataUrl.replace(/^data:[^;,]*/i, `data:${item.type}`),
+      };
+      const response = await api.uploadLessonMaterial(payload);
+      const received = response.data?.attachment;
+      const attachmentId = received?.id || received?.attachmentId;
+      if (!attachmentId) throw new Error('服务器没有返回教材附件编号。');
+      const attachment = {
+        ...received,
+        id: attachmentId,
+        name: received?.name || item.name,
+        type: received?.type || item.type,
+        size: Number(received?.size ?? item.size),
+      };
+      if (removedIdsRef.current.has(item.clientId)) {
+        await api.deleteLessonMaterial(attachment.id).catch(() => {});
+        return;
+      }
+      if (mountedRef.current) {
+        setMaterials((current) => current.map((entry) => entry.clientId === item.clientId
+          ? { ...entry, status: 'uploaded', attachment, error: '' }
+          : entry));
+      }
+    } catch (uploadError) {
+      if (!removedIdsRef.current.has(item.clientId) && mountedRef.current) {
+        setMaterials((current) => current.map((entry) => entry.clientId === item.clientId
+          ? { ...entry, status: 'failed', error: uploadError.message || '上传失败，请重试。' }
+          : entry));
+      }
+    } finally {
+      uploadingIdsRef.current.delete(item.clientId);
+      if (mountedRef.current) setActiveUploads((current) => Math.max(0, current - 1));
+    }
+  }, []);
+
+  useEffect(() => {
+    const available = MATERIAL_UPLOAD_CONCURRENCY - uploadingIdsRef.current.size;
+    if (available <= 0) return;
+    const queued = materials
+      .filter((item) => item.status === 'queued' && !uploadingIdsRef.current.has(item.clientId))
+      .slice(0, available);
+    queued.forEach((item) => {
+      uploadingIdsRef.current.add(item.clientId);
+      setActiveUploads((current) => current + 1);
+      setMaterials((current) => current.map((entry) => entry.clientId === item.clientId ? { ...entry, status: 'uploading', error: '' } : entry));
+      void uploadMaterial(item);
+    });
+  }, [activeUploads, materials, uploadMaterial]);
 
   function update(key, value) { setDraft((current) => ({ ...current, [key]: value })); }
   function addFiles(list) {
     const incoming = [...list];
-    const accepted = incoming.filter((file) => {
-      const supported = file.type.startsWith('image/') || file.type === 'application/pdf';
-      const limit = file.type === 'application/pdf' ? 16 * 1024 * 1024 : 8 * 1024 * 1024;
-      return supported && file.size <= limit;
+    const accepted = incoming.map((file) => ({ file, type: materialMimeType(file) })).filter((item) => item.type);
+    if (accepted.length !== incoming.length) setError('已忽略不支持的文件，请上传教材图片或 PDF。');
+    else setError('');
+    const nextItems = accepted.map(({ file, type }, index) => {
+      const previewUrl = type.startsWith('image/') ? URL.createObjectURL(file) : '';
+      if (previewUrl) previewUrlsRef.current.add(previewUrl);
+      return {
+        clientId: crypto.randomUUID?.() || `material-${Date.now()}-${index}-${Math.random().toString(16).slice(2)}`,
+        file,
+        name: file.name,
+        type,
+        size: file.size,
+        previewUrl,
+        status: 'queued',
+        attachment: null,
+        error: '',
+      };
     });
-    if (accepted.length !== incoming.length) setError('已忽略不支持或过大的文件：图片不超过 8MB，PDF 不超过 16MB。');
-    const selected = [];
-    let totalBytes = 0;
-    for (const file of [...files, ...accepted]) {
-      if (selected.length >= 12) break;
-      if (totalBytes + file.size > 18 * 1024 * 1024) continue;
-      selected.push(file);
-      totalBytes += file.size;
+    if (nextItems.length) setMaterials((current) => [...current, ...nextItems]);
+  }
+
+  async function removeMaterial(item) {
+    removedIdsRef.current.add(item.clientId);
+    if (item.status !== 'uploaded' || !item.attachment?.id) {
+      if (item.previewUrl) {
+        URL.revokeObjectURL(item.previewUrl);
+        previewUrlsRef.current.delete(item.previewUrl);
+      }
+      setMaterials((current) => current.filter((entry) => entry.clientId !== item.clientId));
+      return;
     }
-    if (selected.length < files.length + accepted.length) setError('单次最多 12 个文件且总大小不超过 18MB，请压缩图片或分批上传。');
-    setFiles(selected);
+    setMaterials((current) => current.map((entry) => entry.clientId === item.clientId ? { ...entry, status: 'deleting', error: '' } : entry));
+    try {
+      await api.deleteLessonMaterial(item.attachment.id);
+      if (item.previewUrl) {
+        URL.revokeObjectURL(item.previewUrl);
+        previewUrlsRef.current.delete(item.previewUrl);
+      }
+      setMaterials((current) => current.filter((entry) => entry.clientId !== item.clientId));
+    } catch (deleteError) {
+      removedIdsRef.current.delete(item.clientId);
+      setMaterials((current) => current.map((entry) => entry.clientId === item.clientId
+        ? { ...entry, status: 'uploaded', error: deleteError.message || '删除失败，请稍后重试。' }
+        : entry));
+      setError(deleteError.message || '教材删除失败，请稍后重试。');
+    }
+  }
+
+  function retryMaterial(clientId) {
+    setError('');
+    setMaterials((current) => current.map((item) => item.clientId === clientId ? { ...item, status: 'queued', error: '' } : item));
+  }
+
+  async function clearMaterials() {
+    const current = materials;
+    current.forEach((item) => {
+      removedIdsRef.current.add(item.clientId);
+      if (item.previewUrl) {
+        URL.revokeObjectURL(item.previewUrl);
+        previewUrlsRef.current.delete(item.previewUrl);
+      }
+    });
+    setMaterials([]);
+    if (fileInput.current) fileInput.current.value = '';
+    const uploaded = current.filter((item) => item.attachment?.id).map((item) => api.deleteLessonMaterial(item.attachment.id));
+    if (uploaded.length) {
+      const results = await Promise.allSettled(uploaded);
+      if (results.some((result) => result.status === 'rejected')) setError('部分教材未能从服务器删除，请稍后再试。');
+    }
   }
   function next() {
     setError('');
-    if (step === 1 && files.length === 0) { setError('请至少上传一张教材图片或一个 PDF。'); return; }
+    if (step === 1 && materials.length === 0) { setError('请至少上传一张教材图片或一个 PDF。'); return; }
+    if (step === 1 && materials.some((item) => ['queued', 'uploading', 'deleting'].includes(item.status))) { setError('教材仍在上传，请等待全部上传完成后继续。'); return; }
+    if (step === 1 && materials.some((item) => item.status === 'failed')) { setError('有教材上传失败，请重试或删除失败项后继续。'); return; }
     if (step < wizardSteps.length - 1) setStep((value) => value + 1);
   }
-  async function submit() {
+  function submit() {
     if (!rights) { setError('请先确认你有权将这些内容用于本次备课服务。'); return; }
     setError('');
-    try {
-      const attachments = await Promise.all(files.map(toAttachment));
-      pendingGeneration = { ...draft, attachments, createdAt: Date.now() };
-      saveDraft({ ...draft, createdAt: Date.now() });
-      navigate('/app/generating');
-    } catch {
-      setError('读取上传文件失败，请移除后重新上传。');
-    }
+    const attachments = materials.map((item) => ({
+      ...item.attachment,
+      id: item.attachment.id,
+      name: item.name,
+      type: item.type,
+      size: item.size,
+    }));
+    pendingGeneration = { ...draft, attachments, createdAt: Date.now() };
+    saveDraft({ ...draft, createdAt: Date.now() });
+    preserveAttachmentsRef.current = true;
+    navigate('/app/generating');
   }
 
   return (
@@ -233,11 +490,21 @@ export function CreateLessonPage({ path }) {
           {step === 1 ? (
             <div className="wizard-section upload-step">
               <header><h2>上传本章节教材</h2><p>请上传章节完整内容。清晰、端正、无反光的图片会获得更好的识别结果。</p></header>
-              <button className={`large-dropzone ${dragging ? 'dragging' : ''}`} onClick={() => fileInput.current?.click()} onDragOver={(e) => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={(e) => { e.preventDefault(); setDragging(false); addFiles(e.dataTransfer.files); }}>
-                <input ref={fileInput} type="file" multiple hidden accept="image/*,.pdf" onChange={(e) => addFiles(e.target.files)} />
-                <span><Upload size={27} /></span><h3>拖拽教材图片或 PDF 到这里</h3><p>最多 12 个文件、总计 18MB，支持 JPG、PNG、WEBP、PDF</p><b>选择文件</b>
-              </button>
-              {files.length ? <div className="upload-list"><header><b>已上传 {files.length} 个文件</b><button onClick={() => setFiles([])}><Trash2 size={15} /> 清空</button></header>{files.map((file, index) => <div key={`${file.name}-${index}`}><span className="file-type-icon">{file.type === 'application/pdf' ? <FileText size={18} /> : <FileImage size={18} />}</span><div><b>{file.name}</b><small>{(file.size / 1024 / 1024).toFixed(2)} MB · 等待识别</small></div><button onClick={() => setFiles((current) => current.filter((_, i) => i !== index))} aria-label={`删除 ${file.name}`}><X size={16} /></button></div>)}</div> : null}
+              <div className={`large-dropzone ${materials.length ? 'has-materials' : ''} ${dragging ? 'dragging' : ''}`} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setDragging(false); }} onDrop={(event) => { event.preventDefault(); setDragging(false); addFiles(event.dataTransfer.files); }}>
+                <input ref={fileInput} type="file" multiple hidden accept="image/*,.pdf" onChange={(event) => { addFiles(event.target.files); event.target.value = ''; }} />
+                {materials.length ? <>
+                  <div className="upload-material-toolbar">
+                    <p><b>本章节教材</b><span>{materials.length} 个文件{activeUploads ? ` · ${activeUploads} 个上传中` : ''}</span></p>
+                    <div><button type="button" onClick={() => fileInput.current?.click()}><Plus size={15} /> 继续添加</button><button type="button" className="danger" onClick={() => void clearMaterials()}><Trash2 size={15} /> 清空</button></div>
+                  </div>
+                  <div className="upload-material-grid" role="list" aria-label="已选择的教材文件">
+                    {materials.map((item) => <UploadMaterialCard item={item} key={item.clientId} onRemove={(entry) => void removeMaterial(entry)} onRetry={retryMaterial} />)}
+                    <button type="button" className="upload-material-add" onClick={() => fileInput.current?.click()}><Upload size={20} /><span>继续添加图片或 PDF</span></button>
+                  </div>
+                </> : <button type="button" className="dropzone-empty" onClick={() => fileInput.current?.click()}>
+                  <span><Upload size={27} /></span><h3>拖拽教材图片或 PDF 到这里</h3><p>可一次选择多张，系统会自动依次上传</p><b>选择文件</b>
+                </button>}
+              </div>
               <div className="upload-tips"><b>拍摄建议</b><span><Check size={15} /> 页面四角完整</span><span><Check size={15} /> 避免手指遮挡</span><span><Check size={15} /> 按页码顺序上传</span><span><Check size={15} /> 文字方向保持正向</span></div>
             </div>
           ) : null}
@@ -255,7 +522,7 @@ export function CreateLessonPage({ path }) {
           {step === 3 ? (
             <div className="wizard-section confirm-step">
               <header><h2>确认后开始生成</h2><p>通常需要 1—3 分钟。生成完成前请保持此页面打开。</p></header>
-              <div className="confirm-summary"><div><span><GraduationCap size={18} /></span><p><small>课程</small><b>{draft.grade}{draft.subject} · {draft.chapterTitle || '待识别章节'}</b></p></div><div><span><Clock3 size={18} /></span><p><small>课堂</small><b>{draft.durationMinutes} 分钟 · {draft.style} · 互动{draft.interaction}</b></p></div><div><span><FileText size={18} /></span><p><small>教材</small><b>{files.length} 个文件 · 详细教案 · {draft.exerciseCount} 道习题</b></p></div><div><span><Sparkles size={18} /></span><p><small>预计消耗</small><b>1 次完整生成额度</b></p></div></div>
+              <div className="confirm-summary"><div><span><GraduationCap size={18} /></span><p><small>课程</small><b>{draft.grade}{draft.subject} · {draft.chapterTitle || '待识别章节'}</b></p></div><div><span><Clock3 size={18} /></span><p><small>课堂</small><b>{draft.durationMinutes} 分钟 · {draft.style} · 互动{draft.interaction}</b></p></div><div><span><FileText size={18} /></span><p><small>教材</small><b>{materials.length} 个文件 · 详细教案 · {draft.exerciseCount} 道习题</b></p></div><div><span><Sparkles size={18} /></span><p><small>预计消耗</small><b>1 次完整生成额度</b></p></div></div>
               <div className="consent-box"><label><input type="checkbox" checked={rights} onChange={(e) => setRights(e.target.checked)} /><span><b>教材使用确认（必选）</b><small>我确认有权将上传内容用于本次个人备课服务，不会上传包含无关个人信息的内容。</small></span></label></div>
               <div className="charge-note"><ShieldCheck size={18} /><p><b>系统失败不扣额度</b><span>提交后先预占 1 次额度；生成成功才正式扣除，系统失败或取消成功会自动退回。</span></p></div>
             </div>
@@ -290,6 +557,8 @@ export function GeneratingPage({ path }) {
     const timer = setInterval(() => setActive((value) => Math.min(value + 1, processingSteps.length - 1)), 1700);
     try {
       if (!draft.attachments?.length) throw new Error('没有找到待处理的教材文件，请返回创建页面重新上传。');
+      const attachmentIds = draft.attachments.map((file) => file.id || file.attachmentId).filter(Boolean);
+      if (attachmentIds.length !== draft.attachments.length) throw new Error('部分教材没有上传完成，请返回创建页面重新上传。');
       const response = await api.generateLesson({
         subject: draft.subject,
         grade: draft.grade,
@@ -299,7 +568,7 @@ export function GeneratingPage({ path }) {
         durationMinutes: draft.durationMinutes,
         classProfile: draft.classProfile,
         requirements: `${draft.requirements || ''}\n教学风格：${draft.style}；详细程度：${draft.detailLevel}；互动密度：${draft.interaction}；习题数量：${draft.exerciseCount}。`,
-        images: draft.attachments.map((file) => file.dataUrl),
+        attachmentIds,
       });
       const lesson = response.data?.lessonPlan || response.lessonPlan;
       if (!lesson) throw new Error('模型返回了空教案，请稍后重试。');

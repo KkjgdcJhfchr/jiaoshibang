@@ -43,6 +43,8 @@ import { createPaymentRouter } from './payment-routes.mjs';
 import { createMembershipCatalog } from './membership-catalog.mjs';
 import { createContentManagementStore } from './content-management.mjs';
 import { createSiteSettingsStore } from './site-settings.mjs';
+import { createMarketingStore } from './marketing-store.mjs';
+import { createMaterialUploadStore } from './material-upload-store.mjs';
 import { createSmsService, SmsServiceError } from './sms-service.mjs';
 import {
   createVerificationCodeService,
@@ -61,7 +63,9 @@ const DATA_DIR = resolve(ROOT_DIR, process.env.DATA_DIR || 'data');
 const MAX_BODY_BYTES = parsePositiveInteger(process.env.MAX_BODY_BYTES, 25 * 1024 * 1024);
 const MAX_IMAGE_BYTES = parsePositiveInteger(process.env.MAX_IMAGE_BYTES, 8 * 1024 * 1024);
 const MAX_PDF_BYTES = parsePositiveInteger(process.env.MAX_PDF_BYTES, 16 * 1024 * 1024);
-const MAX_IMAGES = parsePositiveInteger(process.env.MAX_IMAGES, 12);
+const GENERATION_MAX_SOURCE_BYTES = parsePositiveInteger(process.env.GENERATION_MAX_SOURCE_BYTES, 64 * 1024 * 1024);
+const MATERIAL_UPLOAD_TTL_MS = parsePositiveInteger(process.env.MATERIAL_UPLOAD_TTL_SECONDS, 24 * 60 * 60) * 1000;
+const MATERIAL_UPLOAD_MAX_ACTIVE_BYTES = parsePositiveInteger(process.env.MATERIAL_UPLOAD_MAX_ACTIVE_BYTES, 256 * 1024 * 1024);
 const AI_TIMEOUT_MS = parsePositiveInteger(process.env.AI_REQUEST_TIMEOUT_MS, 180_000);
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').trim().replace(/\/+$/, '');
 const OPENAI_MODEL = process.env.OPENAI_MODEL?.trim() || 'gpt-5.6';
@@ -143,6 +147,13 @@ const membershipCatalog = createMembershipCatalog({
   getSiteName: () => siteSettings.getPublicSettings().siteName,
 });
 const contentManagement = createContentManagementStore({ dataDir: DATA_DIR });
+const marketing = createMarketingStore({ dataDir: DATA_DIR });
+const materialUploads = createMaterialUploadStore({
+  dataDir: DATA_DIR,
+  ttlMs: MATERIAL_UPLOAD_TTL_MS,
+  maxActiveBytesPerUser: MATERIAL_UPLOAD_MAX_ACTIVE_BYTES,
+  maxGenerationBytes: GENERATION_MAX_SOURCE_BYTES,
+});
 const DUMMY_PASSWORD = hashPassword(randomBytes(32).toString('hex'));
 const authRateBuckets = new Map();
 const aiUserRateBuckets = new Map();
@@ -304,8 +315,22 @@ async function handleRequest(request, response) {
 
     if (await paymentRouter.handle(request, response, url)) return;
 
+    const marketingAssetMatch = url.pathname.match(/^\/api\/marketing\/assets\/([^/]+)$/);
+    if (['GET', 'HEAD'].includes(request.method) && marketingAssetMatch) {
+      const asset = marketing.openAsset(decodePathSegment(marketingAssetMatch[1], '宣传图片地址无效'));
+      sendStoredFile(request, response, asset, { publicCache: true });
+      return;
+    }
+
     if (request.method === 'GET' && url.pathname === '/api/site-config') {
-      sendJson(response, 200, { ok: true, data: siteSettings.getPublicSettings() });
+      sendJson(response, 200, {
+        ok: true,
+        data: {
+          ...siteSettings.getPublicSettings(),
+          ads: marketing.listPublicAds(),
+          referralProgram: marketing.getPublicReferralSettings(),
+        },
+      });
       return;
     }
 
@@ -377,6 +402,53 @@ async function handleRequest(request, response) {
       return;
     }
 
+    if (request.method === 'GET' && url.pathname === '/api/app/referrals') {
+      const session = requireUserSession(request);
+      const settings = marketing.getPublicReferralSettings();
+      const overview = store.getReferralOverview(session.user.id, settings);
+      const baseUrl = requestPublicBaseUrl(request);
+      sendJson(response, 200, {
+        ok: true,
+        data: {
+          ...overview,
+          shareUrl: `${baseUrl}/register?ref=${encodeURIComponent(overview.code)}`,
+          settings,
+        },
+      });
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/app/material-uploads') {
+      assertSameOriginMutation(request);
+      const session = requireUserSession(request);
+      const body = await readJsonBody(request);
+      const attachment = materialUploads.createAttachment({
+        userId: session.user.id,
+        name: body.name,
+        type: body.type,
+        dataUrl: body.dataUrl,
+      });
+      sendJson(response, 201, { ok: true, data: { attachment } });
+      return;
+    }
+
+    const materialAttachmentMatch = url.pathname.match(/^\/api\/app\/material-uploads\/(att_[0-9a-f-]{36})$/i);
+    if (['GET', 'HEAD'].includes(request.method) && materialAttachmentMatch) {
+      const session = requireUserSession(request);
+      const attachment = materialUploads.openAttachment(session.user.id, materialAttachmentMatch[1]);
+      sendStoredFile(request, response, attachment, { publicCache: false });
+      return;
+    }
+
+    if (request.method === 'DELETE' && materialAttachmentMatch) {
+      assertSameOriginMutation(request);
+      const session = requireUserSession(request);
+      await readOptionalJsonBody(request, 16 * 1024);
+      const attachment = materialUploads.deleteAttachment(session.user.id, materialAttachmentMatch[1]);
+      sendJson(response, 200, { ok: true, data: { attachment, deleted: true } });
+      return;
+    }
+
     if (request.method === 'POST' && isAdminPath(url.pathname, 'bootstrap')) {
       await handleAdminBootstrap(request, response);
       return;
@@ -445,6 +517,83 @@ async function handleRequest(request, response) {
         } : null,
       }));
       sendJson(response, 200, { ok: true, data: result });
+      return;
+    }
+
+    if (request.method === 'DELETE' && /^\/api\/admin\/users\/usr_[0-9a-f-]{36}$/i.test(url.pathname)) {
+      assertSameOriginMutation(request);
+      const session = requireAdminSession(request);
+      await readOptionalJsonBody(request, 16 * 1024);
+      const userId = url.pathname.slice('/api/admin/users/'.length);
+      const result = deleteUserAccounts([userId], session.admin.username);
+      sendJson(response, 200, { ok: true, data: result });
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/admin/users/bulk-delete') {
+      assertSameOriginMutation(request);
+      const session = requireAdminSession(request);
+      const body = await readJsonBody(request, 64 * 1024);
+      const result = deleteUserAccounts(body.userIds, session.admin.username);
+      sendJson(response, 200, { ok: true, data: result });
+      return;
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/admin/marketing') {
+      requireAdminSession(request);
+      sendJson(response, 200, {
+        ok: true,
+        data: {
+          ads: marketing.listAdminAds(),
+          referralSettings: marketing.getAdminReferralSettings(),
+        },
+      });
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/admin/marketing/ads') {
+      assertSameOriginMutation(request);
+      const session = requireAdminSession(request);
+      const body = await readJsonBody(request, 8 * 1024 * 1024);
+      const ad = marketing.createAd(body, session.admin.username);
+      sendJson(response, 201, { ok: true, data: { ad } });
+      return;
+    }
+
+    if (request.method === 'PUT' && url.pathname === '/api/admin/marketing/ads/order') {
+      assertSameOriginMutation(request);
+      const session = requireAdminSession(request);
+      const body = await readJsonBody(request, 64 * 1024);
+      const ads = marketing.reorderAds(body.ids, session.admin.username);
+      sendJson(response, 200, { ok: true, data: { ads } });
+      return;
+    }
+
+    const adminAdMatch = url.pathname.match(/^\/api\/admin\/marketing\/ads\/(ad_[0-9a-f-]{36})$/i);
+    if (request.method === 'PUT' && adminAdMatch) {
+      assertSameOriginMutation(request);
+      const session = requireAdminSession(request);
+      const body = await readJsonBody(request, 8 * 1024 * 1024);
+      const ad = marketing.updateAd(adminAdMatch[1], body, session.admin.username);
+      sendJson(response, 200, { ok: true, data: { ad } });
+      return;
+    }
+
+    if (request.method === 'DELETE' && adminAdMatch) {
+      assertSameOriginMutation(request);
+      requireAdminSession(request);
+      await readOptionalJsonBody(request, 16 * 1024);
+      const ad = marketing.deleteAd(adminAdMatch[1]);
+      sendJson(response, 200, { ok: true, data: { ad, deleted: true } });
+      return;
+    }
+
+    if (request.method === 'PUT' && url.pathname === '/api/admin/marketing/referral-settings') {
+      assertSameOriginMutation(request);
+      const session = requireAdminSession(request);
+      const body = await readJsonBody(request, 32 * 1024);
+      const referralSettings = marketing.saveReferralSettings(body, session.admin.username);
+      sendJson(response, 200, { ok: true, data: { referralSettings } });
       return;
     }
 
@@ -700,7 +849,9 @@ async function handleRequest(request, response) {
       const session = requireUserSession(request);
       enforceAiRateLimits(session.user.id, getClientIp(request));
       const body = await readJsonBody(request);
-      const normalized = normalizeGenerateRequest(body);
+      const attachmentIds = normalizeRequestedAttachmentIds(body.attachmentIds);
+      const storedSources = materialUploads.resolveAttachments(session.user.id, attachmentIds);
+      const normalized = normalizeGenerateRequest(body, storedSources);
       const reservation = store.reserveGeneration(session.user.id);
       if (!reservation.ok) {
         throw new HttpError(402, 'QUOTA_EXHAUSTED', '免费生成额度已用完，请购买会员或等待额度补充', {
@@ -711,6 +862,10 @@ async function handleRequest(request, response) {
         const result = await withAiSlot(() => generateLesson(normalized, requestId, session.user));
         const updatedUser = store.commitGeneration(reservation);
         if (!updatedUser) throw new HttpError(500, 'QUOTA_COMMIT_FAILED', '教案已生成，但额度状态保存失败，请联系管理员并提供请求编号');
+        if (attachmentIds.length) {
+          try { materialUploads.deleteAttachments(session.user.id, attachmentIds); }
+          catch (cleanupError) { console.warn(`[teacher-helper] generated attachment cleanup failed: ${cleanupError.code || cleanupError.message}`); }
+        }
         sendJson(response, 200, {
           ok: true,
           data: { ...result, creditsRemaining: updatedUser.credits },
@@ -749,6 +904,59 @@ async function handleRequest(request, response) {
       ? '[admin-entry]'
       : url.pathname;
     console.log(`${request.method} ${loggedPath} ${status} ${Date.now() - startedAt}ms requestId=${requestId}`);
+  }
+}
+
+function deleteUserAccounts(userIds, actor) {
+  const users = store.validateUsersForDeletion(userIds);
+  const ids = users.map((user) => user.id);
+  assertNoBlockingPaymentOrders(ids);
+  const removedProgress = contentManagement.deleteUserProgress(ids);
+  const revokedTrainingCandidates = store.revokeTrainingCandidatesByOwnerRefs(ids.map((id) => (
+    `usr_hash_${stablePrivateHash(id, SAFETY_ID_SALT).slice(0, 32)}`
+  )));
+  const removedAttachments = materialUploads.deleteUserAttachments(ids);
+  const deletedUsers = store.deleteUsers(ids);
+  for (const id of ids) aiUserRateBuckets.delete(`user:${id}`);
+  return {
+    deletedIds: ids,
+    deletedUsers,
+    cleanup: { removedProgress, revokedTrainingCandidates, removedAttachments },
+    deletedBy: actor,
+  };
+}
+
+function assertNoBlockingPaymentOrders(userIds) {
+  const safelyFinalizedStates = new Set(['CLOSED', 'FAILED', 'CANCELED', 'REFUNDED']);
+  const blockers = [];
+  for (const userId of userIds) {
+    const orders = paymentRouter.service.listOrders({
+      userId,
+      offset: 0,
+      limit: Number.MAX_SAFE_INTEGER,
+    }).items;
+    for (const order of orders) {
+      const fulfillmentStatus = String(order.fulfillment?.status || 'PENDING');
+      const paidButUnfulfilled = order.status === 'PAID' && fulfillmentStatus !== 'FULFILLED';
+      const notFinalized = order.status !== 'PAID' && !safelyFinalizedStates.has(order.status);
+      if (!paidButUnfulfilled && !notFinalized) continue;
+      blockers.push({
+        userId,
+        orderId: order.id,
+        merchantOrderNo: order.merchantOrderNo,
+        status: order.status,
+        fulfillmentStatus,
+        reason: paidButUnfulfilled ? 'PAID_FULFILLMENT_PENDING' : 'PAYMENT_NOT_FINALIZED',
+      });
+    }
+  }
+  if (blockers.length) {
+    throw new HttpError(
+      409,
+      'USER_PAYMENT_STATE_BLOCKS_DELETION',
+      '用户存在未终结订单，或已支付订单的会员权益尚未成功发放，暂时不能删除',
+      { blockers },
+    );
   }
 }
 
@@ -798,6 +1006,7 @@ async function handleUserRegister(request, response) {
   }
   const displayName = cleanText(body.displayName, 100) || defaultDisplayName(account);
   const subject = cleanText(body.subject, 100);
+  const referralCode = cleanText(body.referralCode ?? body.inviteCode, 32).toUpperCase();
   const user = store.registerUser({
     account,
     accountKey,
@@ -810,6 +1019,9 @@ async function handleUserRegister(request, response) {
     privacyPolicyUpdatedAt: currentSiteSettings.privacyPolicyUpdatedAt,
     verifiedAt,
     verifiedChannel,
+    referralCode,
+    referralSettings: marketing.getPublicReferralSettings(),
+    inviteeFingerprint: stablePrivateHash(`referral-account:${accountKey}`, SAFETY_ID_SALT),
   });
   if (!user) throw new HttpError(409, 'ACCOUNT_EXISTS', '该账号已注册，请直接登录');
   sendUserSession(response, request, user, 201, { recordLogin: true });
@@ -2714,7 +2926,7 @@ async function callOpenAIChatCompletions({ provider, inputText, requestId, expec
   };
 }
 
-function normalizeGenerateRequest(body) {
+function normalizeGenerateRequest(body, storedSources = []) {
   assertPlainObject(body, '请求体必须是 JSON 对象');
   const subject = cleanText(body.subject || body.metadata?.subject || body.course, 100) || '未指定学科';
   const grade = cleanText(body.grade || body.metadata?.grade || body.gradeLevel, 100) || '未指定年级';
@@ -2736,9 +2948,11 @@ function normalizeGenerateRequest(body) {
   const classProfile = cleanText(body.classProfile || body.metadata?.classProfile, 4_000);
   const requirements = cleanText(body.requirements || body.instructions || body.notes, 8_000);
   const sourceText = cleanText(body.sourceText || body.chapterText || body.content, 30_000);
-  const sources = normalizeSources(
-    body.images || body.imageDataUrls || body.textbookImages || body.files || [],
-  );
+  const legacySources = body.images || body.imageDataUrls || body.textbookImages || body.files || [];
+  const sources = normalizeSources([
+    ...(Array.isArray(legacySources) ? legacySources : legacySources ? [legacySources] : []),
+    ...storedSources,
+  ]);
 
   if (sources.length === 0 && !sourceText) {
     throw new HttpError(400, 'SOURCE_REQUIRED', '请至少上传一张课本图片、PDF 或提供章节文字');
@@ -2779,9 +2993,7 @@ function normalizeReviseRequest(body) {
 
 function normalizeSources(value) {
   const list = Array.isArray(value) ? value : value ? [value] : [];
-  if (list.length > MAX_IMAGES) {
-    throw new HttpError(413, 'TOO_MANY_SOURCES', `每次最多上传 ${MAX_IMAGES} 个图片或 PDF 文件`);
-  }
+  let totalBytes = 0;
   return list.map((item, index) => {
     const dataUrl = typeof item === 'string'
       ? item
@@ -2796,6 +3008,10 @@ function normalizeSources(value) {
     const mimeType = match[1].toLowerCase();
     const encodedLength = match[2].length;
     const estimatedBytes = Math.floor(encodedLength * 0.75);
+    totalBytes += estimatedBytes;
+    if (totalBytes > GENERATION_MAX_SOURCE_BYTES) {
+      throw new HttpError(413, 'SOURCE_TOTAL_TOO_LARGE', `本次生成使用的教材总量不能超过 ${formatByteLimit(GENERATION_MAX_SOURCE_BYTES)}`);
+    }
     const supportedImage = /^image\/(?:png|jpe?g|webp|gif)$/.test(mimeType);
     const supportedPdf = mimeType === 'application/pdf';
     if (!supportedImage && !supportedPdf) {
@@ -2861,6 +3077,67 @@ async function readJsonBody(request, maximumBytes = MAX_BODY_BYTES) {
   } catch {
     throw new HttpError(400, 'INVALID_JSON', '请求体不是有效 JSON');
   }
+}
+
+async function readOptionalJsonBody(request, maximumBytes) {
+  const declaredLength = Number(request.headers['content-length'] || 0);
+  const chunked = String(request.headers['transfer-encoding'] || '').toLowerCase().includes('chunked');
+  if (!declaredLength && !chunked) return {};
+  return readJsonBody(request, maximumBytes);
+}
+
+function normalizeRequestedAttachmentIds(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new HttpError(400, 'ATTACHMENT_IDS_INVALID', 'attachmentIds 必须是数组');
+  const ids = value.map((item) => cleanText(item, 80));
+  if (ids.some((id) => !/^att_[0-9a-f-]{36}$/i.test(id))) {
+    throw new HttpError(400, 'ATTACHMENT_ID_INVALID', '教材附件编号无效');
+  }
+  if (new Set(ids).size !== ids.length) throw new HttpError(422, 'ATTACHMENT_IDS_DUPLICATED', '教材附件不能重复');
+  return ids;
+}
+
+function decodePathSegment(value, message) {
+  try { return decodeURIComponent(value); }
+  catch { throw new HttpError(400, 'INVALID_PATH', message); }
+}
+
+function requestPublicBaseUrl(request) {
+  if (PUBLIC_BASE_URL) return PUBLIC_BASE_URL;
+  const protocol = String(request.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase() === 'https'
+    ? 'https'
+    : 'http';
+  const host = String(request.headers.host || '').trim();
+  if (!host || /[\s\\/]/.test(host)) throw new HttpError(400, 'REQUEST_HOST_INVALID', '请求域名无效');
+  return `${protocol}://${host}`;
+}
+
+function assertSameOriginMutation(request) {
+  const fetchSite = String(request.headers['sec-fetch-site'] || '').toLowerCase();
+  if (fetchSite === 'cross-site') throw new HttpError(403, 'CROSS_SITE_MUTATION_BLOCKED', '拒绝跨站修改请求');
+  const origin = String(request.headers.origin || '');
+  if (!origin) return;
+  try {
+    const parsed = new URL(origin);
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.host !== String(request.headers.host || '')) throw new Error('mismatch');
+  } catch {
+    throw new HttpError(403, 'MUTATION_ORIGIN_INVALID', '请求来源校验失败');
+  }
+}
+
+function sendStoredFile(request, response, file, { publicCache = false } = {}) {
+  const headers = {
+    'Content-Type': file.mimeType || 'application/octet-stream',
+    'Content-Length': file.size,
+    'Cache-Control': publicCache ? 'public, max-age=31536000, immutable' : 'private, no-store',
+    'X-Content-Type-Options': 'nosniff',
+  };
+  response.writeHead(200, headers);
+  if (request.method === 'HEAD') {
+    response.end();
+    return;
+  }
+  createReadStream(file.path).on('error', () => response.destroy()).pipe(response);
 }
 
 async function serveStatic(request, response, pathname) {

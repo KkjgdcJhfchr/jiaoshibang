@@ -12,6 +12,7 @@ import {
   NotFoundAppPage,
   PlansPage,
   QuotaPage,
+  ReferralPage,
   SettingsPage,
 } from './DashboardPages.jsx';
 import { LessonEditor } from './LessonEditor.jsx';
@@ -71,6 +72,7 @@ function TeacherRoutes({ path }) {
   if (path === '/app/materials') return <PlansPage path={path} materials />;
   if (path === '/app/membership') return <MembershipPage path={path} />;
   if (path === '/app/quota') return <QuotaPage path={path} />;
+  if (path === '/app/referrals') return <ReferralPage path={path} />;
   if (path === '/app/knowledge' || /\/app\/lesson\/[^/]+\/knowledge$/.test(path)) return <KnowledgeMapPage path={path} />;
   if (path === '/app/papers' || path.startsWith('/app/papers/')) return <PaperBuilderPage path={path} />;
   if (path === '/app/team') return <TeamWorkspacePage path={path} />;

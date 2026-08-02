@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ArrowRight,
@@ -9,6 +9,7 @@ import {
   CircleAlert,
   Clock3,
   FileCheck2,
+  Gift,
   ImageUp,
   Layers3,
   LoaderCircle,
@@ -120,6 +121,11 @@ function consumeAuthReturnTarget() {
   return /^\/app(?:\/|$)/.test(target) ? target : '/app';
 }
 
+function currentReferralCode() {
+  const value = new URLSearchParams(window.location.search).get('ref')?.trim() || '';
+  return /^[A-Za-z0-9_-]{2,64}$/.test(value) ? value : '';
+}
+
 function PublicHeader() {
   const [open, setOpen] = useState(false);
   return (
@@ -141,8 +147,126 @@ function PublicHeader() {
   );
 }
 
+function normalizedAds(value) {
+  const now = Date.now();
+  return (Array.isArray(value) ? value : [])
+    .map((ad, index) => ({
+      id: String(ad?.id || ad?.adId || `ad-${index}`),
+      imageUrl: String(ad?.imageUrl || ad?.image || ad?.src || '').trim(),
+      linkUrl: String(ad?.linkUrl || ad?.link || ad?.targetUrl || '').trim(),
+      altText: String(ad?.altText || ad?.title || ad?.name || '宣传图片').trim(),
+      title: String(ad?.title || '').trim(),
+      order: Number(ad?.order ?? ad?.sortOrder ?? index),
+      enabled: ad?.enabled !== false,
+      startsAt: ad?.startsAt || ad?.startAt || '',
+      endsAt: ad?.endsAt || ad?.endAt || '',
+    }))
+    .filter((ad) => {
+      if (!ad.enabled || !ad.imageUrl) return false;
+      const startsAt = ad.startsAt ? new Date(ad.startsAt).getTime() : 0;
+      const endsAt = ad.endsAt ? new Date(ad.endsAt).getTime() : 0;
+      return (!Number.isFinite(startsAt) || startsAt <= now) && (!Number.isFinite(endsAt) || endsAt >= now);
+    })
+    .sort((a, b) => a.order - b.order);
+}
+
+function safeAdTarget(value) {
+  if (!value) return null;
+  try {
+    const url = new URL(value, window.location.origin);
+    if (!['http:', 'https:'].includes(url.protocol)) return null;
+    return {
+      href: value.startsWith('/') && !value.startsWith('//') ? `${url.pathname}${url.search}${url.hash}` : url.href,
+      external: url.origin !== window.location.origin,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function HeroAdvertisingCarousel({ ads, siteName }) {
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [hovered, setHovered] = useState(false);
+  const [focusWithin, setFocusWithin] = useState(false);
+  const [pageHidden, setPageHidden] = useState(() => document.hidden);
+  const [reduceMotion, setReduceMotion] = useState(() => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches || false);
+
+  useEffect(() => {
+    setActiveIndex((current) => Math.min(current, Math.max(0, ads.length - 1)));
+  }, [ads.length]);
+
+  useEffect(() => {
+    const media = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+    const onVisibilityChange = () => setPageHidden(document.hidden);
+    const onMotionChange = (event) => setReduceMotion(event.matches);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    media?.addEventListener?.('change', onMotionChange);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      media?.removeEventListener?.('change', onMotionChange);
+    };
+  }, []);
+
+  const paused = hovered || focusWithin || pageHidden || reduceMotion;
+  useEffect(() => {
+    if (ads.length <= 1 || paused) return undefined;
+    const timer = window.setInterval(() => setActiveIndex((current) => (current + 1) % ads.length), 5_000);
+    return () => window.clearInterval(timer);
+  }, [ads.length, paused]);
+
+  function move(direction) {
+    setActiveIndex((current) => (current + direction + ads.length) % ads.length);
+  }
+
+  if (!ads.length) {
+    return (
+      <div className="hero-marketing hero-marketing-placeholder" aria-label={`${siteName}宣传展示区`}>
+        <span><BookMarked size={34} /></span>
+        <p>{siteName}</p>
+        <h2>让每一堂课，都从充分准备开始</h2>
+        <small>平台活动与教学资源将在这里发布</small>
+      </div>
+    );
+  }
+
+  return (
+    <section
+      className="hero-marketing"
+      role="region"
+      aria-roledescription="轮播图"
+      aria-label="平台宣传活动"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocusCapture={() => setFocusWithin(true)}
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setFocusWithin(false);
+      }}
+    >
+      <div className="hero-ad-slides">
+        {ads.map((ad, index) => {
+          const target = safeAdTarget(ad.linkUrl);
+          const image = <img src={ad.imageUrl} alt={ad.altText} loading={index === 0 ? 'eager' : 'lazy'} />;
+          return (
+            <article className={`hero-ad-slide ${index === activeIndex ? 'is-active' : ''}`} aria-hidden={index !== activeIndex} key={ad.id}>
+              {target ? <a href={target.href} target={target.external ? '_blank' : undefined} rel={target.external ? 'noopener noreferrer sponsored' : undefined} tabIndex={index === activeIndex ? 0 : -1} aria-label={`${ad.altText}${target.external ? '（在新窗口打开）' : ''}`}>{image}</a> : <div>{image}</div>}
+            </article>
+          );
+        })}
+      </div>
+      {ads.length > 1 ? <>
+        <button type="button" className="hero-ad-arrow previous" onClick={() => move(-1)} aria-label="上一张宣传图"><ArrowLeft size={19} /></button>
+        <button type="button" className="hero-ad-arrow next" onClick={() => move(1)} aria-label="下一张宣传图"><ArrowRight size={19} /></button>
+        <div className="hero-ad-dots" aria-label={`第 ${activeIndex + 1} 张，共 ${ads.length} 张`}>
+          {ads.map((ad, index) => <button type="button" key={ad.id} className={index === activeIndex ? 'is-active' : ''} aria-label={`查看第 ${index + 1} 张宣传图`} aria-current={index === activeIndex ? 'true' : undefined} onClick={() => setActiveIndex(index)} />)}
+        </div>
+      </> : null}
+    </section>
+  );
+}
+
 export function LandingPage() {
-  const { siteName } = useSiteConfig();
+  const { siteName, ads: configuredAds } = useSiteConfig();
+  const ads = useMemo(() => normalizedAds(configuredAds), [configuredAds]);
   return (
     <div className="public-page">
       <PublicHeader />
@@ -161,28 +285,7 @@ export function LandingPage() {
               <span><Check size={15} /> 支持 DOC / 打印 PDF</span>
             </div>
           </div>
-          <div className="hero-product" aria-label={`${siteName}教案生成界面预览`}>
-            <div className="hero-product-head"><span>七年级语文 ·《春》</span><span className="live-dot">正在生成</span></div>
-            <div className="hero-plan-layout">
-              <div className="hero-outline">
-                {['教学目标', '学情分析', '重点难点', '教学过程', '课堂互动', '习题与答案'].map((item, index) => (
-                  <span key={item} className={index === 3 ? 'active' : ''}><i>{index + 1}</i>{item}</span>
-                ))}
-              </div>
-              <div className="hero-document">
-                <small>教学过程 · 45 分钟</small>
-                <h3>从声音开始，遇见朱自清的春天</h3>
-                <p>“请先闭上眼睛，听十秒钟。你听到了什么？如果春天会走进教室……”</p>
-                <div className="mini-timeline"><span style={{ width: '13%' }}>导入</span><span style={{ width: '32%' }}>品读</span><span style={{ width: '26%' }}>互动</span><span style={{ width: '19%' }}>练习</span><span style={{ width: '10%' }}>总结</span></div>
-                <div className="mini-exercise"><b>课堂提问</b><p>两个“盼望着”能删掉一个吗？为什么？</p></div>
-              </div>
-              <div className="hero-ai">
-                <span><WandSparkles size={15} /> AI 助教</span>
-                <p>正在补充小组互动环节，并检查课堂时间分配…</p>
-                <div><i /><i /><i /></div>
-              </div>
-            </div>
-          </div>
+          <HeroAdvertisingCarousel ads={ads} siteName={siteName} />
         </section>
 
         <section className="proof-strip">
@@ -270,6 +373,7 @@ function AuthBrandPanel() {
 
 export function AuthPage({ mode = 'login' }) {
   const register = mode === 'register';
+  const [referralCode] = useState(() => register ? currentReferralCode() : '');
   const [method, setMethod] = useState(register ? 'code' : 'password');
   const [accepted, setAccepted] = useState(false);
   const [siteConfig, setSiteConfig] = useState({ registrationOpen: true, registrationVerificationRequired: true, privacyPolicy: FALLBACK_PRIVACY_POLICY });
@@ -367,6 +471,7 @@ export function AuthPage({ mode = 'login' }) {
           subject: form.subject,
           privacyAccepted: true,
           privacyPolicyUpdatedAt: siteConfig.privacyPolicy?.updatedAt || '',
+          ...(referralCode ? { referralCode } : {}),
           ...(codeMode ? { verificationCode: form.verificationCode.trim(), verificationId } : {}),
         });
       } else if (codeMode) {
@@ -390,6 +495,7 @@ export function AuthPage({ mode = 'login' }) {
           <div className="auth-mobile-logo"><Logo /></div>
           <h2>{register ? '创建教师账号' : '欢迎回来'}</h2>
           <p>{register ? '注册即送 3 次完整教案生成额度' : '登录后继续你的备课工作'}</p>
+          {register && referralCode ? <p className="referral-applied"><Gift size={15} /> 已应用好友邀请码 <b>{referralCode}</b></p> : null}
           {register ? <div className="auth-capability-note subtle"><CircleAlert size={17} /><p><b>{codeMode ? '手机号或邮箱验证注册' : '手机号或邮箱注册'}</b><span>{codeMode ? '先获取验证码，再设置登录密码；验证码只在短时间内有效且只能使用一次。' : '设置登录密码后即可创建账号。'}</span></p></div> : <div className="auth-method-tabs" role="tablist" aria-label="登录方式">
             <button type="button" role="tab" aria-selected={!codeMode} className={!codeMode ? 'active' : ''} onClick={() => { setMethod('password'); setError(''); setStatus(''); }}>密码登录</button>
             {VERIFICATION_AUTH_AVAILABLE ? <button type="button" role="tab" aria-selected={codeMode} className={codeMode ? 'active' : ''} onClick={() => { setMethod('code'); setError(''); setStatus(''); }}>验证码登录</button> : null}

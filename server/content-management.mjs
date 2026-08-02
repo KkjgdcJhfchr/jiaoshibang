@@ -303,10 +303,29 @@ export function createContentManagementStore({
     return { announcements, tutorial };
   }
 
+  function deleteUserProgress(userIds) {
+    if (!Array.isArray(userIds)) throw contentError(400, 'CONTENT_USER_IDS_INVALID', '用户编号必须是数组');
+    const ids = new Set(userIds.map(normalizeUserId));
+    if (!ids.size) return 0;
+    const previous = structuredClone(progressState);
+    const before = progressState.records.length;
+    progressState.records = progressState.records.filter((record) => !ids.has(record.userId));
+    const removed = before - progressState.records.length;
+    if (!removed) return 0;
+    progressState.updatedAt = isoNow(now);
+    try { writeState(progressFile, progressState); }
+    catch (error) {
+      replaceObject(progressState, previous);
+      throw error;
+    }
+    return removed;
+  }
+
   return {
     acknowledgeAnnouncement,
     addTutorialStep,
     createAnnouncement,
+    deleteUserProgress,
     deleteAnnouncement,
     deleteTutorialStep,
     getAnnouncement,
@@ -627,6 +646,11 @@ function writeState(filename, state) {
   const temporary = `${filename}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`;
   writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   renameSync(temporary, filename);
+}
+
+function replaceObject(target, source) {
+  for (const key of Object.keys(target)) delete target[key];
+  Object.assign(target, source);
 }
 
 function readJson(filename, label) {

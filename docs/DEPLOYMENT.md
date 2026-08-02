@@ -182,6 +182,7 @@ docker history --no-trunc jiaoshibang-app:verify
 ## 接口限制
 
 - 单次 JSON 请求默认最多 25MB。
-- 单张图片默认最多 8MB，单个 PDF 默认最多 16MB，单次最多 12 个文件。
-- 图片必须为 PNG、JPEG、WEBP 或 GIF 的 Base64 data URL；PDF 必须为 `data:application/pdf;base64,...`，服务端会按 Responses API 的 `input_file` 规范传递。
+- 教材按文件逐个暂存，文件数量不设硬上限；单张图片默认最多 8MB，单个 PDF 默认最多 16MB。
+- 每个账号默认最多暂存 256MB 教材，本次生成默认最多读取 64MB，暂存文件默认 24 小时后清理；这些阈值用于防止单个账号耗尽磁盘或模型上下文。
+- 图片必须为 PNG、JPEG、WEBP 或 GIF，PDF 必须带有效的 PDF 文件签名；服务端会校验声明类型与实际内容，并按 Responses API 的 `input_file` 规范传递。
 - 上游 AI 默认超时 180 秒；超时、限流、拒绝、结构错误均返回明确的非 2xx 错误。

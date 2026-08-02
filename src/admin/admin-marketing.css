@@ -1,0 +1,118 @@
+.admin-marketing-page { display: grid; gap: 16px; }
+.admin-marketing-page .admin-button { font-size: 14px; }
+.admin-marketing-heading { margin-bottom: 0; align-items: flex-start; }
+.admin-marketing-error { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid #efc8bd; border-radius: 10px; background: #fff7f4; color: #9c3e28; font-size: 14px; }
+.admin-marketing-error span { flex: 1; }
+.admin-marketing-error button { display: grid; place-items: center; border: 0; background: transparent; color: inherit; cursor: pointer; }
+.admin-marketing-tabs { width: fit-content; display: flex; gap: 4px; padding: 4px; border: 1px solid var(--admin-border); border-radius: 10px; background: #f3f6f4; }
+.admin-marketing-tabs button { min-height: 42px; padding: 0 16px; display: inline-flex; align-items: center; gap: 7px; border: 0; border-radius: 7px; background: transparent; color: #6d7973; font: inherit; font-size: 14px; font-weight: 650; cursor: pointer; }
+.admin-marketing-tabs button.active { background: #fff; color: var(--admin-jade-dark); box-shadow: 0 1px 4px rgba(22, 57, 45, .11); }
+.admin-marketing-ads { min-width: 0; overflow: hidden; }
+.admin-marketing-section-header { min-height: 76px; padding: 16px 18px; display: flex; align-items: center; justify-content: space-between; gap: 18px; border-bottom: 1px solid var(--admin-border); }
+.admin-marketing-section-header h2 { margin: 0; color: #2d3d34; font-size: 15px; }
+.admin-marketing-section-header p { margin: 5px 0 0; color: var(--admin-text-soft); font-size: 12px; line-height: 1.55; }
+.admin-marketing-ad-grid { min-height: 260px; padding: 16px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.admin-marketing-ad-card { min-width: 0; overflow: hidden; border: 1px solid #dce4df; border-radius: 11px; background: #fff; box-shadow: 0 5px 18px rgba(22, 49, 40, .04); transition: border-color .15s ease, box-shadow .15s ease, opacity .15s ease; }
+.admin-marketing-ad-card[draggable="true"] { cursor: grab; }
+.admin-marketing-ad-card[draggable="true"]:active { cursor: grabbing; }
+.admin-marketing-ad-card.is-dragging { opacity: .48; border-color: var(--admin-jade); box-shadow: 0 12px 28px rgba(20, 112, 80, .15); }
+.admin-marketing-ad-image { position: relative; aspect-ratio: 16 / 6; overflow: hidden; background: #eaf0ed; }
+.admin-marketing-ad-image img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.admin-marketing-ad-image > span { position: absolute; left: 10px; top: 10px; min-width: 26px; height: 26px; padding: 0 6px; display: grid; place-items: center; border-radius: 999px; background: rgba(19, 43, 35, .8); color: #fff; font-size: 12px; font-weight: 700; backdrop-filter: blur(5px); }
+.admin-marketing-ad-copy { padding: 14px 15px 13px; }
+.admin-marketing-ad-copy > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.admin-marketing-ad-copy b { min-width: 0; overflow: hidden; color: #2e3e35; font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
+.admin-marketing-ad-copy i { flex: 0 0 auto; padding: 3px 7px; border-radius: 999px; background: #f0f2f1; color: #7d8782; font-size: 12px; font-style: normal; }
+.admin-marketing-ad-copy i.enabled { background: #e8f4ed; color: #187653; }
+.admin-marketing-ad-copy p { min-height: 44px; margin: 9px 0; color: #6e7a74; font-size: 14px; line-height: 1.6; }
+.admin-marketing-ad-copy small { min-width: 0; display: flex; align-items: center; gap: 5px; overflow: hidden; color: #87918c; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.admin-marketing-ad-copy small svg { flex: 0 0 auto; }
+.admin-marketing-ad-card > footer { min-height: 48px; padding: 8px 10px 8px 14px; display: flex; align-items: center; justify-content: space-between; gap: 10px; border-top: 1px solid #edf0ee; background: #fafbfa; }
+.admin-marketing-drag-handle { display: inline-flex; align-items: center; gap: 3px; color: #7c8882; font-size: 12px; }
+.admin-marketing-ad-card > footer > div { display: flex; gap: 5px; }
+.admin-marketing-ad-card > footer button { width: 31px; height: 31px; display: grid; place-items: center; border: 1px solid #dce3df; border-radius: 7px; background: #fff; color: #526058; cursor: pointer; }
+.admin-marketing-ad-card > footer button:hover:not(:disabled) { border-color: #75ab94; color: var(--admin-jade-dark); }
+.admin-marketing-ad-card > footer button.danger { color: #b84f49; }
+.admin-marketing-ad-card > footer button:disabled { opacity: .4; cursor: not-allowed; }
+.admin-marketing-state, .admin-marketing-empty { grid-column: 1 / -1; min-height: 260px; display: grid; place-items: center; align-content: center; gap: 9px; color: #77837d; text-align: center; }
+.admin-marketing-state { display: flex; font-size: 14px; }
+.admin-marketing-empty svg { color: var(--admin-jade); }
+.admin-marketing-empty b { color: #44534b; font-size: 15px; }
+.admin-marketing-empty p { max-width: 420px; margin: 0 0 8px; font-size: 14px; line-height: 1.6; }
+.admin-marketing-referral { overflow: hidden; }
+.admin-marketing-referral-layout { padding: 18px; display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(280px, .55fr); gap: 18px; }
+.admin-marketing-referral fieldset { min-width: 0; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; border: 0; }
+.admin-marketing-referral label { min-width: 0; display: grid; gap: 7px; color: #46534d; font-size: 14px; font-weight: 650; }
+.admin-marketing-referral label.wide { grid-column: 1 / -1; }
+.admin-marketing-referral input, .admin-marketing-referral select, .admin-marketing-referral textarea { width: 100%; padding: 0 11px; border: 1px solid var(--admin-border-strong); border-radius: 7px; background: #fff; color: var(--admin-text); outline: none; font: inherit; font-size: 14px; font-weight: 400; box-sizing: border-box; }
+.admin-marketing-referral input, .admin-marketing-referral select { height: 44px; }
+.admin-marketing-referral textarea { min-height: 88px; padding-block: 10px; line-height: 1.65; resize: vertical; }
+.admin-marketing-referral input:focus, .admin-marketing-referral select:focus, .admin-marketing-referral textarea:focus { border-color: var(--admin-jade); box-shadow: 0 0 0 3px rgba(7, 143, 124, .1); }
+.admin-marketing-referral aside { padding: 22px; align-self: stretch; border: 1px solid #dce6e1; border-radius: 11px; background: linear-gradient(145deg, #f0f8f4, #fbfdfc); }
+.admin-marketing-referral aside > span { width: 45px; height: 45px; display: grid; place-items: center; border-radius: 12px; background: #dff0e7; color: #147552; }
+.admin-marketing-referral aside small { display: block; margin-top: 18px; color: #728078; font-size: 12px; }
+.admin-marketing-referral aside h3 { margin: 7px 0 8px; color: #263c32; font-size: 17px; line-height: 1.35; }
+.admin-marketing-referral aside p { min-height: 54px; margin: 0; color: #66746d; font-size: 14px; line-height: 1.7; }
+.admin-marketing-referral aside dl { margin: 17px 0 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.admin-marketing-referral aside dl div { padding: 10px; border-radius: 8px; background: rgba(255, 255, 255, .82); }
+.admin-marketing-referral aside dt { color: #7a8780; font-size: 12px; }
+.admin-marketing-referral aside dd { margin: 4px 0 0; color: #167654; font-size: 14px; font-weight: 750; }
+.admin-marketing-referral aside > i { display: inline-block; padding: 4px 8px; border-radius: 999px; background: #edf0ee; color: #7e8983; font-size: 12px; font-style: normal; }
+.admin-marketing-referral aside > i.enabled { background: #dff1e7; color: #137451; }
+.admin-marketing-referral > footer { min-height: 68px; padding: 13px 18px; display: flex; align-items: center; justify-content: space-between; gap: 18px; border-top: 1px solid var(--admin-border); background: #fafbfa; }
+.admin-marketing-referral > footer p { margin: 0; color: #77837d; font-size: 12px; }
+.admin-marketing-dialog-layer { position: fixed; z-index: 130; inset: 0; display: grid; place-items: center; padding: 20px; }
+.admin-marketing-dialog-backdrop { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: rgba(16, 30, 26, .54); backdrop-filter: blur(3px); }
+.admin-marketing-dialog { position: relative; width: min(720px, 100%); max-height: calc(100vh - 40px); overflow: auto; border: 1px solid rgba(255, 255, 255, .65); border-radius: 13px; background: #fff; box-shadow: 0 28px 80px rgba(8, 34, 28, .25); }
+.admin-marketing-dialog > header { min-height: 78px; padding: 17px 20px; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--admin-border); }
+.admin-marketing-dialog > header h2 { margin: 0; color: #26362e; font-size: 18px; }
+.admin-marketing-dialog > header p { margin: 5px 0 0; color: var(--admin-text-soft); font-size: 12px; }
+.admin-marketing-dialog > header > button { width: 34px; height: 34px; display: grid; place-items: center; border: 0; border-radius: 7px; background: transparent; color: #65716c; cursor: pointer; }
+.admin-marketing-dialog > header > button:hover { background: var(--admin-surface-soft); }
+.admin-marketing-dialog > form { padding: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+.admin-marketing-dialog form > label { display: grid; gap: 7px; color: #414d49; font-size: 14px; font-weight: 650; }
+.admin-marketing-dialog form > .wide { grid-column: 1 / -1; }
+.admin-marketing-dialog input { width: 100%; height: 44px; padding: 0 11px; border: 1px solid var(--admin-border-strong); border-radius: 7px; outline: 0; color: var(--admin-text); font: inherit; font-size: 14px; box-sizing: border-box; }
+.admin-marketing-dialog input:focus { border-color: var(--admin-jade); box-shadow: 0 0 0 3px rgba(7, 143, 124, .1); }
+.admin-marketing-dialog label small { color: var(--admin-text-soft); font-size: 12px; font-weight: 400; line-height: 1.5; }
+.admin-marketing-upload { padding: 13px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px 13px; border: 1px dashed #b8cbc1; border-radius: 10px; background: #f7faf8; }
+.admin-marketing-upload img, .admin-marketing-upload > span { grid-column: 1 / -1; width: 100%; aspect-ratio: 16 / 6; border-radius: 7px; background: #e8efeb; object-fit: cover; }
+.admin-marketing-upload > span { display: grid; place-items: center; align-content: center; gap: 7px; color: #6f7d76; }
+.admin-marketing-upload > span svg { color: var(--admin-jade); }
+.admin-marketing-upload > span b { font-size: 14px; }
+.admin-marketing-upload > small { color: #85908a; font-size: 12px; }
+.admin-marketing-dialog-switch { min-height: 64px; padding: 12px 14px; display: flex; align-items: center; justify-content: space-between; gap: 20px; border: 1px solid var(--admin-border); border-radius: 8px; background: #f8faf9; }
+.admin-marketing-dialog-switch b, .admin-marketing-dialog-switch span { display: block; }
+.admin-marketing-dialog-switch b { font-size: 14px; }
+.admin-marketing-dialog-switch span { margin-top: 4px; color: var(--admin-text-soft); font-size: 12px; }
+.admin-marketing-dialog-error { display: flex; align-items: flex-start; gap: 9px; padding: 11px 12px; border: 1px solid #efc8bd; border-radius: 8px; background: #fff7f4; color: #9c3e28; font-size: 14px; line-height: 1.55; text-align: left; }
+.admin-marketing-dialog-error svg { flex: 0 0 auto; margin-top: 2px; }
+.admin-marketing-dialog-error span { flex: 1; }
+.admin-marketing-dialog form > footer { display: flex; justify-content: flex-end; gap: 9px; padding-top: 3px; }
+.admin-marketing-confirm { width: min(440px, 100%); padding: 28px; text-align: center; }
+.admin-marketing-confirm > span { width: 50px; height: 50px; margin: 0 auto 15px; display: grid; place-items: center; border-radius: 50%; background: #fff0f1; color: var(--admin-danger); }
+.admin-marketing-confirm h2 { margin: 0; font-size: 19px; }
+.admin-marketing-confirm p { margin: 9px 0 23px; color: var(--admin-text-soft); font-size: 14px; line-height: 1.65; }
+.admin-marketing-confirm .admin-marketing-dialog-error { margin: -8px 0 20px; }
+.admin-marketing-confirm footer { display: flex; justify-content: center; gap: 9px; }
+.admin-marketing-danger-button { border: 1px solid var(--admin-danger); background: var(--admin-danger); color: #fff; }
+@media (max-width: 1050px) { .admin-marketing-referral-layout { grid-template-columns: 1fr; } }
+@media (max-width: 760px) {
+  .admin-marketing-heading .admin-button, .admin-marketing-section-header .admin-button { width: 100%; }
+  .admin-marketing-tabs { width: 100%; }
+  .admin-marketing-tabs button { flex: 1; justify-content: center; padding-inline: 8px; }
+  .admin-marketing-section-header { align-items: stretch; flex-direction: column; }
+  .admin-marketing-ad-grid { grid-template-columns: 1fr; padding: 12px; }
+  .admin-marketing-referral fieldset { grid-template-columns: 1fr; }
+  .admin-marketing-referral label.wide { grid-column: auto; }
+  .admin-marketing-referral > footer { align-items: stretch; flex-direction: column; }
+  .admin-marketing-dialog-layer { padding: 0; align-items: end; }
+  .admin-marketing-dialog { width: 100%; max-height: 94vh; border-radius: 14px 14px 0 0; }
+  .admin-marketing-dialog > form { grid-template-columns: 1fr; }
+  .admin-marketing-dialog form > .wide { grid-column: auto; }
+  .admin-marketing-upload { grid-template-columns: 1fr; }
+  .admin-marketing-upload img, .admin-marketing-upload > span { grid-column: auto; }
+  .admin-marketing-dialog form > footer, .admin-marketing-confirm footer { flex-direction: column-reverse; }
+  .admin-marketing-dialog form > footer .admin-button, .admin-marketing-confirm footer .admin-button { width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) { .admin-marketing-ad-card { transition: none; } }

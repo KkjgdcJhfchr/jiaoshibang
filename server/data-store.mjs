@@ -8,6 +8,16 @@ import {
 import { join } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 
+export class DataStoreError extends Error {
+  constructor(status, code, message, details = null) {
+    super(message);
+    this.name = 'DataStoreError';
+    this.status = status;
+    this.code = code;
+    this.details = details;
+  }
+}
+
 export function createDataStore(dataDir, { now = () => new Date() } = {}) {
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
 
@@ -23,6 +33,8 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
   const quotaReservations = new Map();
 
   assertArray(usersState.users, 'users.json');
+  if (usersState.referrals === undefined) usersState.referrals = [];
+  assertArray(usersState.referrals, 'users.json referrals');
   assertArray(channelsState.channels, 'model-channels.json');
   assertArray(candidatesState.candidates, 'training-candidates.json');
 
@@ -81,9 +93,13 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
     privacyPolicyUpdatedAt = null,
     verifiedAt = null,
     verifiedChannel = null,
+    referralCode = '',
+    referralSettings = null,
+    inviteeFingerprint = '',
   }) {
     if (findUserByAccountKey(accountKey)) return null;
-    const now = new Date().toISOString();
+    const timestamp = new Date().toISOString();
+    const nextState = structuredClone(usersState);
     const user = {
       id: `usr_${randomUUID()}`,
       account,
@@ -93,18 +109,29 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
       password,
       credits,
       generationCount: 0,
+      referralCode: createUniqueReferralCode(nextState.users),
       trainingConsent: Boolean(trainingConsent),
-      trainingConsentAt: trainingConsent ? now : null,
+      trainingConsentAt: trainingConsent ? timestamp : null,
       privacyAcceptedAt,
       privacyPolicyUpdatedAt,
       verifiedAt,
       verifiedChannel,
-      createdAt: now,
-      updatedAt: now,
+      createdAt: timestamp,
+      updatedAt: timestamp,
     };
-    usersState.users.push(user);
-    writeState(usersFile, usersState);
-    return user;
+    nextState.users.push(user);
+    if (verifiedAt && referralSettings?.enabled === true && String(referralCode || '').trim()) {
+      applyReferralToState(nextState, {
+        inviteeUserId: user.id,
+        referralCode,
+        settings: referralSettings,
+        inviteeFingerprint,
+        timestamp,
+      });
+    }
+    writeState(usersFile, nextState);
+    replaceObject(usersState, nextState);
+    return findUserById(user.id);
   }
 
   function ensureAdminTeacherUser({ account, accountKey, password, credits }) {
@@ -124,6 +151,7 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
         existing.displayName = account;
         existing.password = password;
         existing.role = 'admin_teacher';
+        existing.referralCode = existing.referralCode || createUniqueReferralCode(usersState.users);
         existing.verifiedAt = existing.verifiedAt || timestamp;
         existing.verifiedChannel = existing.verifiedChannel || 'admin_credentials';
         if (credentialsChanged) existing.passwordChangedAt = timestamp;
@@ -145,6 +173,7 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
       credits,
       generationCount: 0,
       role: 'admin_teacher',
+      referralCode: createUniqueReferralCode(usersState.users),
       trainingConsent: true,
       trainingConsentAt: timestamp,
       privacyAcceptedAt: timestamp,
@@ -247,6 +276,73 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
     user.updatedAt = timestamp.toISOString();
     writeState(usersFile, usersState);
     return user;
+  }
+
+  function getReferralOverview(userId, { maxRewardsPerUser = 0 } = {}) {
+    const user = findUserById(userId);
+    if (!user) throw new DataStoreError(404, 'USER_NOT_FOUND', '用户不存在');
+    if (!user.referralCode) {
+      const previous = structuredClone(user);
+      user.referralCode = createUniqueReferralCode(usersState.users);
+      user.updatedAt = new Date().toISOString();
+      try { writeState(usersFile, usersState); }
+      catch (error) {
+        replaceObject(user, previous);
+        throw error;
+      }
+    }
+    const invited = usersState.referrals
+      .filter((record) => record.inviterUserId === userId)
+      .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)));
+    const rewarded = invited.filter((record) => record.status === 'rewarded');
+    const creditsEarned = rewarded.reduce((sum, record) => sum + nonNegativeNumber(record.inviterRewardCredits), 0);
+    const maximum = Math.max(0, Number(maxRewardsPerUser) || 0);
+    return {
+      code: user.referralCode,
+      stats: {
+        invitedCount: invited.length,
+        rewardedCount: rewarded.length,
+        creditsEarned,
+        remainingRewards: maximum ? Math.max(0, maximum - rewarded.length) : null,
+      },
+      records: invited.slice(0, 100).map((record) => {
+        const invitee = findUserById(record.inviteeUserId);
+        return {
+          id: record.id,
+          invitee: invitee ? maskAccount(invitee.account) : '已删除账号',
+          status: record.status,
+          rewardCredits: nonNegativeNumber(record.inviterRewardCredits),
+          createdAt: record.createdAt,
+        };
+      }),
+    };
+  }
+
+  function validateUsersForDeletion(userIds) {
+    const ids = normalizeDeletionUserIds(userIds);
+    const users = ids.map((id) => {
+      const user = findUserById(id);
+      if (!user) throw new DataStoreError(404, 'USER_NOT_FOUND', '部分用户不存在', { userId: id });
+      if (isAdminTeacherBridge(user)) {
+        throw new DataStoreError(403, 'ADMIN_TEACHER_DELETE_FORBIDDEN', '管理员教师账号不能删除', { userId: id });
+      }
+      if ((quotaReservations.get(id) || 0) > 0) {
+        throw new DataStoreError(409, 'USER_GENERATION_IN_PROGRESS', '用户正在生成教案，暂时不能删除', { userId: id });
+      }
+      return user;
+    });
+    return users.map(toAdminUserListItem);
+  }
+
+  function deleteUsers(userIds) {
+    const checked = validateUsersForDeletion(userIds);
+    const ids = new Set(checked.map((user) => user.id));
+    const nextState = structuredClone(usersState);
+    nextState.users = nextState.users.filter((user) => !ids.has(user.id));
+    writeState(usersFile, nextState);
+    replaceObject(usersState, nextState);
+    for (const id of ids) quotaReservations.delete(id);
+    return checked;
   }
 
   function grantMembershipPurchase({ orderId, userId, planId, entitlement, paidAt }) {
@@ -475,10 +571,15 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
   }
 
   function revokeTrainingCandidates(ownerRef) {
+    return revokeTrainingCandidatesByOwnerRefs([ownerRef]);
+  }
+
+  function revokeTrainingCandidatesByOwnerRefs(ownerRefs) {
+    const normalizedOwnerRefs = new Set((Array.isArray(ownerRefs) ? ownerRefs : []).map((value) => String(value || '').trim()).filter(Boolean));
     const now = new Date().toISOString();
     let count = 0;
     for (const candidate of candidatesState.candidates) {
-      if (candidate.ownerRef !== ownerRef || candidate.reviewStatus === 'revoked') continue;
+      if (!normalizedOwnerRefs.has(candidate.ownerRef) || candidate.reviewStatus === 'revoked') continue;
       candidate.reviewStatus = 'revoked';
       candidate.sample.candidateStatus = 'revoked';
       candidate.sample.authorization.trainingAllowed = false;
@@ -497,11 +598,13 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
     addTrainingCandidate,
     canMigrateAdminTeacherUser,
     commitGeneration,
+    deleteUsers,
     findChannel,
     findUserByAccountKey,
     findUserById,
     ensureAdminTeacherUser,
     grantMembershipPurchase,
+    getReferralOverview,
     initializeAdmin,
     listChannels,
     listUsersForAdmin,
@@ -515,12 +618,14 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
     releaseGeneration,
     reserveGeneration,
     revokeTrainingCandidates,
+    revokeTrainingCandidatesByOwnerRefs,
     saveSmtpConfig,
     trainingSummary,
     touchUserActivity,
     updateChannel,
     updateAdmin,
     updateUserPassword,
+    validateUsersForDeletion,
   };
 }
 
@@ -550,7 +655,113 @@ function toAdminUserListItem(user) {
     onlineSeconds: nonNegativeNumber(user?.onlineSeconds),
     createdAt: user?.createdAt || null,
     updatedAt: user?.updatedAt || null,
+    deletable: !isAdminTeacherBridge(user),
   };
+}
+
+function applyReferralToState(state, {
+  inviteeUserId,
+  referralCode,
+  settings,
+  inviteeFingerprint,
+  timestamp,
+}) {
+  const code = String(referralCode || '').trim().toUpperCase();
+  if (!/^[A-Z0-9]{8,24}$/.test(code)) {
+    throw new DataStoreError(422, 'REFERRAL_CODE_INVALID', '邀请码格式无效');
+  }
+  const invitee = state.users.find((user) => user.id === inviteeUserId);
+  const inviter = state.users.find((user) => String(user.referralCode || '').toUpperCase() === code);
+  if (!invitee || !inviter || inviter.id === invitee.id) {
+    throw new DataStoreError(422, 'REFERRAL_CODE_INVALID', '邀请码无效');
+  }
+  const fingerprint = String(inviteeFingerprint || '').trim();
+  const duplicate = fingerprint && state.referrals.some((record) => record.inviteeFingerprint === fingerprint);
+  const rewardedCount = state.referrals.filter((record) => (
+    record.inviterUserId === inviter.id && record.status === 'rewarded'
+  )).length;
+  const maxRewards = Number(settings.maxRewardsPerUser);
+  const atLimit = Number.isSafeInteger(maxRewards) && rewardedCount >= maxRewards;
+  const rewardMode = ['both', 'inviter_only', 'invitee_only'].includes(settings.rewardMode)
+    ? settings.rewardMode
+    : 'both';
+  const inviterReward = !duplicate && !atLimit && ['both', 'inviter_only'].includes(rewardMode)
+    ? boundedCredit(settings.inviterRewardCredits)
+    : 0;
+  const inviteeReward = !duplicate && !atLimit && ['both', 'invitee_only'].includes(rewardMode)
+    ? boundedCredit(settings.inviteeRewardCredits)
+    : 0;
+  const record = {
+    id: `ref_${randomUUID()}`,
+    inviterUserId: inviter.id,
+    inviteeUserId: invitee.id,
+    inviteeFingerprint: fingerprint,
+    referralCode: code,
+    status: duplicate ? 'duplicate' : atLimit ? 'limit_reached' : 'rewarded',
+    inviterRewardCredits: inviterReward,
+    inviteeRewardCredits: inviteeReward,
+    createdAt: timestamp,
+  };
+  if (record.status === 'rewarded') {
+    grantReferralCredits(inviter, inviterReward, 'referral_inviter', record.id, timestamp);
+    grantReferralCredits(invitee, inviteeReward, 'referral_invitee', record.id, timestamp);
+  }
+  state.referrals.push(record);
+}
+
+function grantReferralCredits(user, amount, type, referenceId, timestamp) {
+  if (!amount) return;
+  const ledger = Array.isArray(user.creditLedger) ? user.creditLedger : [];
+  if (ledger.some((entry) => entry.type === type && entry.referenceId === referenceId)) return;
+  user.credits = nonNegativeNumber(user.credits) + amount;
+  user.creditLedger = [...ledger, {
+    id: `credit_${randomUUID()}`,
+    type,
+    amount,
+    balanceAfter: user.credits,
+    referenceId,
+    createdAt: timestamp,
+  }];
+  user.updatedAt = timestamp;
+}
+
+function boundedCredit(value) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number >= 0 && number <= 100_000 ? number : 0;
+}
+
+function createUniqueReferralCode(users) {
+  const existing = new Set(users.map((user) => String(user.referralCode || '').toUpperCase()).filter(Boolean));
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const code = `BKX${randomBytes(5).toString('hex').toUpperCase()}`;
+    if (!existing.has(code)) return code;
+  }
+  throw new Error('无法生成唯一邀请码');
+}
+
+function normalizeDeletionUserIds(value) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 100) {
+    throw new DataStoreError(400, 'USER_IDS_INVALID', '用户编号必须是包含 1-100 项的数组');
+  }
+  const ids = value.map((item) => String(item || '').trim());
+  if (ids.some((id) => !/^usr_[0-9a-f-]{36}$/i.test(id))) {
+    throw new DataStoreError(400, 'USER_ID_INVALID', '用户编号无效');
+  }
+  if (new Set(ids).size !== ids.length) {
+    throw new DataStoreError(422, 'USER_IDS_DUPLICATED', '批量删除不能包含重复用户');
+  }
+  return ids;
+}
+
+function maskAccount(value) {
+  const account = String(value || '');
+  const at = account.indexOf('@');
+  if (at > 0) {
+    const name = account.slice(0, at);
+    return `${name.slice(0, Math.min(2, name.length))}${'*'.repeat(Math.max(2, Math.min(6, name.length - 2)))}${account.slice(at)}`;
+  }
+  if (/^1\d{10}$/.test(account)) return `${account.slice(0, 3)}****${account.slice(-4)}`;
+  return account.length <= 4 ? `${account.slice(0, 1)}***` : `${account.slice(0, 2)}***${account.slice(-2)}`;
 }
 
 function nonNegativeNumber(value) {
