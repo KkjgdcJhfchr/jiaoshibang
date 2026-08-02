@@ -13,28 +13,35 @@
 
 ## Linux 一键安装
 
-截图中命令没有开始安装，是因为新服务器没有 `gh`，命令在克隆私有仓库之前就已退出。全新 Ubuntu/Debian 先执行：
+截图中的 `apt` 已正常完成，并明确提示没有服务需要重启；项目安装脚本也没有执行重启服务器、SSH 或网络的命令。因此截图里的“连接断开”更可能来自云厂商网页终端、WebSocket、客户端网络或会话超时，仅凭截图不能进一步确定。由于前台 shell 断开，原命令后续的拉取和正式安装大概率没有执行。
+
+仓库公开测试期间，全新 Ubuntu/Debian 使用 `root` 一次性粘贴下面整条命令。引导器先下载到 root 专属目录再执行，随后匿名拉取公开仓库；全程不安装 GitHub CLI、不要求登录，也没有一次性验证码：
 
 ```bash
-apt-get update
-apt-get install -y git gh
-gh auth login --hostname github.com --git-protocol https --web
-gh auth setup-git
-gh repo clone KkjgdcJhfchr/jiaoshibang jiaoshibang
-cd jiaoshibang
+apt-get -o Acquire::Retries=3 update \
+  && DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -o Acquire::Retries=3 install -y ca-certificates curl tmux \
+  && install -d -m 0700 /root/.cache/jiaoshibang \
+  && curl --proto '=https' --tlsv1.2 -fL --retry 5 --retry-all-errors -o /root/.cache/jiaoshibang/bootstrap.sh https://raw.githubusercontent.com/KkjgdcJhfchr/jiaoshibang/main/scripts/bootstrap.sh \
+  && chmod 0700 /root/.cache/jiaoshibang/bootstrap.sh \
+  && JIAOSHIBANG_DIR=/opt/jiaoshibang /root/.cache/jiaoshibang/bootstrap.sh
 ```
 
-设备登录完成后再运行项目安装器：
+引导器先检查已有安装会话，再把公开仓库拉取、源码快进更新和正式安装全部放入 `jiaoshibang-install` 持久会话。SSH 或网页终端断开后，任务仍在服务器运行；安装仍在进行时重跑一键命令会直接接回原会话，已结束时重跑会记录上次退出码、清理结果会话并开始更新或重试。重新登录后也可执行：
 
 ```bash
-chmod +x scripts/install.sh
-sudo ./scripts/install.sh
+tmux attach -t jiaoshibang-install
 ```
 
-脚本只询问域名、管理员账号和管理员密码，并生成一个由 40 位大小写字母、数字、`-`、`_` 组成的随机管理入口。若 Debian/Ubuntu 尚未安装 Docker，脚本会尝试自动安装。非交互安装必须通过权限受控的密码文件，避免密码出现在 shell 历史中：
+如果连接在看到“公开仓库拉取和正式安装已进入持久会话”之前断开，说明首次 `tmux` 准备尚未完成；重新登录后原样重跑上面的整条命令即可。首次克隆会先写入同磁盘临时目录，成功后再切换为 `/opt/jiaoshibang`，不会把半成品当作完整仓库。引导器也会拒绝覆盖非空的非项目目录、本地代码修改、额外提交或来源不匹配的 Git 仓库。
+
+安装输出同时保存在 `/var/log/jiaoshibang/install.log`，日志目录为 `0700`、文件为 `0600`。该日志可能包含随机管理员入口，必须像密码一样私密保存。`tmux` 只能防终端连接断开，不能跨服务器重启续跑；服务器重启后重跑入口命令即可。服务器上已经安装的 `gh` 无需卸载，但教师帮不再调用它。若以后将仓库重新设为私有，匿名拉取将失效，需要另行配置范围最小的只读部署凭据。
+
+首次部署时，脚本只询问域名、管理员账号和管理员密码，并生成一个由 40 位大小写字母、数字、`-`、`_` 组成的随机管理入口。重复部署检测到已有管理员后会保留原账号、密码和验证设置；只有明确传入 `--reset-admin` 才允许重置。若 Debian/Ubuntu 尚未安装 Docker，脚本会尝试自动安装。非交互安装必须通过当前执行用户拥有、非符号链接且组用户/其他用户不可读的密码文件，避免密码出现在 shell 历史中：
 
 ```bash
-sudo ./scripts/install.sh \
+chmod 600 /root/jiaoshibang-admin-password
+cd /opt/jiaoshibang
+./scripts/install.sh \
   --domain teacher.example.com \
   --admin admin \
   --password-file /root/jiaoshibang-admin-password

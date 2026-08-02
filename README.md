@@ -40,29 +40,26 @@ pnpm run test:integration
 
 ## 生产部署
 
-Linux 服务器推荐执行：
+仓库公开测试期间，全新的 Ubuntu/Debian 服务器使用 `root` 一次性粘贴下面整条命令。它先把公开引导器下载到 root 专属目录再执行，通过公开 HTTPS 地址匿名拉取，不安装 GitHub CLI、不要求登录，也不会显示一次性验证码：
 
 ```bash
-chmod +x scripts/install.sh
-sudo ./scripts/install.sh
+apt-get -o Acquire::Retries=3 update \
+  && DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -o Acquire::Retries=3 install -y ca-certificates curl tmux \
+  && install -d -m 0700 /root/.cache/jiaoshibang \
+  && curl --proto '=https' --tlsv1.2 -fL --retry 5 --retry-all-errors -o /root/.cache/jiaoshibang/bootstrap.sh https://raw.githubusercontent.com/KkjgdcJhfchr/jiaoshibang/main/scripts/bootstrap.sh \
+  && chmod 0700 /root/.cache/jiaoshibang/bootstrap.sh \
+  && JIAOSHIBANG_DIR=/opt/jiaoshibang /root/.cache/jiaoshibang/bootstrap.sh
 ```
 
-全新的 Ubuntu 服务器在获取私有 GitHub 仓库前，先安装并登录 GitHub CLI：
+公开仓库拉取、Docker 安装、镜像构建和部署都会进入名为 `jiaoshibang-install` 的 `tmux` 持久会话。SSH 或网页终端断开不会终止这些任务；安装仍在运行时重复执行一键命令会直接接回原会话，已结束时则按上次退出码清理结果会话并开始更新/重试。重新登录服务器后可执行：
 
 ```bash
-apt-get update
-apt-get install -y git gh
-gh auth login --hostname github.com --git-protocol https --web
-gh auth setup-git
-gh repo clone KkjgdcJhfchr/jiaoshibang jiaoshibang
-cd jiaoshibang
-chmod +x scripts/install.sh
-./scripts/install.sh
+tmux attach -t jiaoshibang-install
 ```
 
-`gh auth login` 会显示一次性验证码，需要按提示在浏览器确认；私有仓库无法在没有 GitHub 授权的情况下直接克隆。不要把 Personal Access Token 写入命令或仓库地址。
+如果连接在看到“公开仓库拉取和正式安装已进入持久会话”之前断开，重新登录后原样重跑上面的整条命令即可。`tmux` 能防终端断线，不能跨服务器重启续跑；服务器重启后同样重跑入口命令。私密日志保存在 `/var/log/jiaoshibang/install.log`，其中包含部署结果和随机管理员入口，文件权限仅允许 `root` 读取。已安装在服务器上的 `gh` 可以保留，但本项目不再调用它。将仓库重新改为私有后，匿名拉取会失效，届时必须另行设计安全的只读部署凭据。
 
-安装程序交互式收集域名、管理员账号和管理员密码，并启动应用与 Caddy。Cloudflare 首次签发证书时需将记录暂设为 **DNS only**；签发成功后可切回代理并使用 **Full (strict)**。
+安装程序首次部署时交互式收集域名、管理员账号和管理员密码，并启动应用与 Caddy。重复部署默认保留已有管理员账号、密码与验证设置，不会因断线重试而重置；只有手动执行底层安装器并明确传入 `--reset-admin` 才会重新初始化管理员。Cloudflare 首次签发证书时需将记录暂设为 **DNS only**；签发成功后可切回代理并使用 **Full (strict)**。
 
 完整步骤见 [部署说明](docs/DEPLOYMENT.md)，安全/通信/支付边界见 [接入说明](docs/SECURITY-COMMUNICATION-PAYMENTS.md)，训练与蒸馏路线见 [AI 数据闭环设计](docs/AI-TRAINING-PIPELINE.md)，立项书与当前版本的取舍见 [立项书需求对齐说明](docs/WORD-REQUIREMENTS-ALIGNMENT.md)。
 

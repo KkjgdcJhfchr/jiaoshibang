@@ -7,12 +7,15 @@ DOMAIN="${DOMAIN:-}"
 ADMIN_USERNAME="${ADMIN_USERNAME:-}"
 ADMIN_PASSWORD_FILE="${ADMIN_PASSWORD_FILE:-}"
 ADMIN_PASSWORD=""
+RESET_ADMIN=false
+trap 'unset ADMIN_PASSWORD' EXIT
 
 usage() {
   cat <<'USAGE'
-用法：sudo ./scripts/install.sh [--domain teacher.example.com] [--admin admin] [--password-file /安全路径/password]
+用法：sudo ./scripts/install.sh [--domain teacher.example.com] [--admin admin] [--password-file /安全路径/password] [--reset-admin]
 
-未提供的域名、管理员账号和密码会以交互方式询问。密码不会写入环境文件或命令历史。
+首次安装时，未提供的管理员账号和密码会以交互方式询问。密码不会写入环境文件或命令历史。
+重复部署会保留已有管理员；只有明确传入 --reset-admin 才会重新初始化管理员账号和密码。
 USAGE
 }
 
@@ -21,6 +24,7 @@ while (($#)); do
     --domain) DOMAIN="${2:-}"; shift 2 ;;
     --admin) ADMIN_USERNAME="${2:-}"; shift 2 ;;
     --password-file) ADMIN_PASSWORD_FILE="${2:-}"; shift 2 ;;
+    --reset-admin) RESET_ADMIN=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "未知参数：$1" >&2; usage >&2; exit 2 ;;
   esac
@@ -29,22 +33,6 @@ done
 if [[ -z "$DOMAIN" ]]; then
   read -r -p "域名（已解析到本机，例如 teacher.example.com）：" DOMAIN
 fi
-if [[ -z "$ADMIN_USERNAME" ]]; then
-  read -r -p "管理员账号：" ADMIN_USERNAME
-fi
-
-if [[ -n "$ADMIN_PASSWORD_FILE" ]]; then
-  [[ -f "$ADMIN_PASSWORD_FILE" ]] || { echo "密码文件不存在" >&2; exit 2; }
-  IFS= read -r ADMIN_PASSWORD < "$ADMIN_PASSWORD_FILE" || true
-elif [[ -t 0 ]]; then
-  read -r -s -p "管理员密码（至少 12 个字符）：" ADMIN_PASSWORD
-  echo
-else
-  echo "非交互安装请使用 --password-file，禁止通过命令行参数传递密码。" >&2
-  exit 2
-fi
-trap 'unset ADMIN_PASSWORD' EXIT
-
 DOMAIN="${DOMAIN#http://}"
 DOMAIN="${DOMAIN#https://}"
 DOMAIN="${DOMAIN%/}"
@@ -52,14 +40,38 @@ if [[ ! "$DOMAIN" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || [[ "$DOMAIN
   echo "域名格式无效，请只输入域名，不要包含路径或端口。" >&2
   exit 2
 fi
-if ((${#ADMIN_USERNAME} < 3 || ${#ADMIN_USERNAME} > 100)); then
-  echo "管理员账号长度必须为 3-100 个字符。" >&2
-  exit 2
-fi
-if ((${#ADMIN_PASSWORD} < 12)); then
-  echo "管理员密码至少需要 12 个字符。" >&2
-  exit 2
-fi
+
+collect_admin_credentials() {
+  if [[ -z "$ADMIN_USERNAME" ]]; then
+    read -r -p "管理员账号：" ADMIN_USERNAME
+  fi
+  if ((${#ADMIN_USERNAME} < 3 || ${#ADMIN_USERNAME} > 100)); then
+    echo "管理员账号长度必须为 3-100 个字符。" >&2
+    exit 2
+  fi
+
+  if [[ -n "$ADMIN_PASSWORD_FILE" ]]; then
+    [[ ! -L "$ADMIN_PASSWORD_FILE" ]] || { echo "密码文件不能是符号链接" >&2; exit 2; }
+    [[ -f "$ADMIN_PASSWORD_FILE" ]] || { echo "密码文件不存在" >&2; exit 2; }
+    local file_owner file_mode file_permissions
+    file_owner="$(stat -c '%u' "$ADMIN_PASSWORD_FILE")"
+    file_mode="$(stat -c '%a' "$ADMIN_PASSWORD_FILE")"
+    file_permissions=$((8#$file_mode))
+    [[ "$file_owner" == "$(id -u)" ]] || { echo "密码文件必须由当前执行用户拥有" >&2; exit 2; }
+    (( (file_permissions & 077) == 0 )) || { echo "密码文件不能允许组用户或其他用户读取，请设置为 chmod 600" >&2; exit 2; }
+    IFS= read -r ADMIN_PASSWORD < "$ADMIN_PASSWORD_FILE" || true
+  elif [[ -t 0 ]]; then
+    read -r -s -p "管理员密码（至少 12 个字符）：" ADMIN_PASSWORD
+    echo
+  else
+    echo "非交互安装请使用 --password-file，禁止通过命令行参数传递密码。" >&2
+    exit 2
+  fi
+  if ((${#ADMIN_PASSWORD} < 12)); then
+    echo "管理员密码至少需要 12 个字符。" >&2
+    exit 2
+  fi
+}
 
 ELEVATE=()
 if [[ "$(id -u)" -ne 0 ]]; then
@@ -211,8 +223,31 @@ compose() {
 echo "正在构建应用镜像..."
 compose build app
 
-echo "正在安全初始化管理员..."
-printf '%s\n' "$ADMIN_PASSWORD" | compose run --rm -T -e "ADMIN_USERNAME=$ADMIN_USERNAME" app node server/index.mjs --bootstrap-admin
+admin_check_status=0
+compose run --rm -T app node --input-type=module -e \
+  "import { existsSync } from 'node:fs'; process.exit(existsSync('/app/data/admin.json') ? 0 : 42)" \
+  || admin_check_status=$?
+
+case "$admin_check_status" in
+  0)
+    if [[ "$RESET_ADMIN" == true ]]; then
+      collect_admin_credentials
+      echo "正在按明确请求重置管理员..."
+      printf '%s\n' "$ADMIN_PASSWORD" | compose run --rm -T -e "ADMIN_USERNAME=$ADMIN_USERNAME" app node server/index.mjs --bootstrap-admin
+    else
+      echo "检测到已有管理员，保留原账号、密码和验证设置。"
+    fi
+    ;;
+  42)
+    collect_admin_credentials
+    echo "正在安全初始化管理员..."
+    printf '%s\n' "$ADMIN_PASSWORD" | compose run --rm -T -e "ADMIN_USERNAME=$ADMIN_USERNAME" app node server/index.mjs --bootstrap-admin
+    ;;
+  *)
+    echo "无法检查管理员初始化状态，Docker 返回状态码：$admin_check_status" >&2
+    exit "$admin_check_status"
+    ;;
+esac
 unset ADMIN_PASSWORD
 
 echo "正在启动服务..."
