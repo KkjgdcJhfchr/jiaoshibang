@@ -154,8 +154,7 @@ function normalizedAds(value) {
       id: String(ad?.id || ad?.adId || `ad-${index}`),
       imageUrl: String(ad?.imageUrl || ad?.image || ad?.src || '').trim(),
       linkUrl: String(ad?.linkUrl || ad?.link || ad?.targetUrl || '').trim(),
-      altText: String(ad?.altText || ad?.title || ad?.name || '宣传图片').trim(),
-      title: String(ad?.title || '').trim(),
+      altText: String(ad?.altText || '').trim(),
       order: Number(ad?.order ?? ad?.sortOrder ?? index),
       enabled: ad?.enabled !== false,
       startsAt: ad?.startsAt || ad?.startAt || '',
@@ -245,10 +244,11 @@ function HeroAdvertisingCarousel({ ads, siteName }) {
       <div className="hero-ad-slides">
         {ads.map((ad, index) => {
           const target = safeAdTarget(ad.linkUrl);
-          const image = <img src={ad.imageUrl} alt={ad.altText} loading={index === 0 ? 'eager' : 'lazy'} />;
+          const imageAlt = ad.altText || `${siteName}宣传图片 ${index + 1}`;
+          const image = <img src={ad.imageUrl} alt={imageAlt} loading={index === 0 ? 'eager' : 'lazy'} />;
           return (
             <article className={`hero-ad-slide ${index === activeIndex ? 'is-active' : ''}`} aria-hidden={index !== activeIndex} key={ad.id}>
-              {target ? <a href={target.href} target={target.external ? '_blank' : undefined} rel={target.external ? 'noopener noreferrer sponsored' : undefined} tabIndex={index === activeIndex ? 0 : -1} aria-label={`${ad.altText}${target.external ? '（在新窗口打开）' : ''}`}>{image}</a> : <div>{image}</div>}
+              {target ? <a href={target.href} target={target.external ? '_blank' : undefined} rel={target.external ? 'noopener noreferrer sponsored' : undefined} tabIndex={index === activeIndex ? 0 : -1} aria-label={`${imageAlt}${target.external ? '（在新窗口打开）' : ''}`}>{image}</a> : <div>{image}</div>}
             </article>
           );
         })}
@@ -265,8 +265,22 @@ function HeroAdvertisingCarousel({ ads, siteName }) {
 }
 
 export function LandingPage() {
-  const { siteName, ads: configuredAds } = useSiteConfig();
+  const { siteName, ads: configuredAds, refreshSiteConfig } = useSiteConfig();
   const ads = useMemo(() => normalizedAds(configuredAds), [configuredAds]);
+
+  useEffect(() => {
+    const refresh = () => { refreshSiteConfig().catch(() => {}); };
+    const refreshWhenVisible = () => { if (!document.hidden) refresh(); };
+    window.addEventListener('focus', refresh);
+    window.addEventListener('pageshow', refresh);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      window.removeEventListener('pageshow', refresh);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+    };
+  }, [refreshSiteConfig]);
+
   return (
     <div className="public-page">
       <PublicHeader />

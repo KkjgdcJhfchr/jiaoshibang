@@ -17,25 +17,25 @@ test('广告图片安全落盘、排序、替换和推广设置持久化', () =>
     const store = createMarketingStore({ dataDir });
     assert.deepEqual(store.listPublicAds(), []);
     const first = store.createAd({
-      title: '暑期活动',
-      altText: '暑期备课活动',
       linkUrl: '/app/membership',
       imageDataUrl: PNG_DATA_URL,
-      enabled: true,
     }, 'owner');
     const second = store.createAd({
-      title: '教师成长计划',
-      altText: '教师成长计划',
       linkUrl: 'https://example.com/activity',
       imageDataUrl: GIF_DATA_URL,
-      enabled: true,
+      enabled: false,
     }, 'owner');
-    assert.equal(store.listPublicAds().length, 2);
+    const publicAds = store.listPublicAds();
+    assert.equal(publicAds.length, 2, '广告保存后应立即展示，旧的 enabled 输入不再控制展示');
+    assert.deepEqual(Object.keys(publicAds[0]).sort(), ['id', 'imageUrl', 'linkUrl']);
+    assert.equal('title' in first, false);
+    assert.equal('altText' in first, false);
+    assert.equal('enabled' in first, false);
     assert.equal(store.openAsset(first.imageUrl.split('/').at(-1)).mimeType, 'image/png');
     const assetDirectory = join(dataDir, 'marketing-assets');
     const assetCountBeforeRejectedAd = readdirSync(assetDirectory).length;
     assert.throws(
-      () => store.createAd({ title: '不安全外链', altText: '不安全外链', linkUrl: 'http://example.com/activity', imageDataUrl: PNG_DATA_URL }),
+      () => store.createAd({ linkUrl: 'http://example.com/activity', imageDataUrl: PNG_DATA_URL }),
       (error) => error.code === 'ADVERTISEMENT_LINK_INVALID',
     );
     assert.equal(
@@ -44,15 +44,15 @@ test('广告图片安全落盘、排序、替换和推广设置持久化', () =>
       '广告字段校验失败后不得遗留孤儿图片',
     );
     assert.throws(
-      () => store.createAd({ title: '危险链接', altText: '危险链接', linkUrl: 'javascript:alert(1)', imageDataUrl: PNG_DATA_URL }),
+      () => store.createAd({ linkUrl: 'javascript:alert(1)', imageDataUrl: PNG_DATA_URL }),
       (error) => error.code === 'ADVERTISEMENT_LINK_INVALID',
     );
     assert.throws(
-      () => store.createAd({ title: '伪装图片', altText: '伪装图片', imageDataUrl: `data:image/png;base64,${Buffer.from('<html>').toString('base64')}` }),
+      () => store.createAd({ imageDataUrl: `data:image/png;base64,${Buffer.from('<html>').toString('base64')}` }),
       (error) => error.code === 'ADVERTISEMENT_IMAGE_CONTENT_INVALID',
     );
     const previousAsset = store.openAsset(first.imageUrl.split('/').at(-1)).path;
-    const updated = store.updateAd(first.id, { imageDataUrl: GIF_DATA_URL, title: '更新后的活动' }, 'owner');
+    const updated = store.updateAd(first.id, { imageDataUrl: GIF_DATA_URL }, 'owner');
     assert.equal(existsSync(previousAsset), false, '换图后旧文件必须删除');
     assert.equal(store.openAsset(updated.imageUrl.split('/').at(-1)).mimeType, 'image/gif');
     const reordered = store.reorderAds([second.id, first.id], 'owner');

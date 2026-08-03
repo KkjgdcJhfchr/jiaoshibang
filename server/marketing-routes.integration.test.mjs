@@ -12,6 +12,9 @@ const PNG_DATA_URL = `data:image/png;base64,${Buffer.from('89504e470d0a1a0a', 'h
 
 test('营销、推广、教材上传和用户删除路由完成鉴权闭环', async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'teacher-helper-marketing-routes-'));
+  const staticDir = mkdtempSync(join(tmpdir(), 'teacher-helper-marketing-static-'));
+  writeFileSync(join(staticDir, 'index.html'), '<!doctype html><html><head><title>教师帮</title></head><body><main>teacher-test</main></body></html>', 'utf8');
+  writeFileSync(join(staticDir, 'admin.html'), '<!doctype html><html><head><title>教师帮</title></head><body><main>admin-test</main></body></html>', 'utf8');
   const sessionSecret = 'marketing-route-session-secret'.padEnd(64, 's');
   const safetySalt = 'marketing-route-safety-salt'.padEnd(64, 'p');
   const adminUsername = 'route-owner';
@@ -61,6 +64,7 @@ test('营销、推广、教材上传和用户删除路由完成鉴权闭环', as
       HOST: '127.0.0.1',
       PORT: String(port),
       DATA_DIR: dataDir,
+      STATIC_DIR: staticDir,
       SESSION_SECRET: sessionSecret,
       SAFETY_ID_SALT: safetySalt,
       PUBLIC_BASE_URL: `http://127.0.0.1:${port}`,
@@ -98,16 +102,33 @@ test('营销、推广、教材上传和用户删除路由完成鉴权闭环', as
       },
     });
     assert.equal(settings.status, 200);
+    const persistedReferralSettings = await json(origin, '/api/admin/marketing/referral-settings', { cookie: adminCookie });
+    assert.equal(persistedReferralSettings.status, 200);
+    assert.equal(persistedReferralSettings.body.data.referralSettings.enabled, true);
+    assert.equal(persistedReferralSettings.body.data.referralSettings.inviterRewardCredits, 3);
+    assert.equal(persistedReferralSettings.body.data.referralSettings.inviteeRewardCredits, 1);
 
     const createdAd = await json(origin, '/api/admin/marketing/ads', {
       method: 'POST',
       cookie: adminCookie,
-      body: { title: '开学季', altText: '开学季宣传', linkUrl: '/app/membership', imageDataUrl: PNG_DATA_URL, enabled: true },
+      body: { linkUrl: '/app/membership', imageDataUrl: PNG_DATA_URL },
     });
     assert.equal(createdAd.status, 201);
+    assert.deepEqual(
+      Object.keys(createdAd.body.data.ad).sort(),
+      ['createdAt', 'id', 'imageUrl', 'linkUrl', 'mimeType', 'order', 'size', 'updatedAt', 'updatedBy'],
+      '管理员广告接口只应返回图片、链接和管理元数据',
+    );
     const publicConfig = await json(origin, '/api/site-config');
     assert.equal(publicConfig.body.data.ads.length, 1);
+    assert.deepEqual(Object.keys(publicConfig.body.data.ads[0]).sort(), ['id', 'imageUrl', 'linkUrl']);
     assert.equal(publicConfig.body.data.referralProgram.enabled, true);
+    const brandedHomeResponse = await fetch(`${origin}/`);
+    const brandedHome = await brandedHomeResponse.text();
+    assert.equal(brandedHomeResponse.status, 200);
+    assert.match(brandedHome, /<meta name="teacher-helper-site-config" content="/);
+    assert.ok(brandedHome.includes(createdAd.body.data.ad.id), 'HTML 首屏配置必须直接包含当前广告编号');
+    assert.ok(brandedHome.includes(createdAd.body.data.ad.imageUrl), 'HTML 首屏配置必须直接包含广告图片资源地址');
     const assetResponse = await fetch(`${origin}${publicConfig.body.data.ads[0].imageUrl}`);
     assert.equal(assetResponse.status, 200);
     assert.equal(assetResponse.headers.get('content-type'), 'image/png');
@@ -116,6 +137,9 @@ test('营销、推广、教材上传和用户删除路由完成鉴权闭环', as
     const referralOverview = await json(origin, '/api/app/referrals', { cookie: userCookie });
     assert.equal(referralOverview.status, 200);
     assert.equal(referralOverview.body.data.code, 'BKXUSER0001');
+    assert.equal(referralOverview.body.data.settings.enabled, true);
+    assert.equal(referralOverview.body.data.settings.inviterRewardCredits, 3);
+    assert.equal(referralOverview.body.data.settings.inviteeRewardCredits, 1);
     assert.match(referralOverview.body.data.shareUrl, /\/register\?ref=BKXUSER0001$/);
 
     const uploaded = await json(origin, '/api/app/material-uploads', {
@@ -184,6 +208,7 @@ test('营销、推广、教材上传和用户删除路由完成鉴权闭环', as
     child.kill();
     await new Promise((resolve) => child.once('exit', resolve));
     rmSync(dataDir, { recursive: true, force: true });
+    rmSync(staticDir, { recursive: true, force: true });
   }
 });
 

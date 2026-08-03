@@ -49,7 +49,7 @@ export function createMarketingStore({ dataDir, now = () => new Date() } = {}) {
   const state = readState(filename);
 
   function listPublicAds() {
-    return orderedAds().filter((ad) => ad.enabled).map(publicAd);
+    return orderedAds().map(publicAd);
   }
 
   function listAdminAds() {
@@ -243,20 +243,13 @@ export function createMarketingStore({ dataDir, now = () => new Date() } = {}) {
 }
 
 function normalizeAd(input, existing, { id, asset, position, timestamp, actor }) {
-  const title = cleanText(input.title ?? existing?.title, 120);
-  const altText = cleanText(input.altText ?? existing?.altText ?? title, 240);
   const linkUrl = normalizeLink(input.linkUrl === undefined ? existing?.linkUrl : input.linkUrl);
-  if (!title) throw new MarketingStoreError(422, 'ADVERTISEMENT_TITLE_REQUIRED', '请填写广告标题');
-  if (!altText) throw new MarketingStoreError(422, 'ADVERTISEMENT_ALT_REQUIRED', '请填写图片替代文字');
   return {
     id,
-    title,
-    altText,
     linkUrl,
     assetName: asset.name,
     mimeType: asset.mimeType,
     size: asset.size,
-    enabled: input.enabled === undefined ? (existing ? Boolean(existing.enabled) : true) : strictBoolean(input.enabled, 'ADVERTISEMENT_ENABLED_INVALID'),
     position,
     createdAt: existing?.createdAt || timestamp,
     updatedAt: timestamp,
@@ -333,9 +326,7 @@ function matchesMagic(buffer, mimeType) {
 function publicAd(ad) {
   return {
     id: ad.id,
-    title: ad.title,
-    altText: ad.altText,
-    linkUrl: ad.linkUrl,
+    linkUrl: String(ad.linkUrl || ''),
     imageUrl: `/api/marketing/assets/${encodeURIComponent(ad.assetName)}`,
   };
 }
@@ -343,7 +334,6 @@ function publicAd(ad) {
 function adminAd(ad) {
   return {
     ...publicAd(ad),
-    enabled: Boolean(ad.enabled),
     order: Number(ad.position),
     size: Number(ad.size),
     mimeType: ad.mimeType,

@@ -8,7 +8,6 @@ import {
   Files,
   Gift,
   Home,
-  Library,
   Menu,
   Network,
   ScrollText,
@@ -70,15 +69,13 @@ const nav = [
   { label: '智能组卷', path: '/app/papers', icon: ScrollText },
   { label: '知识图谱', path: '/app/knowledge', icon: Network },
   { label: '教案评审', path: '/app/team', icon: UsersRound },
-  { label: '资源库', path: '/app/materials', icon: Library },
-  { label: '推广有礼', path: '/app/referrals', icon: Gift, requiresReferral: true },
+  { label: '推广有礼', path: '/app/referrals', icon: Gift },
   { label: '会员中心', path: '/app/membership', icon: Crown },
 ];
 
 export function TeacherShell({ path, title, subtitle, children, contentClass = '' }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const account = useAccount();
-  const { referralProgram } = useSiteConfig();
   const displayName = accountDisplayName(account);
   const subject = account?.subject || '学科待完善';
   const avatarText = displayName.trim().slice(0, 1) || '师';
@@ -99,7 +96,7 @@ export function TeacherShell({ path, title, subtitle, children, contentClass = '
           </button>
         </div>
         <nav className="sidebar-nav" aria-label="教师端主导航">
-          {nav.filter((item) => !item.requiresReferral || referralProgram?.enabled === true).map((item) => {
+          {nav.map((item) => {
             const active = item.path === '/app' ? path === item.path : path.startsWith(item.path);
             return (
               <Link key={item.path} to={item.path} className={`sidebar-link ${active ? 'is-active' : ''}`} aria-current={active ? 'page' : undefined}>

@@ -69,7 +69,6 @@ function TeacherRoutes({ path }) {
   if (path === '/app/create') return <CreateLessonPage path={path} />;
   if (path === '/app/generating') return <GeneratingPage path={path} />;
   if (path === '/app/plans') return <PlansPage path={path} />;
-  if (path === '/app/materials') return <PlansPage path={path} materials />;
   if (path === '/app/membership') return <MembershipPage path={path} />;
   if (path === '/app/quota') return <QuotaPage path={path} />;
   if (path === '/app/referrals') return <ReferralPage path={path} />;

@@ -1,9 +1,26 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { api } from './api.js';
 
-const BOOTSTRAP_SITE_CONFIG = typeof window !== 'undefined' && window.__SITE_CONFIG__
-  ? window.__SITE_CONFIG__
-  : {};
+function readBootstrapSiteConfig() {
+  if (typeof document !== 'undefined') {
+    const element = document.querySelector('meta[name="teacher-helper-site-config"]');
+    const content = element?.getAttribute('content');
+    if (content) {
+      try {
+        const value = JSON.parse(content);
+        if (value && typeof value === 'object') return value;
+      } catch {}
+    }
+  }
+
+  if (typeof window !== 'undefined' && window.__SITE_CONFIG__) {
+    return window.__SITE_CONFIG__;
+  }
+
+  return {};
+}
+
+const BOOTSTRAP_SITE_CONFIG = readBootstrapSiteConfig();
 
 export const DEFAULT_SITE_CONFIG = Object.freeze({
   supportEmail: '',

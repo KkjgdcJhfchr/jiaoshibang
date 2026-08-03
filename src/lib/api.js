@@ -104,6 +104,7 @@ export const api = {
   deleteAdminUser: (userId) => request(`/api/admin/users/${encodeURIComponent(userId)}`, { method: 'DELETE', body: {}, timeout: 20_000 }),
   bulkDeleteAdminUsers: (userIds) => request('/api/admin/users/bulk-delete', { method: 'POST', body: { userIds }, timeout: 30_000 }),
   getAdminMarketing: () => request('/api/admin/marketing', { timeout: 15_000 }),
+  getAdminReferralSettings: () => request('/api/admin/marketing/referral-settings', { timeout: 15_000 }),
   createAdminMarketingAd: (body) => request('/api/admin/marketing/ads', { method: 'POST', body, timeout: 30_000 }),
   updateAdminMarketingAd: (adId, body) => request(`/api/admin/marketing/ads/${encodeURIComponent(adId)}`, { method: 'PUT', body, timeout: 30_000 }),
   deleteAdminMarketingAd: (adId) => request(`/api/admin/marketing/ads/${encodeURIComponent(adId)}`, { method: 'DELETE', body: {}, timeout: 20_000 }),

@@ -551,6 +551,15 @@ async function handleRequest(request, response) {
       return;
     }
 
+    if (request.method === 'GET' && url.pathname === '/api/admin/marketing/referral-settings') {
+      requireAdminSession(request);
+      sendJson(response, 200, {
+        ok: true,
+        data: { referralSettings: marketing.getAdminReferralSettings() },
+      });
+      return;
+    }
+
     if (request.method === 'POST' && url.pathname === '/api/admin/marketing/ads') {
       assertSameOriginMutation(request);
       const session = requireAdminSession(request);
@@ -3279,14 +3288,22 @@ function currentSiteName() {
 function createBrandedHtml(source) {
   const publicSettings = siteSettings.getPublicSettings();
   const siteName = cleanText(publicSettings.siteName, 100) || currentSiteName();
-  const bootstrap = JSON.stringify({ ...publicSettings, siteName })
+  const bootstrap = JSON.stringify({
+    ...publicSettings,
+    siteName,
+    ads: marketing.listPublicAds(),
+    referralProgram: marketing.getPublicReferralSettings(),
+  })
     .replaceAll('<', '\\u003c')
     .replaceAll('>', '\\u003e')
     .replaceAll('&', '\\u0026')
     .replaceAll('\u2028', '\\u2028')
     .replaceAll('\u2029', '\\u2029');
   const branded = source.split('教师帮').join(escapeHtml(siteName));
-  return branded.replace('</head>', `<script>window.__SITE_CONFIG__=${bootstrap};</script></head>`);
+  return branded.replace(
+    '</head>',
+    `<meta name="teacher-helper-site-config" content="${escapeHtml(bootstrap)}"></head>`,
+  );
 }
 
 function escapeHtml(value) {

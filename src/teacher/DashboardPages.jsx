@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   ArrowRight,
   BadgeCheck,
   BookOpen,
@@ -32,12 +33,14 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api.js';
 import { navigate } from '../lib/navigation.jsx';
+import { useSiteConfig } from '../lib/site-config.jsx';
 import { accountDisplayName, Button, EmptyState, Field, Modal, Status, TeacherShell, Toast, useAccount } from './components.jsx';
 
 const LESSON_LIBRARY_KEY = 'teacher-helper.lesson-library.v2';
+const LESSON_DRAFT_VERSION = 2;
 
 const draftDefaults = {
-  subject: '语文', grade: '七年级', edition: '人教版', chapterTitle: '《春》', lessonType: '新授课',
+  subject: '语文', grade: '七年级', edition: '人教版', chapterTitle: '', lessonType: '新授课',
   durationMinutes: 45, classSize: 42, classProfile: '', requirements: '', detailLevel: '详细', style: '启发式',
   interaction: '较多', exerciseCount: 10, includeScript: true, includeDifferentiation: true, includeFallbacks: true,
 };
@@ -50,11 +53,25 @@ function safeRead(key, fallback) {
 }
 
 function saveDraft(draft) {
-  sessionStorage.setItem('lesson-draft', JSON.stringify(draft));
+  sessionStorage.setItem('lesson-draft', JSON.stringify({ ...draft, draftVersion: LESSON_DRAFT_VERSION }));
 }
 
 function readDraft() {
-  try { return JSON.parse(sessionStorage.getItem('lesson-draft')) ?? draftDefaults; } catch { return draftDefaults; }
+  try {
+    const stored = JSON.parse(sessionStorage.getItem('lesson-draft'));
+    if (!stored) return draftDefaults;
+    const { draftVersion, ...draft } = stored;
+    return {
+      ...draft,
+      chapterTitle: draftVersion !== LESSON_DRAFT_VERSION && draft.chapterTitle === '《春》' ? '' : (draft.chapterTitle || ''),
+    };
+  } catch { return draftDefaults; }
+}
+
+function chapterPlaceholder(subject) {
+  if (subject === '语文') return '例如：《春》';
+  if (subject === '数学') return '例如：勾股定理';
+  return '例如：填写本章节名称';
 }
 
 function loadLessonLibrary() {
@@ -141,6 +158,102 @@ function UploadMaterialCard({ item, onRemove, onRetry }) {
   );
 }
 
+function normalizeReferralOverviewResponse(response) {
+  const payload = response?.data?.overview || response?.data || {};
+  const program = payload.settings || payload.program || payload.referralProgram || {};
+  const referralCode = String(payload.referralCode || payload.inviteCode || payload.code || '').trim();
+  const referralLink = String(payload.shareUrl || payload.referralLink || payload.inviteLink || payload.link || (referralCode ? `${window.location.origin}/register?ref=${encodeURIComponent(referralCode)}` : '')).trim();
+  return {
+    program,
+    referralCode,
+    referralLink,
+    stats: payload.stats || payload.summary || {},
+    records: Array.isArray(payload.records) ? payload.records : Array.isArray(payload.referrals) ? payload.referrals : [],
+  };
+}
+
+async function writeClipboard(value) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return;
+    } catch {
+      // Some browsers expose Clipboard API but deny it outside a secure context.
+    }
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = value;
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand('copy');
+  textarea.remove();
+  if (!copied) throw new Error('clipboard unavailable');
+}
+
+function DashboardReferralCard() {
+  const { referralProgram } = useSiteConfig();
+  const [state, setState] = useState({ loading: true, error: '', overview: null });
+  const [copyStatus, setCopyStatus] = useState('');
+  const copyTimerRef = useRef(null);
+
+  useEffect(() => {
+    let active = true;
+    api.getReferralOverview().then((response) => {
+      if (active) setState({ loading: false, error: '', overview: normalizeReferralOverviewResponse(response) });
+    }).catch((requestError) => {
+      if (active) setState({ loading: false, error: requestError.message || '推广奖励暂时无法读取。', overview: null });
+    });
+    return () => {
+      active = false;
+      window.clearTimeout(copyTimerRef.current);
+    };
+  }, []);
+
+  async function copy(value, label) {
+    if (!value) return;
+    try {
+      await writeClipboard(value);
+      setCopyStatus(`${label}已复制`);
+    } catch {
+      setCopyStatus('复制失败，请手动选择复制');
+    }
+    window.clearTimeout(copyTimerRef.current);
+    copyTimerRef.current = window.setTimeout(() => setCopyStatus(''), 2_400);
+  }
+
+  if (state.loading) {
+    return <section className="dashboard-referral-card is-loading" aria-busy="true"><LoaderCircle className="spin" size={21} /><div><b>正在读取推广奖励</b><span>马上为你显示当前奖励规则和专属推广链接。</span></div></section>;
+  }
+  if (state.error) {
+    return <section className="dashboard-referral-card is-error" role="alert"><AlertTriangle size={21} /><div><b>推广奖励暂时无法读取</b><span>{state.error}</span></div><button type="button" onClick={() => navigate('/app/referrals')}>进入推广中心 <ChevronRight size={15} /></button></section>;
+  }
+
+  const overview = state.overview || {};
+  const program = { ...(overview.program || {}), ...(referralProgram || {}) };
+  const enabled = program.enabled === true;
+  const inviterReward = program.rewardMode === 'invitee_only' ? 0 : Number(program.inviterRewardCredits || 0);
+  const inviteeReward = program.rewardMode === 'inviter_only' ? 0 : Number(program.inviteeRewardCredits || 0);
+
+  return (
+    <section className={`dashboard-referral-card ${enabled ? 'is-enabled' : 'is-paused'}`}>
+      <div className="dashboard-referral-copy">
+        <span><PartyPopper size={17} />{enabled ? '推广有礼 · 活动进行中' : '推广有礼 · 活动暂停'}</span>
+        <h2>{program.headline || '邀请好友一起高效备课'}</h2>
+        <p>{program.description || '分享专属邀请链接，符合规则后获得教案生成额度。'}</p>
+        <div><b>邀请人 +{inviterReward} 额度</b><b>新用户 +{inviteeReward} 额度</b></div>
+      </div>
+      <div className="dashboard-referral-tools">
+        {!enabled ? <p className="dashboard-referral-paused"><Clock3 size={14} />当前活动尚未开启，入口会保留，开启后即可复制分享。</p> : null}
+        <label><span>我的邀请码</span><div><strong>{overview.referralCode || '暂未生成'}</strong><button type="button" disabled={!enabled || !overview.referralCode} onClick={() => void copy(overview.referralCode, '邀请码')}><Copy size={15} />复制</button></div></label>
+        <label><span>专属推广链接</span><div><input readOnly value={overview.referralLink || ''} aria-label="专属推广链接" /><button type="button" disabled={!enabled || !overview.referralLink} onClick={() => void copy(overview.referralLink, '推广链接')}><Share2 size={15} />复制链接</button></div></label>
+        <footer>{copyStatus ? <span role="status"><Check size={14} />{copyStatus}</span> : <span /> }<button type="button" onClick={() => navigate('/app/referrals')}>查看推广详情 <ArrowRight size={15} /></button></footer>
+      </div>
+    </section>
+  );
+}
+
 export function DashboardPage({ path }) {
   const account = useAccount();
   const displayName = accountDisplayName(account);
@@ -151,6 +264,7 @@ export function DashboardPage({ path }) {
     <TeacherShell path={path} title={`你好，${displayName}`} subtitle="今天也一起备好一堂课。">
       <div className="dashboard-layout">
         <div className="dashboard-main-column">
+          <DashboardReferralCard />
           <section className="recent-panel">
             <header><div><h2>最近教案</h2><p>继续编辑、查看生成进度或导出定稿。</p></div><Button variant="ghost" onClick={() => navigate('/app/plans')}>查看全部 <ChevronRight size={16} /></Button></header>
             <div className="lesson-list lesson-list-header"><span>教案名称</span><span>学科 / 年级</span><span>更新时间</span><span>状态</span><span /></div>
@@ -187,6 +301,7 @@ function referralDate(value) {
 }
 
 export function ReferralPage({ path }) {
+  const { referralProgram } = useSiteConfig();
   const [state, setState] = useState({ loading: true, error: '', overview: null });
   const [copyStatus, setCopyStatus] = useState('');
   const copyTimerRef = useRef(null);
@@ -195,20 +310,10 @@ export function ReferralPage({ path }) {
     let active = true;
     api.getReferralOverview().then((response) => {
       if (!active) return;
-      const payload = response.data?.overview || response.data || {};
-      const program = payload.settings || payload.program || payload.referralProgram || {};
-      const referralCode = String(payload.referralCode || payload.inviteCode || payload.code || '').trim();
-      const referralLink = String(payload.shareUrl || payload.referralLink || payload.inviteLink || payload.link || (referralCode ? `${window.location.origin}/register?ref=${encodeURIComponent(referralCode)}` : '')).trim();
       setState({
         loading: false,
         error: '',
-        overview: {
-          program,
-          referralCode,
-          referralLink,
-          stats: payload.stats || payload.summary || {},
-          records: Array.isArray(payload.records) ? payload.records : Array.isArray(payload.referrals) ? payload.referrals : [],
-        },
+        overview: normalizeReferralOverviewResponse(response),
       });
     }).catch((requestError) => {
       if (active) setState({ loading: false, error: requestError.message || '推广数据暂时无法读取，请稍后重试。', overview: null });
@@ -222,16 +327,10 @@ export function ReferralPage({ path }) {
   async function copyText(value, label) {
     if (!value) return;
     try {
-      await navigator.clipboard.writeText(value);
+      await writeClipboard(value);
     } catch {
-      const textarea = document.createElement('textarea');
-      textarea.value = value;
-      textarea.style.position = 'fixed';
-      textarea.style.opacity = '0';
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand('copy');
-      textarea.remove();
+      setCopyStatus('复制失败，请手动选择复制');
+      return;
     }
     setCopyStatus(`${label}已复制`);
     window.clearTimeout(copyTimerRef.current);
@@ -239,11 +338,12 @@ export function ReferralPage({ path }) {
   }
 
   const overview = state.overview;
-  const program = overview?.program || {};
+  const program = { ...(overview?.program || {}), ...(referralProgram || {}) };
   const stats = overview?.stats || {};
   const records = overview?.records || [];
-  const inviterReward = Number(program.inviterRewardCredits ?? program.referrerCredits ?? program.rewardCredits ?? 0);
-  const inviteeReward = Number(program.inviteeRewardCredits ?? program.newUserCredits ?? 0);
+  const programEnabled = program.enabled === true;
+  const inviterReward = program.rewardMode === 'invitee_only' ? 0 : Number(program.inviterRewardCredits ?? program.referrerCredits ?? program.rewardCredits ?? 0);
+  const inviteeReward = program.rewardMode === 'inviter_only' ? 0 : Number(program.inviteeRewardCredits ?? program.newUserCredits ?? 0);
   const rules = Array.isArray(program.rules)
     ? program.rules
     : String(program.rules || program.description || '好友通过你的邀请链接完成注册并符合活动规则后，奖励将自动发放到账户。').split(/\n+/).filter(Boolean);
@@ -254,11 +354,11 @@ export function ReferralPage({ path }) {
         {state.loading ? <div className="referral-loading" role="status"><LoaderCircle className="spin" size={24} /><span>正在读取推广信息…</span></div> : null}
         {state.error ? <div className="referral-error" role="alert"><p>{state.error}</p><Button variant="secondary" onClick={() => window.location.reload()}>重新加载</Button></div> : null}
         {overview ? <>
-          <section className="referral-hero-card">
-            <div className="referral-hero-copy"><span><Gift size={20} /> 邀请奖励</span><h2>{program.headline || program.title || '邀请好友，双方都有礼'}</h2><p>{program.subtitle || program.description || '分享你的专属邀请链接，好友完成注册并满足活动条件后，奖励自动到账。'}</p><div className="referral-reward-pills"><b>邀请人 +{inviterReward} 额度</b>{inviteeReward > 0 ? <b>新用户 +{inviteeReward} 额度</b> : null}</div></div>
+          <section className={`referral-hero-card ${programEnabled ? 'is-enabled' : 'is-paused'}`}>
+            <div className="referral-hero-copy"><span><Gift size={20} /> 邀请奖励 · {programEnabled ? '活动进行中' : '活动暂停'}</span><h2>{program.headline || program.title || '邀请好友，双方都有礼'}</h2><p>{program.subtitle || program.description || '分享你的专属邀请链接，好友完成注册并满足活动条件后，奖励自动到账。'}</p><div className="referral-reward-pills"><b>邀请人 +{inviterReward} 额度</b><b>新用户 +{inviteeReward} 额度</b></div>{!programEnabled ? <p className="referral-program-paused"><Clock3 size={14} />管理员尚未开启本期活动；你仍可查看规则，开启后即可复制分享。</p> : null}</div>
             <div className="referral-share-box">
-              <label><span>我的邀请码</span><div><strong>{overview.referralCode || '暂未生成'}</strong><button type="button" disabled={!overview.referralCode} onClick={() => void copyText(overview.referralCode, '邀请码')}><Copy size={16} /> 复制</button></div></label>
-              <label><span>专属邀请链接</span><div><input readOnly value={overview.referralLink} aria-label="专属邀请链接" /><button type="button" disabled={!overview.referralLink} onClick={() => void copyText(overview.referralLink, '邀请链接')}><Share2 size={16} /> 复制链接</button></div></label>
+              <label><span>我的邀请码</span><div><strong>{overview.referralCode || '暂未生成'}</strong><button type="button" disabled={!programEnabled || !overview.referralCode} onClick={() => void copyText(overview.referralCode, '邀请码')}><Copy size={16} /> 复制</button></div></label>
+              <label><span>专属邀请链接</span><div><input readOnly value={overview.referralLink} aria-label="专属邀请链接" /><button type="button" disabled={!programEnabled || !overview.referralLink} onClick={() => void copyText(overview.referralLink, '邀请链接')}><Share2 size={16} /> 复制链接</button></div></label>
               {copyStatus ? <p className="referral-copy-status" role="status"><Check size={15} /> {copyStatus}</p> : null}
             </div>
           </section>
@@ -369,6 +469,9 @@ export function CreateLessonPage({ path }) {
   }, [activeUploads, materials, uploadMaterial]);
 
   function update(key, value) { setDraft((current) => ({ ...current, [key]: value })); }
+  function updateSubject(subject) {
+    setDraft((current) => ({ ...current, subject, chapterTitle: '' }));
+  }
   function addFiles(list) {
     const incoming = [...list];
     const accepted = incoming.map((file) => ({ file, type: materialMimeType(file) })).filter((item) => item.type);
@@ -475,10 +578,10 @@ export function CreateLessonPage({ path }) {
             <div className="wizard-section">
               <header><h2>这是一堂什么课？</h2><p>先填写最必要的信息，教材上传后系统会自动识别并补充。</p></header>
               <div className="form-grid">
-                <Field label="学科"><select value={draft.subject} onChange={(e) => update('subject', e.target.value)}><option>语文</option><option>数学</option><option>英语</option><option>物理</option><option>化学</option><option>生物</option><option>历史</option><option>地理</option><option>道德与法治</option></select></Field>
+                <Field label="学科"><select value={draft.subject} onChange={(e) => updateSubject(e.target.value)}><option>语文</option><option>数学</option><option>英语</option><option>物理</option><option>化学</option><option>生物</option><option>历史</option><option>地理</option><option>道德与法治</option></select></Field>
                 <Field label="年级"><select value={draft.grade} onChange={(e) => update('grade', e.target.value)}><option>一年级</option><option>二年级</option><option>三年级</option><option>四年级</option><option>五年级</option><option>六年级</option><option>七年级</option><option>八年级</option><option>九年级</option><option>高一</option><option>高二</option><option>高三</option></select></Field>
                 <Field label="教材版本"><input value={draft.edition} onChange={(e) => update('edition', e.target.value)} placeholder="如：人教版" /></Field>
-                <Field label="章节名称"><input value={draft.chapterTitle} onChange={(e) => update('chapterTitle', e.target.value)} placeholder="如：第二章 一元一次方程" /></Field>
+                <Field label="章节名称"><input value={draft.chapterTitle} onChange={(e) => update('chapterTitle', e.target.value)} placeholder={chapterPlaceholder(draft.subject)} /></Field>
                 <Field label="课型"><select value={draft.lessonType} onChange={(e) => update('lessonType', e.target.value)}><option>新授课</option><option>复习课</option><option>实验课</option><option>阅读课</option><option>习题课</option><option>综合实践课</option></select></Field>
                 <Field label="单课时时长"><div className="input-suffix"><input type="number" min="20" max="120" value={draft.durationMinutes} onChange={(e) => update('durationMinutes', Number(e.target.value))} /><span>分钟</span></div></Field>
                 <Field label="班级人数"><div className="input-suffix"><input type="number" min="1" max="100" value={draft.classSize} onChange={(e) => update('classSize', Number(e.target.value))} /><span>人</span></div></Field>
@@ -613,7 +716,7 @@ export function GeneratingPage({ path }) {
   );
 }
 
-export function PlansPage({ path, materials = false }) {
+export function PlansPage({ path }) {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('全部');
   const [toast, setToast] = useState(null);
@@ -636,23 +739,19 @@ export function PlansPage({ path, materials = false }) {
   }
 
   return (
-    <TeacherShell path={path} title={materials ? '教材资源库' : '我的教案'} subtitle={materials ? '从教材章节开始创建新的教案。' : '查看和管理保存在当前设备上的教案。'}>
-      {materials ? <MaterialsContent /> : <>
+    <TeacherShell path={path} title="我的教案" subtitle="查看和管理保存在当前设备上的教案。">
+      <>
         <div className="page-toolbar"><div className="search-box"><Search size={17} /><input aria-label="搜索教案" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索教案名称、学科或章节" /></div><div className="filter-tabs" aria-label="教案状态筛选">{['全部', '已完成', '生成中', '草稿'].map((item) => <button key={item} aria-pressed={filter === item} className={filter === item ? 'active' : ''} onClick={() => setFilter(item)}>{item}</button>)}</div><Button icon={Plus} onClick={() => navigate('/app/create')}>创建教案</Button></div>
         <p className="plans-local-note"><ShieldCheck size={15} /> 教案当前保存在这台设备上。更换设备或清理浏览器数据前，请先导出需要保留的教案。</p>
         <section className="plans-table"><div className="plans-row plans-head"><span>教案</span><span>课程</span><span>更新时间</span><span>状态</span><span>操作</span></div>{lessons.map((lesson) => <div className="plans-row" key={lesson.id}><button className="plan-title" onClick={() => navigate(`/app/lesson/${lesson.id}`)}><span><FileText size={18} /></span><div><b>{lesson.title}</b><small>{lesson.duration || 45} 分钟 · {lesson.exerciseCount || 0} 道习题</small></div></button><span>{lesson.meta}</span><span>{lesson.updated}</span><span><Status>{lesson.status}</Status></span><div className="row-actions"><button title="删除教案" aria-label={`删除${lesson.title}`} onClick={() => setPendingDelete(lesson)}><Trash2 size={16} /></button></div></div>)}</section>
         {!lessons.length ? <EmptyState title="没有找到教案" text="换一个关键词或筛选条件试试。" /> : null}
-      </>}
+      </>
       <Modal open={Boolean(pendingDelete)} onClose={() => setPendingDelete(null)} title="删除教案" description="删除后，这台设备上的教案记录将无法恢复。" footer={<><Button variant="ghost" onClick={() => setPendingDelete(null)}>取消</Button><Button variant="danger" onClick={deleteLesson}>确认删除</Button></>}>
         <p>确定删除“{pendingDelete?.title}”吗？</p>
       </Modal>
       {toast ? <Toast message={toast} onClose={() => setToast(null)} /> : null}
     </TeacherShell>
   );
-}
-
-function MaterialsContent() {
-  return <EmptyState icon={Upload} title="还没有可复用的教材" text="上传本章节教材后即可开始生成教案。" action={<Button icon={Upload} onClick={() => navigate('/app/create')}>上传教材</Button>} />;
 }
 
 export function QuotaPage({ path }) {

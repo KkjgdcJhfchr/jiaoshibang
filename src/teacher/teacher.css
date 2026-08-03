@@ -16,13 +16,13 @@
 .hero-assurances { margin-top: 24px; display: flex; flex-wrap: wrap; gap: 16px; color: #68736f; font-size: 12px; }
 .hero-assurances span { display: inline-flex; align-items: center; gap: 5px; }
 .hero-assurances svg { color: var(--brand); }
-.hero-marketing { position: relative; min-width: 0; aspect-ratio: 1.34; overflow: hidden; border: 1px solid #d4e0dc; border-radius: 16px; background: #193f38; box-shadow: 0 28px 65px rgba(23, 45, 38, .16); isolation: isolate; }
+.hero-marketing { position: relative; min-width: 0; aspect-ratio: 4 / 3; overflow: hidden; border: 1px solid #d4e0dc; border-radius: 16px; background: #e8efeb; box-shadow: 0 28px 65px rgba(23, 45, 38, .16); isolation: isolate; }
 .hero-ad-slides { position: absolute; inset: 0; }
 .hero-ad-slide { position: absolute; inset: 0; opacity: 0; visibility: hidden; transition: opacity .5s ease, visibility .5s ease; }
 .hero-ad-slide.is-active { z-index: 1; opacity: 1; visibility: visible; }
 .hero-ad-slide > a, .hero-ad-slide > div { position: absolute; inset: 0; display: block; }
-.hero-ad-slide > a::after, .hero-ad-slide > div::after { content: ''; position: absolute; inset: 0; background: linear-gradient(145deg, rgba(17, 59, 51, .16), rgba(27, 83, 72, .05) 50%, rgba(8, 33, 28, .2)); pointer-events: none; }
-.hero-ad-slide img { width: 100%; height: 100%; display: block; object-fit: cover; filter: brightness(.88) saturate(.78) contrast(.94); transition: transform .7s ease; }
+.hero-ad-slide > a::after, .hero-ad-slide > div::after { content: ''; position: absolute; inset: 0; background: linear-gradient(145deg, rgba(17, 59, 51, .045), transparent 52%, rgba(8, 33, 28, .065)); pointer-events: none; }
+.hero-ad-slide img { width: 100%; height: 100%; display: block; object-fit: cover; filter: brightness(.98) saturate(.96) contrast(1.01); transition: transform .7s ease; }
 .hero-ad-slide.is-active > a:hover img { transform: scale(1.015); }
 .hero-ad-arrow { position: absolute; z-index: 4; top: 50%; width: 42px; height: 42px; display: grid; place-items: center; border: 1px solid rgba(255, 255, 255, .35); border-radius: 50%; background: rgba(17, 54, 47, .62); color: #fff; box-shadow: 0 5px 18px rgba(0, 0, 0, .16); opacity: 0; cursor: pointer; transform: translateY(-50%); transition: opacity .2s, background .2s; }
 .hero-marketing:hover .hero-ad-arrow, .hero-marketing:focus-within .hero-ad-arrow { opacity: 1; }

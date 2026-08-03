@@ -14,6 +14,7 @@ import {
   Database,
   CreditCard,
   GraduationCap,
+  Gift,
   KeyRound,
   ListChecks,
   LoaderCircle,
@@ -40,6 +41,7 @@ import { SystemSettingsPage } from './SystemSettingsPage.jsx'
 import { UserManagementPage } from './UserManagementPage.jsx'
 import { ContentManagementPage } from './ContentManagementPage.jsx'
 import { MarketingPage } from './MarketingPage.jsx'
+import { ReferralRewardsPage } from './ReferralRewardsPage.jsx'
 import './admin.css'
 
 const navigationItems = [
@@ -48,6 +50,7 @@ const navigationItems = [
   { id: 'plans', label: '套餐设置', icon: GraduationCap },
   { id: 'promotions', label: '优惠活动', icon: BadgePercent },
   { id: 'marketing', label: '广告宣传营销', icon: Megaphone },
+  { id: 'referrals', label: '推广奖励', icon: Gift },
   { id: 'announcements', label: '公告管理', icon: Bell },
   { id: 'tutorial', label: '新手教程', icon: BookOpenCheck },
   { id: 'knowledgeGraph', label: '教学认知图谱', icon: Network },
@@ -845,6 +848,7 @@ export default function AdminApp() {
   else if (activePage === 'plans') pageContent = <MembershipPlansPage onNotice={setNotice} />
   else if (activePage === 'promotions') pageContent = <PromotionsPage onNotice={setNotice} />
   else if (activePage === 'marketing') pageContent = <MarketingPage onNotice={setNotice} />
+  else if (activePage === 'referrals') pageContent = <ReferralRewardsPage onNotice={setNotice} />
   else if (activePage === 'announcements') pageContent = <ContentManagementPage initialSection="announcements" onNotice={setNotice} />
   else if (activePage === 'tutorial') pageContent = <ContentManagementPage initialSection="tutorial" onNotice={setNotice} />
   else if (activePage === 'paymentChannels') pageContent = <PaymentChannelsPage onNotice={setNotice} />

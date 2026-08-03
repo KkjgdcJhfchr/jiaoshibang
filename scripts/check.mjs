@@ -91,4 +91,33 @@ if (authSubmitLine.includes('|| siteConfig.registrationOpen === false ||') || au
   throw new Error('登录按钮不得直接受 registrationOpen 开关控制');
 }
 
+const dashboardPages = fs.readFileSync(path.resolve('src/teacher/DashboardPages.jsx'), 'utf8');
+if (/chapterTitle:\s*'《春》'/.test(dashboardPages)) {
+  throw new Error('创建教案的章节名称不得写入《春》等示例默认值');
+}
+if (!dashboardPages.includes('placeholder={chapterPlaceholder(draft.subject)}')) {
+  throw new Error('章节名称示例必须使用 placeholder，并随学科提供合适提示');
+}
+
+const teacherNavigation = [
+  fs.readFileSync(path.resolve('src/teacher/TeacherApp.jsx'), 'utf8'),
+  fs.readFileSync(path.resolve('src/teacher/components.jsx'), 'utf8'),
+].join('\n');
+if (teacherNavigation.includes('/app/materials') || teacherNavigation.includes('资源库')) {
+  throw new Error('教师端不得保留无真实资源能力的资源库入口');
+}
+
+const workflowPages = fs.readFileSync(path.resolve('src/teacher/WorkflowPages.jsx'), 'utf8');
+const workflowStyles = fs.readFileSync(path.resolve('src/teacher/teacher-workflows.css'), 'utf8');
+const reviewHeroLine = workflowPages.split(/\r?\n/).find((line) => line.includes('workflow-hero team-hero'));
+if (!reviewHeroLine?.includes('<p>教案评审工作区</p>') || reviewHeroLine.includes('metadata?.grade') || reviewHeroLine.includes('metadata?.subject')) {
+  throw new Error('评审页顶部必须固定使用通用标题，学科年级只能显示在具体任务中');
+}
+if (!workflowPages.includes('MAX_REVIEW_ACTIVITIES')) {
+  throw new Error('评审动态必须限制保留数量');
+}
+if (!/\.activity-stream\s*\{[^}]*max-height:[^}]*overflow-y:\s*auto/.test(workflowStyles)) {
+  throw new Error('评审动态必须限制最大高度并在区域内部滚动');
+}
+
 console.log(`项目结构检查通过：${required.length} 个关键文件存在，JSON Schema 可解析。`);

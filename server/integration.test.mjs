@@ -627,7 +627,7 @@ try {
   assert.equal(closedPublicSettings.body.data.privacyPolicy.content.includes('教师帮'), false);
   const brandedHomePage = await client.text('/');
   assert.equal(brandedHomePage.status, 200);
-  assert.match(brandedHomePage.body, /window\.__SITE_CONFIG__=/);
+  assert.match(brandedHomePage.body, /<meta name="teacher-helper-site-config" content="/);
   assert.match(brandedHomePage.body, /备课星集成测试站点/);
   assert.equal(brandedHomePage.body.includes('教师帮'), false);
   assert.equal(

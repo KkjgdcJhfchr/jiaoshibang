@@ -223,7 +223,7 @@
   .hero-copy > p { font-size: 15px; }
   .hero-actions { align-items: stretch; flex-direction: column; }
   .demo-link { justify-content: center; }
-  .hero-marketing { aspect-ratio: 1.42; border-radius: 12px; }
+  .hero-marketing { aspect-ratio: 4 / 3; border-radius: 12px; }
   .hero-ad-arrow { width: 38px; height: 38px; opacity: 1; }.hero-ad-arrow.previous { left: 10px; }.hero-ad-arrow.next { right: 10px; }
   .hero-ad-dots { right: 14px; bottom: 14px; }
   .hero-marketing-placeholder { padding: 30px; }.hero-marketing-placeholder::before { inset: 18px; }.hero-marketing-placeholder h2 { font-size: 24px; }
