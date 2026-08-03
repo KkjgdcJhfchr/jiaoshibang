@@ -13,7 +13,7 @@ const PNG_DATA_URL = `data:image/png;base64,${Buffer.from('89504e470d0a1a0a', 'h
 test('营销、推广、教材上传和用户删除路由完成鉴权闭环', async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'teacher-helper-marketing-routes-'));
   const staticDir = mkdtempSync(join(tmpdir(), 'teacher-helper-marketing-static-'));
-  writeFileSync(join(staticDir, 'index.html'), '<!doctype html><html><head><title>教师帮</title></head><body><main>teacher-test</main></body></html>', 'utf8');
+  writeFileSync(join(staticDir, 'index.html'), '<!doctype html><html><head><title>教师帮</title><script type="module" src="/teacher-test.js"></script></head><body><main>teacher-test</main></body></html>', 'utf8');
   writeFileSync(join(staticDir, 'admin.html'), '<!doctype html><html><head><title>教师帮</title></head><body><main>admin-test</main></body></html>', 'utf8');
   const sessionSecret = 'marketing-route-session-secret'.padEnd(64, 's');
   const safetySalt = 'marketing-route-safety-salt'.padEnd(64, 'p');
@@ -127,6 +127,10 @@ test('营销、推广、教材上传和用户删除路由完成鉴权闭环', as
     const brandedHome = await brandedHomeResponse.text();
     assert.equal(brandedHomeResponse.status, 200);
     assert.match(brandedHome, /<meta name="teacher-helper-site-config" content="/);
+    assert.ok(
+      brandedHome.indexOf('<meta name="teacher-helper-site-config"') < brandedHome.indexOf('<script type="module"'),
+      '首屏站点配置必须位于模块脚本之前，避免浏览器启动时读取到空广告配置',
+    );
     assert.ok(brandedHome.includes(createdAd.body.data.ad.id), 'HTML 首屏配置必须直接包含当前广告编号');
     assert.ok(brandedHome.includes(createdAd.body.data.ad.imageUrl), 'HTML 首屏配置必须直接包含广告图片资源地址');
     const assetResponse = await fetch(`${origin}${publicConfig.body.data.ads[0].imageUrl}`);

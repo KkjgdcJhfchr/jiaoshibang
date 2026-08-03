@@ -3301,8 +3301,8 @@ function createBrandedHtml(source) {
     .replaceAll('\u2029', '\\u2029');
   const branded = source.split('教师帮').join(escapeHtml(siteName));
   return branded.replace(
-    '</head>',
-    `<meta name="teacher-helper-site-config" content="${escapeHtml(bootstrap)}"></head>`,
+    '<head>',
+    `<head><meta name="teacher-helper-site-config" content="${escapeHtml(bootstrap)}">`,
   );
 }
 

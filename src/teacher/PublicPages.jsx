@@ -266,11 +266,21 @@ function HeroAdvertisingCarousel({ ads, siteName }) {
 
 export function LandingPage() {
   const { siteName, ads: configuredAds, refreshSiteConfig } = useSiteConfig();
-  const ads = useMemo(() => normalizedAds(configuredAds), [configuredAds]);
+  const [latestAds, setLatestAds] = useState(configuredAds);
+  const ads = useMemo(() => normalizedAds(latestAds), [latestAds]);
 
   useEffect(() => {
-    const refresh = () => { refreshSiteConfig().catch(() => {}); };
+    setLatestAds(configuredAds);
+  }, [configuredAds]);
+
+  useEffect(() => {
+    const refresh = () => {
+      refreshSiteConfig()
+        .then((config) => setLatestAds(config?.ads))
+        .catch(() => {});
+    };
     const refreshWhenVisible = () => { if (!document.hidden) refresh(); };
+    refresh();
     window.addEventListener('focus', refresh);
     window.addEventListener('pageshow', refresh);
     document.addEventListener('visibilitychange', refreshWhenVisible);
