@@ -164,7 +164,10 @@ function normalizedAds(value) {
       if (!ad.enabled || !ad.imageUrl) return false;
       const startsAt = ad.startsAt ? new Date(ad.startsAt).getTime() : 0;
       const endsAt = ad.endsAt ? new Date(ad.endsAt).getTime() : 0;
-      return (!Number.isFinite(startsAt) || startsAt <= now) && (!Number.isFinite(endsAt) || endsAt >= now);
+      return (
+        (!startsAt || !Number.isFinite(startsAt) || startsAt <= now)
+        && (!endsAt || !Number.isFinite(endsAt) || endsAt >= now)
+      );
     })
     .sort((a, b) => a.order - b.order);
 }

@@ -90,6 +90,9 @@ if (!authSubmitLine?.includes('(register && siteConfig.registrationOpen === fals
 if (authSubmitLine.includes('|| siteConfig.registrationOpen === false ||') || authSubmitLine.includes(': siteConfig.registrationOpen === false ?')) {
   throw new Error('登录按钮不得直接受 registrationOpen 开关控制');
 }
+if (!publicPages.includes('!endsAt || !Number.isFinite(endsAt) || endsAt >= now')) {
+  throw new Error('未设置结束时间的广告必须持续展示，不能被当作已过期内容过滤');
+}
 
 const dashboardPages = fs.readFileSync(path.resolve('src/teacher/DashboardPages.jsx'), 'utf8');
 if (/chapterTitle:\s*'《春》'/.test(dashboardPages)) {
