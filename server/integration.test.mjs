@@ -21,6 +21,7 @@ const baseLessonPlan = buildLessonPlan(lessonSchema);
 const upstreamRequests = [];
 const transientProbeModels = new Set();
 const echoAuthorizationModels = new Set();
+const targetedRevisionAttempts = new Map();
 const smtpMessages = [];
 const smtpAuthentications = [];
 
@@ -124,6 +125,11 @@ const mockUpstream = createServer(async (request, response) => {
     ? userContent.find((item) => ['text', 'input_text'].includes(item.type))?.text || ''
     : typeof userContent === 'string' ? userContent : typeof body.input === 'string' ? body.input : '';
   const inputKinds = Array.isArray(userContent) ? userContent.map((item) => item.type) : ['text'];
+  const clientRequestId = String(request.headers['x-client-request-id'] || '');
+  const targetedAttempt = inputText.includes('[TARGETED_LESSON_REVISION]')
+    ? (targetedRevisionAttempts.get(clientRequestId) || 0) + 1
+    : 0;
+  if (targetedAttempt) targetedRevisionAttempts.set(clientRequestId, targetedAttempt);
   upstreamRequests.push({
     authorization: request.headers.authorization,
     model: body.model,
@@ -137,6 +143,9 @@ const mockUpstream = createServer(async (request, response) => {
     hasInstructions: typeof body.instructions === 'string',
     targetedRevision: inputText.includes('[TARGETED_LESSON_REVISION]'),
     targetedStandardFields: body.text?.format?.schema?.properties?.standardPatch?.required || null,
+    targetedRepair: inputText.includes('[TARGETED_LESSON_REVISION_REPAIR]'),
+    targetedAttempt,
+    clientRequestId,
   });
 
   if (transientProbeModels.has(body.model)) {
@@ -163,6 +172,7 @@ const mockUpstream = createServer(async (request, response) => {
   }
   if (inputText.includes('DELAY_FOR_CONCURRENCY_TEST')) await delay(350);
   if (inputText.includes('DELAY_HEADERS_WITHIN_CONFIGURED_TIMEOUT')) await delay(500);
+  if (inputText.includes('DELAY_EACH_TARGETED_ATTEMPT')) await delay(500);
 
   const requestedDuration = Number(inputText.match(/课时：(\d+) 分钟/)?.[1]) || 45;
   const lessonPlan = structuredClone(baseLessonPlan);
@@ -194,7 +204,12 @@ const mockUpstream = createServer(async (request, response) => {
         return [field, value];
       }))
     : null;
-  const modelOutput = targetedRevisionFields
+  const forceInvalidTargetedOutput = targetedRevisionFields && (
+    inputText.includes('FORCE_TARGETED_INVALID_ALWAYS')
+    || (inputText.includes('FORCE_TARGETED_INVALID_ONCE') && targetedAttempt === 1)
+  );
+  if (forceInvalidTargetedOutput) targetedStandardPatch.unexpectedField = '不允许返回的字段';
+  let modelOutput = targetedRevisionFields
     ? JSON.stringify({
         standardPatch: targetedStandardPatch,
         customSections: targetedCustomSections.map((section) => ({
@@ -212,11 +227,24 @@ const mockUpstream = createServer(async (request, response) => {
         })),
       })
     : capabilityProbeText || JSON.stringify(lessonPlan);
+  if (targetedRevisionFields && inputText.includes('RETURN_DOUBLE_ENCODED_JSON')) {
+    modelOutput = JSON.stringify(modelOutput);
+  } else if (targetedRevisionFields && inputText.includes('RETURN_FENCED_JSON')) {
+    modelOutput = `模型说明前缀\n\`\`\`json\n${modelOutput}\n\`\`\`\n模型说明后缀`;
+  } else if (targetedRevisionFields && inputText.includes('RETURN_BALANCED_JSON')) {
+    modelOutput = `模型说明前缀 ${modelOutput} 模型说明后缀`;
+  }
   const responseBody = isChatCompletions
     ? {
         id: `chatcmpl_${upstreamRequests.length}`,
         model: body.model,
-        choices: [{ index: 0, message: { role: 'assistant', content: modelOutput }, finish_reason: 'stop' }],
+        choices: [{
+          index: 0,
+          message: { role: 'assistant', content: modelOutput },
+          finish_reason: inputText.includes('FORCE_CHAT_LENGTH')
+            ? 'length'
+            : inputText.includes('FORCE_CHAT_CONTENT_FILTER') ? 'content_filter' : 'stop',
+        }],
         usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
       }
     : {
@@ -1158,10 +1186,116 @@ try {
     { timeoutMs: 3_000 },
   );
   assert.equal(revisionAfterSlotRelease.status, 'completed', '生成任务释放 AI 槽后，排队修改任务必须继续执行');
+
+  const repairRegistration = await client.json('/api/auth/register', {
+    method: 'POST',
+    body: {
+      identifier: 'revision-repair@example.com',
+      password: 'RevisionRepairPass1',
+      displayName: '修改修复测试教师',
+      subject: '语文',
+      privacyAccepted: true,
+      privacyPolicyUpdatedAt: currentPrivacyPolicyUpdatedAt,
+    },
+  });
+  assert.equal(repairRegistration.status, 201);
+  const repairCookie = cookiePair(repairRegistration.headers.get('set-cookie'));
+  const repairedJobCreated = await client.json('/api/ai/revision-jobs', {
+    method: 'POST',
+    cookie: repairCookie,
+    headers: { 'Idempotency-Key': 'revision-repair-success-0001' },
+    body: {
+      lessonPlan: structuredClone(baseLessonPlan),
+      sectionKeys: ['objectives'],
+      customSections: [],
+      feedback: 'FORCE_TARGETED_INVALID_ONCE RETURN_BALANCED_JSON 保留教师修改意图。',
+    },
+  });
+  assert.equal(repairedJobCreated.status, 202);
+  const repairedJob = await waitForRevisionJob(
+    client,
+    repairCookie,
+    repairedJobCreated.body.data.job.id,
+  );
+  assert.equal(repairedJob.status, 'completed', '首次结构无效时应在同一任务内修复成功');
+  const repairedRequestId = repairedJobCreated.headers.get('x-request-id');
+  assert.ok(repairedRequestId, '结构修复必须使用同一个请求编号再次调用同一上游');
+  const sameRequestAttempts = upstreamRequests.filter((item) => item.clientRequestId === repairedRequestId);
+  assert.equal(sameRequestAttempts.length, 2);
+  assert.equal(sameRequestAttempts[0].targetedRepair, false);
+  assert.equal(sameRequestAttempts[1].targetedRepair, true);
+  assert.equal(sameRequestAttempts[0].model, sameRequestAttempts[1].model);
+  assert.equal(repairedJob.data.lessonPlan.sourceSummary, '已按教师要求定向修改章节概述。');
+
+  const repairFailedCreated = await client.json('/api/ai/revision-jobs', {
+    method: 'POST',
+    cookie: repairCookie,
+    headers: { 'Idempotency-Key': 'revision-repair-failure-0001' },
+    body: {
+      lessonPlan: structuredClone(baseLessonPlan),
+      sectionKeys: ['objectives'],
+      customSections: [],
+      feedback: 'FORCE_TARGETED_INVALID_ALWAYS',
+    },
+  });
+  assert.equal(repairFailedCreated.status, 202);
+  const repairFailedJob = await waitForRevisionJob(
+    client,
+    repairCookie,
+    repairFailedCreated.body.data.job.id,
+  );
+  assert.equal(repairFailedJob.status, 'failed');
+  assert.equal(repairFailedJob.error.code, 'AI_REVISION_SCOPE_VIOLATION');
+
+  for (const [idempotencyKey, marker] of [
+    ['revision-double-json-0001', 'RETURN_DOUBLE_ENCODED_JSON'],
+    ['revision-fenced-json-0001', 'RETURN_FENCED_JSON'],
+  ]) {
+    const tolerantCreated = await client.json('/api/ai/revision-jobs', {
+      method: 'POST',
+      cookie: repairCookie,
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: {
+        lessonPlan: structuredClone(baseLessonPlan),
+        sectionKeys: ['keypoints'],
+        customSections: [],
+        feedback: marker,
+      },
+    });
+    assert.equal(tolerantCreated.status, 202);
+    const tolerantJob = await waitForRevisionJob(client, repairCookie, tolerantCreated.body.data.job.id);
+    assert.equal(tolerantJob.status, 'completed', `${marker} 应被安全解析后继续严格校验`);
+  }
+  const sharedDeadlineStartedAt = Date.now();
+  const sharedDeadlineCreated = await client.json('/api/ai/revision-jobs', {
+    method: 'POST',
+    cookie: repairCookie,
+    headers: { 'Idempotency-Key': 'revision-shared-deadline-0001' },
+    body: {
+      lessonPlan: structuredClone(baseLessonPlan),
+      sectionKeys: ['objectives'],
+      customSections: [],
+      feedback: 'FORCE_TARGETED_INVALID_ONCE DELAY_EACH_TARGETED_ATTEMPT',
+    },
+  });
+  assert.equal(sharedDeadlineCreated.status, 202);
+  const sharedDeadlineJob = await waitForRevisionJob(
+    client,
+    repairCookie,
+    sharedDeadlineCreated.body.data.job.id,
+    { timeoutMs: 3_000 },
+  );
+  assert.equal(sharedDeadlineJob.status, 'failed');
+  assert.equal(sharedDeadlineJob.error.code, 'AI_TIMEOUT');
+  assert.equal(Date.now() - sharedDeadlineStartedAt < 1_100, true, '首次调用与修复调用必须共享同一个总 deadline');
   await delay(20);
   assert.match(appLog, /"event":"ai_revision_upstream_started"/);
   assert.match(appLog, /"event":"ai_revision_upstream_completed"/);
   assert.match(appLog, /"event":"ai_revision_upstream_failed"/);
+  assert.match(appLog, /"event":"ai_revision_repair_started"/);
+  assert.match(appLog, /"event":"ai_revision_repair_completed"/);
+  assert.match(appLog, /"event":"ai_revision_repair_failed"/);
+  assert.match(appLog, /"validationIssue":"模型输出/);
   assert.equal(appLog.includes('把目标写得更可测量'), false, '修改任务日志不得包含教师反馈');
   assert.equal(appLog.includes('原有拓展内容'), false, '修改任务日志不得包含教案内容');
   assert.equal(appLog.includes('integration-environment-key'), false, '修改任务日志不得包含模型密钥');
@@ -1868,6 +2002,40 @@ try {
     },
   });
   const secondCookie = cookiePair(secondRegistration.headers.get('set-cookie'));
+  const chatFinishRegistration = await client.json('/api/auth/register', {
+    method: 'POST',
+    body: {
+      identifier: 'chat-finish@example.com',
+      password: 'ChatFinishPass1',
+      privacyAccepted: true,
+      privacyPolicyUpdatedAt: currentPrivacyPolicyUpdatedAt,
+    },
+  });
+  assert.equal(chatFinishRegistration.status, 201);
+  const chatFinishCookie = cookiePair(chatFinishRegistration.headers.get('set-cookie'));
+  for (const [suffix, marker, expectedCode] of [
+    ['length', 'FORCE_CHAT_LENGTH', 'AI_INCOMPLETE'],
+    ['filter', 'FORCE_CHAT_CONTENT_FILTER', 'AI_REFUSED'],
+  ]) {
+    const finishJobCreated = await client.json('/api/ai/revision-jobs', {
+      method: 'POST',
+      cookie: chatFinishCookie,
+      headers: { 'Idempotency-Key': `chat-finish-${suffix}-0001` },
+      body: {
+        lessonPlan: structuredClone(secondGeneration.body.data.lessonPlan),
+        sectionKeys: ['objectives'],
+        customSections: [],
+        feedback: marker,
+      },
+    });
+    assert.equal(finishJobCreated.status, 202);
+    const finishJob = await waitForRevisionJob(client, chatFinishCookie, finishJobCreated.body.data.job.id);
+    assert.equal(finishJob.status, 'failed');
+    assert.equal(finishJob.error.code, expectedCode);
+  }
+  await delay(20);
+  assert.match(appLog, /"finishReason":"length"/);
+  assert.match(appLog, /"finishReason":"content_filter"/);
   const customSectionRevision = await client.json('/api/ai/revise-custom-sections', {
     method: 'POST',
     cookie: secondCookie,
