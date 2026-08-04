@@ -160,6 +160,7 @@ const mockUpstream = createServer(async (request, response) => {
     return;
   }
   if (inputText.includes('DELAY_FOR_CONCURRENCY_TEST')) await delay(350);
+  if (inputText.includes('DELAY_HEADERS_WITHIN_CONFIGURED_TIMEOUT')) await delay(500);
 
   const requestedDuration = Number(inputText.match(/课时：(\d+) 分钟/)?.[1]) || 45;
   const lessonPlan = structuredClone(baseLessonPlan);
@@ -844,6 +845,24 @@ try {
   assert.equal(completedJobReplay.body.data.job.id, successfulJobId, '附件清理后仍应重放已完成的幂等任务');
   assert.equal(completedJobReplay.body.data.job.status, 'completed');
 
+  const delayedHeadersStartedAt = Date.now();
+  const delayedHeadersJobCreated = await client.json('/api/ai/generation-jobs', {
+    method: 'POST',
+    cookie: asyncJobCookie,
+    headers: { 'Idempotency-Key': 'async-delayed-headers-0001' },
+    body: generationBody('DELAY_HEADERS_WITHIN_CONFIGURED_TIMEOUT'),
+  });
+  assert.equal(delayedHeadersJobCreated.status, 202);
+  const delayedHeadersJob = await waitForGenerationJob(
+    client,
+    asyncJobCookie,
+    delayedHeadersJobCreated.body.data.job.id,
+    { timeoutMs: 3_000 },
+  );
+  assert.equal(delayedHeadersJob.status, 'completed', '配置时限内的响应头延迟不应被底层 HTTP 客户端提前终止');
+  assert.equal(delayedHeadersJob.data.creditsRemaining, 1);
+  assert.equal(Date.now() - delayedHeadersStartedAt >= 450, true, '测试请求应真实等待延迟响应头');
+
   const retainedMaterialUpload = await client.json('/api/app/material-uploads', {
     method: 'POST',
     cookie: asyncJobCookie,
@@ -878,7 +897,7 @@ try {
   assert.match(timeoutJob.error.requestId, /^[a-f0-9]{16}$/);
   assert.equal(Date.now() - timeoutJobStartedAt < 2_000, true, '正文读取应在 AI 超时后及时终止');
   const asyncUserAfterTimeout = await client.json('/api/auth/session', { cookie: asyncJobCookie });
-  assert.equal(asyncUserAfterTimeout.body.data.user.credits, 2, '异步生成失败不得扣除额度');
+  assert.equal(asyncUserAfterTimeout.body.data.user.credits, 1, '异步生成失败不得扣除额度');
   const retainedMaterial = await client.json(`/api/app/material-uploads/${encodeURIComponent(retainedAttachmentId)}`, {
     cookie: asyncJobCookie,
   });

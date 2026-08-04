@@ -4,6 +4,7 @@ import { createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } 
 import { stat } from 'node:fs/promises';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Agent } from 'undici';
 import { createDataStore, publicUser } from './data-store.mjs';
 import { LESSON_PLAN_SCHEMA, validateLessonPlan } from './lesson-schema.mjs';
 import {
@@ -67,6 +68,11 @@ const GENERATION_MAX_SOURCE_BYTES = parsePositiveInteger(process.env.GENERATION_
 const MATERIAL_UPLOAD_TTL_MS = parsePositiveInteger(process.env.MATERIAL_UPLOAD_TTL_SECONDS, 24 * 60 * 60) * 1000;
 const MATERIAL_UPLOAD_MAX_ACTIVE_BYTES = parsePositiveInteger(process.env.MATERIAL_UPLOAD_MAX_ACTIVE_BYTES, 256 * 1024 * 1024);
 const AI_TIMEOUT_MS = parsePositiveInteger(process.env.AI_REQUEST_TIMEOUT_MS, 600_000);
+const AI_UPSTREAM_DISPATCHER = new Agent({
+  connectTimeout: Math.min(AI_TIMEOUT_MS, 30_000),
+  headersTimeout: AI_TIMEOUT_MS,
+  bodyTimeout: AI_TIMEOUT_MS,
+});
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').trim().replace(/\/+$/, '');
 const OPENAI_MODEL = process.env.OPENAI_MODEL?.trim() || 'gpt-5.6';
 const OPENAI_REASONING_EFFORT = allowedReasoningEffort(process.env.OPENAI_REASONING_EFFORT);
@@ -304,7 +310,9 @@ if (process.argv.includes('--bootstrap-admin')) {
 
   for (const signal of ['SIGINT', 'SIGTERM']) {
     process.on(signal, () => {
-      server.close(() => process.exit(0));
+      server.close(() => {
+        void AI_UPSTREAM_DISPATCHER.close().finally(() => process.exit(0));
+      });
       setTimeout(() => process.exit(1), 10_000).unref();
     });
   }
@@ -3492,13 +3500,19 @@ async function callOpenAI({ inputText, sources, requestId, taskType, user, expec
       },
       body: JSON.stringify(payload),
       signal: controller.signal,
+      dispatcher: AI_UPSTREAM_DISPATCHER,
     });
     rawText = await upstream.text();
   } catch (error) {
     if (error?.name === 'AbortError') {
       throw new HttpError(504, 'AI_TIMEOUT', `AI 服务在 ${AI_TIMEOUT_MS}ms 内没有响应`);
     }
-    throw new HttpError(502, 'AI_UNREACHABLE', `无法连接 AI 服务：${safeProviderMessage(error?.message, provider.apiKey)}`);
+    throw new HttpError(
+      502,
+      'AI_UNREACHABLE',
+      `无法连接 AI 服务：${safeProviderMessage(error?.message, provider.apiKey)}`,
+      { upstreamCode: cleanText(error?.cause?.code, 100) || null },
+    );
   } finally {
     clearTimeout(timeout);
   }
@@ -3623,13 +3637,19 @@ async function callOpenAIChatCompletions({ provider, inputText, sources, request
       },
       body: JSON.stringify(payload),
       signal: controller.signal,
+      dispatcher: AI_UPSTREAM_DISPATCHER,
     });
     rawText = await upstream.text();
   } catch (error) {
     if (error?.name === 'AbortError') {
       throw new HttpError(504, 'AI_TIMEOUT', `AI 服务在 ${AI_TIMEOUT_MS}ms 内没有响应`);
     }
-    throw new HttpError(502, 'AI_UNREACHABLE', `无法连接 AI 服务：${safeProviderMessage(error?.message, provider.apiKey)}`);
+    throw new HttpError(
+      502,
+      'AI_UNREACHABLE',
+      `无法连接 AI 服务：${safeProviderMessage(error?.message, provider.apiKey)}`,
+      { upstreamCode: cleanText(error?.cause?.code, 100) || null },
+    );
   } finally {
     clearTimeout(timeout);
   }
