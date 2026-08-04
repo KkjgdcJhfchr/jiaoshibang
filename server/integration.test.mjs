@@ -325,12 +325,21 @@ const mockUpstream = createServer(async (request, response) => {
       }),
     }];
   }
-  if (inputText.includes('FORCE_CUSTOM_MISSING')) {
+  if (inputText.includes('FORCE_CUSTOM_UNKNOWN_PATH')) {
+    targetedOperations = targetedOperations
+      .filter((operation) => !operation.path.startsWith('/customSections/'))
+      .concat({
+        op: 'replace',
+        path: '/customSections/not_selected/content',
+        valueJson: JSON.stringify('越权修改未选中的自定义模块。'),
+      });
+  } else if (inputText.includes('FORCE_CUSTOM_MISSING')) {
     targetedOperations = targetedOperations.filter((operation) => !operation.path.startsWith('/customSections/'));
   } else if (inputText.includes('FORCE_CUSTOM_UNCHANGED')) {
     targetedOperations = targetedOperations.map((operation) => {
       if (!operation.path.startsWith('/customSections/')) return operation;
-      const customIndex = Number(operation.path.split('/')[2]);
+      const customSegment = decodeLessonPatchPointerSegment(operation.path.split('/')[2]);
+      const customIndex = targetedCustomSections.findIndex((section) => section.id === customSegment);
       return { ...operation, valueJson: JSON.stringify(targetedCustomSections[customIndex]?.content || '') };
     });
   }
@@ -1643,6 +1652,7 @@ try {
     ['insert-extra-field', 'homework', 'FORCE_PATCH_INSERT_EXTRA_FIELD', 'AI_INVALID_OUTPUT', []],
     ['custom-unchanged', null, 'FORCE_CUSTOM_UNCHANGED', 'AI_REVISION_NO_CHANGE', [{ id: 'custom_guard', title: '安全扩展', content: '原有中文内容。' }]],
     ['custom-missing', null, 'FORCE_CUSTOM_MISSING', 'AI_SECTION_SCOPE_VIOLATION', [{ id: 'custom_complete', title: '完整性扩展', content: '原有中文内容。' }]],
+    ['custom-unknown-path', null, 'FORCE_CUSTOM_UNKNOWN_PATH', 'AI_SECTION_SCOPE_VIOLATION', [{ id: 'custom_selected', title: '选中扩展', content: '原有中文内容。' }]],
   ];
   for (const [index, [suffix, sectionKey, marker, expectedCode, customSections]] of patchValidationCases.entries()) {
     const validationCookie = patchValidationCookies[Math.floor(index / 5)];
@@ -2820,10 +2830,18 @@ function buildMockTargetedPatchOperations(lessonPlan, fields, customSections = [
     }
     else if (field === 'exercises') replace('/exercises/0/stem', `${lessonPlan.exercises[0].stem}（已修改）`);
   }
-  customSections.forEach((section, index) => {
-    replace(`/customSections/${index}/content`, `已按教师要求定向修改“${section.title}”的中文教学内容。`);
+  customSections.forEach((section) => {
+    replace(`/customSections/${encodeLessonPatchPointerSegment(section.id)}/content`, `已按教师要求定向修改“${section.title}”的中文教学内容。`);
   });
   return operations;
+}
+
+function encodeLessonPatchPointerSegment(value) {
+  return String(value).replace(/~/gu, '~0').replace(/\//gu, '~1');
+}
+
+function decodeLessonPatchPointerSegment(value) {
+  return String(value).replace(/~1/gu, '/').replace(/~0/gu, '~');
 }
 
 async function registerRevisionTestUser(client, identifier, privacyPolicyUpdatedAt) {
