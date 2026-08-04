@@ -1,5 +1,14 @@
 import assert from 'node:assert/strict';
-import { pollRevisionJob, revisionJobResult } from './revisionJob.js';
+import {
+  REVISION_JOB_MAX_WAIT_MS,
+  filterRevisionSelection,
+  isRevisionRequestScopeValid,
+  missingRevisionCustomSectionIds,
+  pollRevisionJob,
+  revisionJobResult,
+  revisionRetryMode,
+  revisionStageForStatus,
+} from './revisionJob.js';
 
 async function completedJobTest() {
   const jobs = [
@@ -59,6 +68,53 @@ await completedJobTest();
 await failedJobTest();
 await unknownStatusTest();
 await timeoutTest();
+
+assert.equal(REVISION_JOB_MAX_WAIT_MS, 630_000);
+assert.equal(revisionStageForStatus('repairing_result'), 'applying');
+assert.equal(revisionStageForStatus('validating_repair'), 'applying');
+assert.equal(revisionRetryMode({ terminal: true, code: 'AI_TIMEOUT' }), 'resubmit');
+assert.equal(revisionRetryMode({ terminal: false, code: 'REVISION_JOB_NETWORK_ERROR' }), 'resume');
+assert.equal(revisionRetryMode({ terminal: false, code: 'REVISION_JOB_STATUS_UNKNOWN' }), 'resubmit');
+assert.equal(
+  revisionRetryMode(new Error('已完成任务的客户端解析失败'), { completedJobReceived: true }),
+  'resubmit',
+);
+assert.deepEqual(
+  filterRevisionSelection(
+    ['timeline', 'custom:kept', 'custom:removed', 'timeline', 'not-a-section'],
+    { standardKeys: ['timeline', 'exercises'], customIds: ['kept'] },
+  ),
+  ['timeline', 'custom:kept'],
+);
+assert.equal(
+  isRevisionRequestScopeValid(
+    { standardKeys: ['timeline', 'exercises'], customIds: ['kept'] },
+    { standardKeys: ['timeline', 'exercises'], customIds: ['kept', 'other'] },
+  ),
+  true,
+);
+assert.equal(
+  isRevisionRequestScopeValid(
+    { standardKeys: [], customIds: ['removed'] },
+    { standardKeys: ['timeline'], customIds: ['kept'] },
+  ),
+  false,
+);
+assert.equal(
+  isRevisionRequestScopeValid(
+    { standardKeys: [], customIds: [] },
+    { standardKeys: ['timeline'], customIds: ['kept'] },
+  ),
+  false,
+);
+assert.deepEqual(
+  missingRevisionCustomSectionIds(
+    ['one', 'two', 'two'],
+    [{ id: 'two', content: '已修改' }, { id: 'extra', content: '忽略' }],
+  ),
+  ['one'],
+);
+assert.deepEqual(missingRevisionCustomSectionIds(['one'], null), ['one']);
 
 assert.deepEqual(
   revisionJobResult({ result: { lessonPlan: { metadata: {} }, customSections: [{ id: 'one' }] } }),

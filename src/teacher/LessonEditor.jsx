@@ -28,8 +28,12 @@ import { api } from '../lib/api.js';
 import { normalizeLesson } from '../lib/lessonAdapter.js';
 import { navigate } from '../lib/navigation.jsx';
 import {
+  filterRevisionSelection,
+  isRevisionRequestScopeValid,
+  missingRevisionCustomSectionIds,
   pollRevisionJob,
   revisionJobResult,
+  revisionRetryMode,
   unwrapRevisionJob,
 } from '../lib/revisionJob.js';
 import { useSiteConfig } from '../lib/site-config.jsx';
@@ -40,6 +44,7 @@ const baseOutline = [
   ['objectives', '教学目标'], ['learner', '学情分析'], ['keypoints', '重点难点'], ['preparation', '教学准备'],
   ['timeline', '教学过程'], ['interaction', '课堂互动'], ['board', '板书设计'], ['homework', '课后作业'], ['exercises', '习题与答案'],
 ];
+const standardRevisionKeys = baseOutline.map(([key]) => key);
 
 const sectionFields = {
   objectives: ['source_summary', 'core_competencies', 'learning_objectives'],
@@ -239,7 +244,6 @@ export function LessonEditor({ path }) {
   const [assistantSections, setAssistantSections] = useState(() => new Set(['timeline']));
   const [feedback, setFeedback] = useState('');
   const [revising, setRevising] = useState(false);
-  const [revisionError, setRevisionError] = useState('');
   const [revisionStage, setRevisionStage] = useState('idle');
   const [revisionElapsed, setRevisionElapsed] = useState(0);
   const [retryRevision, setRetryRevision] = useState(null);
@@ -263,6 +267,13 @@ export function LessonEditor({ path }) {
   const title = lesson.metadata?.title || `${lesson.metadata?.chapter || '新教案'}教学设计`;
   const customOutline = (lesson.custom_sections || []).map((item) => [`custom:${item.id}`, item.title]);
   const fullOutline = [...baseOutline, ...customOutline];
+  const currentCustomIds = (lesson.custom_sections || []).map((item) => item.id);
+  const revisionScopeSignature = currentCustomIds.join('\u0000');
+  const effectiveAssistantSections = useMemo(() => new Set(filterRevisionSelection(
+    assistantSections,
+    { standardKeys: standardRevisionKeys, customIds: currentCustomIds },
+  )), [assistantSections, revisionScopeSignature]);
+  const hasEffectiveAssistantSections = effectiveAssistantSections.size > 0;
   const exerciseCount = lesson.exercises?.length || 0;
   const currentVersion = historyRef.current.length + 1;
   const sourceItems = isDemo
@@ -282,6 +293,24 @@ export function LessonEditor({ path }) {
     revisionRunRef.current += 1;
     revisionAbortRef.current?.abort();
   }, []);
+
+  useEffect(() => {
+    setAssistantSections((current) => {
+      const filtered = filterRevisionSelection(current, {
+        standardKeys: standardRevisionKeys,
+        customIds: currentCustomIds,
+      });
+      if (filtered.length === current.size && filtered.every((key) => current.has(key))) return current;
+      return new Set(filtered);
+    });
+    setRetryRevision((current) => {
+      if (current?.mode !== 'resume' || !current.request) return current;
+      return isRevisionRequestScopeValid(current.request, {
+        standardKeys: standardRevisionKeys,
+        customIds: currentCustomIds,
+      }) ? current : { mode: 'resubmit' };
+    });
+  }, [revisionScopeSignature]);
 
   function updateLesson(updater, { recordHistory = true } = {}) {
     const current = lesson;
@@ -401,6 +430,7 @@ export function LessonEditor({ path }) {
   }
 
   function toggleAssistantSection(key) {
+    setRetryRevision((current) => current?.mode === 'resume' ? { mode: 'resubmit' } : current);
     setAssistantSections((current) => {
       const next = new Set(current);
       if (next.has(key)) next.delete(key); else next.add(key);
@@ -409,8 +439,8 @@ export function LessonEditor({ path }) {
   }
 
   function buildRevisionRequest(instruction) {
-    const standardKeys = [...assistantSections].filter((key) => !key.startsWith('custom:'));
-    const customIds = [...assistantSections].filter((key) => key.startsWith('custom:')).map((key) => key.slice(7));
+    const standardKeys = [...effectiveAssistantSections].filter((key) => !key.startsWith('custom:'));
+    const customIds = [...effectiveAssistantSections].filter((key) => key.startsWith('custom:')).map((key) => key.slice(7));
     return {
       instruction,
       standardKeys,
@@ -430,9 +460,9 @@ export function LessonEditor({ path }) {
     revisionRunRef.current = runId;
     const abortController = new AbortController();
     revisionAbortRef.current = abortController;
-    activeRevisionRef.current = request;
+    let trackedRequest = { ...request, jobId: request.jobId || null };
+    activeRevisionRef.current = trackedRequest;
     setFeedback('');
-    setRevisionError('');
     setRetryRevision(null);
     setRevisionStage('submitting');
     setRevising(true);
@@ -441,11 +471,21 @@ export function LessonEditor({ path }) {
       ...(appendUser ? [{ role: 'user', text: request.instruction }] : []),
       { role: 'loading', text: '正在处理修改任务' },
     ]);
+    let completedJobReceived = false;
     try {
-      const createdResponse = await api.createRevisionJob(request.body, request.idempotencyKey);
-      if (revisionRunRef.current !== runId || abortController.signal.aborted) return;
-      const createdJob = unwrapRevisionJob(createdResponse);
-      let firstResponse = { data: { job: createdJob } };
+      let createdJob;
+      let firstResponse = null;
+      if (trackedRequest.jobId) {
+        createdJob = { id: trackedRequest.jobId };
+        setRevisionStage('processing');
+      } else {
+        const createdResponse = await api.createRevisionJob(request.body, request.idempotencyKey);
+        if (revisionRunRef.current !== runId || abortController.signal.aborted) return;
+        createdJob = unwrapRevisionJob(createdResponse);
+        trackedRequest = { ...trackedRequest, jobId: createdJob.id };
+        activeRevisionRef.current = trackedRequest;
+        firstResponse = { data: { job: createdJob } };
+      }
       const job = await pollRevisionJob({
         jobId: createdJob.id,
         signal: abortController.signal,
@@ -465,8 +505,15 @@ export function LessonEditor({ path }) {
           if (stage === 'completed') setRevisionStage('applying');
         },
       });
+      completedJobReceived = true;
       if (revisionRunRef.current !== runId || abortController.signal.aborted) return;
       setRevisionStage('applying');
+      if (!isRevisionRequestScopeValid(request, {
+        standardKeys: standardRevisionKeys,
+        customIds: currentCustomIds,
+      })) {
+        throw new Error('原修改任务对应的模块已发生变化，请按当前选区重新提交。');
+      }
       const result = revisionJobResult(job);
       let revisedLesson = structuredClone(lesson);
       if (request.standardKeys.length) {
@@ -475,6 +522,10 @@ export function LessonEditor({ path }) {
       }
       if (request.customIds.length) {
         if (!Array.isArray(result.customSections)) throw new Error('修改任务已完成，但没有返回自定义模块内容。');
+        const missingCustomIds = missingRevisionCustomSectionIds(request.customIds, result.customSections);
+        if (missingCustomIds.length) {
+          throw new Error('修改任务已完成，但返回的自定义模块不完整，请重新提交。');
+        }
         revisedLesson.custom_sections = (revisedLesson.custom_sections || []).map((item) => {
           const changed = result.customSections.find((update) => update.id === item.id);
           return changed ? { ...item, title: changed.title || item.title, content: changed.content || item.content } : item;
@@ -483,18 +534,15 @@ export function LessonEditor({ path }) {
       updateLesson({ ...revisedLesson, id: lesson.id, updated_at: '刚刚' });
       setChat((items) => [...items.filter((item) => item.role !== 'loading'), { role: 'assistant', text: '所选模块已按要求修改，其余模块保持不变。' }]);
       setToast('所选模块已修改并保存');
-      setRevisionError('');
       setRetryRevision(null);
     } catch (error) {
       if (revisionRunRef.current !== runId) return;
       const message = error?.message || '本次修改未完成，请稍后重试。';
-      const shouldUseNewKey = error?.terminal || error?.code === 'REVISION_JOB_STATUS_UNKNOWN';
-      setFeedback(request.instruction);
-      setRetryRevision({
-        ...request,
-        idempotencyKey: shouldUseNewKey ? revisionIdempotencyKey() : request.idempotencyKey,
-      });
-      setRevisionError(message);
+      const mode = revisionRetryMode(error, { completedJobReceived });
+      setFeedback(trackedRequest.instruction);
+      setRetryRevision(mode === 'resume'
+        ? { mode, request: trackedRequest }
+        : { mode: 'resubmit' });
       setChat((items) => [...items.filter((item) => item.role !== 'loading'), { role: 'error', text: `本次修改未完成：${message}` }]);
     } finally {
       if (revisionRunRef.current === runId) {
@@ -508,7 +556,7 @@ export function LessonEditor({ path }) {
 
   function revise() {
     const instruction = feedback.trim();
-    if (!instruction || revising || !assistantSections.size) return;
+    if (!instruction || revising || !hasEffectiveAssistantSections) return;
     void runRevision(buildRevisionRequest(instruction));
   }
 
@@ -523,16 +571,21 @@ export function LessonEditor({ path }) {
     setRevisionStage('idle');
     if (request) {
       setFeedback(request.instruction);
-      setRetryRevision(request);
+      setRetryRevision({ mode: 'resume', request });
     }
     const message = '已停止在本页面等待，后台任务可能仍在运行。可点击“继续查询”获取结果。';
-    setRevisionError(message);
     setChat((items) => [...items.filter((item) => item.role !== 'loading'), { role: 'assistant', text: message }]);
   }
 
   function retryRevisionRequest() {
     if (!retryRevision || revising) return;
-    void runRevision(retryRevision, { appendUser: false });
+    if (retryRevision.mode === 'resume' && retryRevision.request) {
+      void runRevision(retryRevision.request, { appendUser: false });
+      return;
+    }
+    const instruction = feedback.trim();
+    if (!instruction || !hasEffectiveAssistantSections) return;
+    void runRevision(buildRevisionRequest(instruction));
   }
 
   async function submitTrainingCandidate() {
@@ -700,7 +753,7 @@ export function LessonEditor({ path }) {
           {assistantEnabled ? <>
             <section className="assistant-section-picker"><b>选择要修改的模块</b><div>{fullOutline.map(([key, label]) => <label key={key}><input type="checkbox" checked={assistantSections.has(key)} disabled={revising} onChange={() => toggleAssistantSection(key)} /><span>{label}</span></label>)}</div></section>
             <div className="chat-thread" aria-live="polite">{chat.map((item, index) => <div key={index} className={`chat-message ${item.role}`}><span>{item.role === 'user' ? '我' : item.role === 'loading' ? <LoaderCircle className="spin" size={16} /> : <Bot size={16} />}</span><div>{item.role === 'loading' ? <div className="revision-progress"><b>{revisionStageLabels[revisionStage] || '正在处理修改任务'}</b><p>已等待 {revisionElapsed} 秒，页面会在任务完成后自动应用结果。</p><button type="button" onClick={stopRevisionWait}>停止等待</button></div> : <p>{item.text}</p>}</div></div>)}</div>
-            <div className="ai-composer"><textarea value={feedback} disabled={revising} onChange={(event) => setFeedback(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') revise(); }} placeholder="写下对所选模块的修改要求…" maxLength={800} /><div>{retryRevision && !revising ? <Button variant="ghost" size="sm" icon={RotateCcw} onClick={retryRevisionRequest}>继续查询 / 重试</Button> : null}<span>{feedback.length}/800</span><Button size="sm" icon={Send} onClick={revise} disabled={!feedback.trim() || revising || !assistantSections.size}>发送</Button></div>{revisionError ? <p>{revisionError}</p> : null}</div>
+            <div className="ai-composer"><textarea value={feedback} disabled={revising} onChange={(event) => { setFeedback(event.target.value); setRetryRevision((current) => current?.mode === 'resume' ? { mode: 'resubmit' } : current); }} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') revise(); }} placeholder="写下对所选模块的修改要求…" maxLength={800} /><div>{retryRevision && !revising ? <Button variant="ghost" size="sm" icon={RotateCcw} onClick={retryRevisionRequest} disabled={retryRevision.mode === 'resubmit' && (!feedback.trim() || !hasEffectiveAssistantSections)}>{retryRevision.mode === 'resume' ? '继续查询' : '重新提交'}</Button> : null}<span>{feedback.length}/800</span><Button size="sm" icon={Send} onClick={revise} disabled={!feedback.trim() || revising || !hasEffectiveAssistantSections}>发送</Button></div></div>
           </> : <div className="manual-edit-hint"><Pencil size={20} /><b>当前为手动编辑模式</b><p>点击教案正文中的文字即可直接修改。需要定向调整内容时，再开启助教并选择对应模块。</p></div>}
         </aside>
         {assistantDrawerOpen ? <button className="assistant-drawer-scrim" aria-label="关闭助教面板" onClick={() => setAssistantDrawerOpen(false)} /> : null}

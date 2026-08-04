@@ -1,4 +1,4 @@
-export const REVISION_JOB_MAX_WAIT_MS = 210_000;
+export const REVISION_JOB_MAX_WAIT_MS = 630_000;
 
 export class RevisionJobError extends Error {
   constructor(message, { code = 'REVISION_JOB_ERROR', terminal = false, details = null } = {}) {
@@ -23,10 +23,46 @@ export function unwrapRevisionJob(response) {
 export function revisionStageForStatus(status) {
   if (status === 'queued' || status === 'pending') return 'queued';
   if (status === 'running' || status === 'processing' || status === 'routing' || status === 'calling_model') return 'processing';
-  if (status === 'validating_result' || status === 'applying') return 'applying';
+  if (status === 'validating_result'
+    || status === 'repairing_result'
+    || status === 'validating_repair'
+    || status === 'applying') return 'applying';
   if (status === 'completed' || status === 'succeeded') return 'completed';
   if (status === 'failed') return 'failed';
   return 'unknown';
+}
+
+export function revisionRetryMode(error, { completedJobReceived = false } = {}) {
+  return completedJobReceived || error?.terminal || error?.code === 'REVISION_JOB_STATUS_UNKNOWN'
+    ? 'resubmit'
+    : 'resume';
+}
+
+export function filterRevisionSelection(selectedKeys, { standardKeys = [], customIds = [] } = {}) {
+  const allowed = new Set([
+    ...standardKeys,
+    ...customIds.map((id) => `custom:${id}`),
+  ]);
+  return [...new Set(selectedKeys || [])].filter((key) => allowed.has(key));
+}
+
+export function isRevisionRequestScopeValid(request, { standardKeys = [], customIds = [] } = {}) {
+  const requestedStandardKeys = Array.isArray(request?.standardKeys) ? request.standardKeys : [];
+  const requestedCustomIds = Array.isArray(request?.customIds) ? request.customIds : [];
+  if (!requestedStandardKeys.length && !requestedCustomIds.length) return false;
+  const allowedStandardKeys = new Set(standardKeys);
+  const allowedCustomIds = new Set(customIds);
+  return requestedStandardKeys.every((key) => allowedStandardKeys.has(key))
+    && requestedCustomIds.every((id) => allowedCustomIds.has(id));
+}
+
+export function missingRevisionCustomSectionIds(requestedIds, returnedSections) {
+  const returnedIds = new Set(
+    (Array.isArray(returnedSections) ? returnedSections : [])
+      .map((section) => section?.id)
+      .filter(Boolean),
+  );
+  return [...new Set(requestedIds || [])].filter((id) => !returnedIds.has(id));
 }
 
 function abortError() {
@@ -65,7 +101,7 @@ export async function pollRevisionJob({
   for (;;) {
     if (signal?.aborted) throw abortError();
     if (now() - startedAt >= maxWaitMs) {
-      throw new RevisionJobError('本次修改等待超过 210 秒，已停止等待。后台任务可能仍在运行，可点击重试继续查询。', {
+      throw new RevisionJobError('本页面等待已达到上限，后台任务可能仍在运行，可点击“继续查询”获取结果。', {
         code: 'REVISION_JOB_TIMEOUT',
       });
     }

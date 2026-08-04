@@ -126,7 +126,9 @@ const mockUpstream = createServer(async (request, response) => {
     : typeof userContent === 'string' ? userContent : typeof body.input === 'string' ? body.input : '';
   const inputKinds = Array.isArray(userContent) ? userContent.map((item) => item.type) : ['text'];
   const clientRequestId = String(request.headers['x-client-request-id'] || '');
-  const targetedAttempt = inputText.includes('[TARGETED_LESSON_REVISION]')
+  const isTargetedRevision = inputText.includes('[TARGETED_LESSON_REVISION]')
+    || inputText.includes('[TARGETED_LESSON_REVISION_REPAIR]');
+  const targetedAttempt = isTargetedRevision
     ? (targetedRevisionAttempts.get(clientRequestId) || 0) + 1
     : 0;
   if (targetedAttempt) targetedRevisionAttempts.set(clientRequestId, targetedAttempt);
@@ -139,11 +141,16 @@ const mockUpstream = createServer(async (request, response) => {
     inputKinds,
     responseFormat: body.response_format?.type || body.text?.format?.type || null,
     strictSchema: body.text?.format?.strict === true,
-    reasoningEffort: body.reasoning?.effort || null,
+    reasoningEffort: body.reasoning_effort || body.reasoning?.effort || null,
     hasInstructions: typeof body.instructions === 'string',
-    targetedRevision: inputText.includes('[TARGETED_LESSON_REVISION]'),
-    targetedStandardFields: body.text?.format?.schema?.properties?.standardPatch?.required || null,
+    targetedRevision: isTargetedRevision,
+    targetedStandardFields: null,
     targetedRepair: inputText.includes('[TARGETED_LESSON_REVISION_REPAIR]'),
+    targetedContainsFullLesson: isTargetedRevision ? inputText.includes('"generationMeta"') : false,
+    maxOutputTokens: body.max_tokens || body.max_completion_tokens || body.max_output_tokens || null,
+    maxTokenParameter: Object.hasOwn(body, 'max_tokens')
+      ? 'max_tokens'
+      : Object.hasOwn(body, 'max_completion_tokens') ? 'max_completion_tokens' : null,
     targetedAttempt,
     clientRequestId,
   });
@@ -156,6 +163,28 @@ const mockUpstream = createServer(async (request, response) => {
   if (echoAuthorizationModels.has(body.model)) {
     response.writeHead(500, { 'Content-Type': 'application/json' });
     response.end(JSON.stringify({ error: { code: 'credential_echo', message: `模拟回显 ${request.headers.authorization}` } }));
+    return;
+  }
+  if (body.model === 'gpt-5.6-compat-fallback' && body.reasoning_effort) {
+    response.writeHead(400, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify({
+      error: {
+        code: 'unknown_parameter',
+        param: 'reasoning_effort',
+        message: 'Unknown parameter: reasoning_effort',
+      },
+    }));
+    return;
+  }
+  if (body.model === 'gpt-5.6-compat-fallback' && Object.hasOwn(body, 'max_tokens')) {
+    response.writeHead(400, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify({
+      error: {
+        code: 'unsupported_parameter',
+        param: 'max_tokens',
+        message: 'max_tokens is not supported; use max_completion_tokens instead',
+      },
+    }));
     return;
   }
 
@@ -188,35 +217,89 @@ const mockUpstream = createServer(async (request, response) => {
   const requestedCustomSections = inputText.includes('[CUSTOM_SECTION_REVISION]') && customSectionsMatch
     ? JSON.parse(customSectionsMatch[1])
     : null;
-  const targetedFieldsMatch = inputText.match(/允许返回的标准字段：(\[[^\n]*\])/);
-  const targetedCustomMatch = inputText.match(/选中的自定义模块：(\[[^\n]*\])/);
-  const targetedRevisionFields = inputText.includes('[TARGETED_LESSON_REVISION]') && targetedFieldsMatch
-    ? JSON.parse(targetedFieldsMatch[1])
-    : null;
-  const targetedCustomSections = targetedRevisionFields && targetedCustomMatch
-    ? JSON.parse(targetedCustomMatch[1])
-    : [];
-  const targetedStandardPatch = targetedRevisionFields
-    ? Object.fromEntries(targetedRevisionFields.map((field) => {
-        if (field === 'metadata') return [field, { classProfile: '已按教师要求定向修改班级学情。' }];
-        const value = structuredClone(lessonPlan[field]);
-        if (field === 'sourceSummary') return [field, '已按教师要求定向修改章节概述。'];
-        return [field, value];
-      }))
+  const targetedFieldsMatch = inputText.match(/允许修改的顶层字段：(\[[^\n]*\])/);
+  const targetedContextMatch = inputText.match(/课程基础摘要与所选模块当前内容：\n(\{[^\n]*\})/);
+  const repairScopeMatch = inputText.match(/修复范围与教师要求：\n(\{[^\n]*\})/);
+  let targetedScope = null;
+  if (inputText.includes('[TARGETED_LESSON_REVISION]') && targetedFieldsMatch && targetedContextMatch) {
+    const context = JSON.parse(targetedContextMatch[1]);
+    targetedScope = {
+      fields: JSON.parse(targetedFieldsMatch[1]),
+      customSections: context.selectedCustomSections || [],
+    };
+  } else if (inputText.includes('[TARGETED_LESSON_REVISION_REPAIR]')) {
+    if (repairScopeMatch) {
+      const repairScope = JSON.parse(repairScopeMatch[1]);
+      targetedScope = {
+        fields: repairScope.allowedTopLevelFields || [],
+        customSections: repairScope.currentSelectedContext?.selectedCustomSections || [],
+      };
+    }
+  }
+  const targetedRevisionFields = targetedScope?.fields || null;
+  const targetedCustomSections = targetedScope?.customSections || [];
+  if (isTargetedRevision) upstreamRequests.at(-1).targetedStandardFields = targetedRevisionFields;
+  let targetedOperations = targetedRevisionFields
+    ? buildMockTargetedPatchOperations(lessonPlan, targetedRevisionFields, targetedCustomSections)
     : null;
   const forceInvalidTargetedOutput = targetedRevisionFields && (
     inputText.includes('FORCE_TARGETED_INVALID_ALWAYS')
     || (inputText.includes('FORCE_TARGETED_INVALID_ONCE') && targetedAttempt === 1)
   );
-  if (forceInvalidTargetedOutput) targetedStandardPatch.unexpectedField = '不允许返回的字段';
+  if (inputText.includes('题目出得太简单了，难度全部五星')) {
+    targetedOperations = lessonPlan.exercises.flatMap((exercise, index) => [
+      { op: 'replace', path: `/exercises/${index}/difficulty`, valueJson: '5' },
+      { op: 'replace', path: `/exercises/${index}/stem`, valueJson: JSON.stringify(`${exercise.stem}（五星难度改写）`) },
+      { op: 'replace', path: `/exercises/${index}/answer`, valueJson: JSON.stringify(`${exercise.answer}（五星难度答案）`) },
+      { op: 'replace', path: `/exercises/${index}/explanation`, valueJson: JSON.stringify(`${exercise.explanation}（五星难度解析）`) },
+    ]);
+  } else if (inputText.includes('FORCE_PATCH_OUT_OF_SCOPE')) {
+    targetedOperations = [{ op: 'replace', path: '/generationMeta/promptVersion', valueJson: JSON.stringify('attacker') }];
+  } else if (inputText.includes('FORCE_PATCH_PROTOTYPE_PATH')) {
+    targetedOperations = [{ op: 'replace', path: '/learnerAnalysis/__proto__/polluted', valueJson: JSON.stringify(true) }];
+  } else if (inputText.includes('FORCE_PATCH_PROTOTYPE_VALUE')) {
+    targetedOperations = [{ op: 'replace', path: '/learnerAnalysis/currentKnowledge', valueJson: '{"__proto__":{"polluted":true}}' }];
+  } else if (inputText.includes('FORCE_PATCH_EMPTY')) {
+    targetedOperations = [];
+  } else if (inputText.includes('FORCE_PATCH_NO_CHANGE')) {
+    targetedOperations = [{ op: 'replace', path: '/keyPoints/0', valueJson: JSON.stringify(lessonPlan.keyPoints[0]) }];
+  } else if (inputText.includes('FORCE_PATCH_CONFLICT')) {
+    targetedOperations = [
+      { op: 'replace', path: '/keyPoints/0', valueJson: JSON.stringify('冲突修改一') },
+      { op: 'replace', path: '/keyPoints/0', valueJson: JSON.stringify('冲突修改二') },
+    ];
+  } else if (inputText.includes('FORCE_PATCH_INVALID_LESSON')) {
+    targetedOperations = [{ op: 'remove', path: '/exercises/0', valueJson: '' }];
+  } else if (inputText.includes('FORCE_PATCH_ROOT_CONTAINER')) {
+    targetedOperations = [{ op: 'replace', path: '/exercises', valueJson: JSON.stringify(lessonPlan.exercises) }];
+  } else if (inputText.includes('FORCE_PATCH_OBJECT_ADD')) {
+    targetedOperations = [{ op: 'add', path: '/learnerAnalysis/unexpected', valueJson: JSON.stringify('越界字段') }];
+  } else if (inputText.includes('FORCE_PATCH_STRUCTURED_REPLACE')) {
+    targetedOperations = [{ op: 'replace', path: '/exercises/0', valueJson: JSON.stringify(lessonPlan.exercises[0]) }];
+  } else if (inputText.includes('FORCE_PATCH_INSERT_EXTRA_FIELD')) {
+    targetedOperations = [{
+      op: 'add',
+      path: '/homework/-',
+      valueJson: JSON.stringify({
+        ...materialize(lessonSchema.properties.homework.items, lessonSchema),
+        unexpected: '越界字段',
+      }),
+    }];
+  }
+  if (inputText.includes('FORCE_CUSTOM_MISSING')) {
+    targetedOperations = targetedOperations.filter((operation) => !operation.path.startsWith('/customSections/'));
+  } else if (inputText.includes('FORCE_CUSTOM_UNCHANGED')) {
+    targetedOperations = targetedOperations.map((operation) => {
+      if (!operation.path.startsWith('/customSections/')) return operation;
+      const customIndex = Number(operation.path.split('/')[2]);
+      return { ...operation, valueJson: JSON.stringify(targetedCustomSections[customIndex]?.content || '') };
+    });
+  }
   let modelOutput = targetedRevisionFields
     ? JSON.stringify({
-        standardPatch: targetedStandardPatch,
-        customSections: targetedCustomSections.map((section) => ({
-          id: section.id,
-          title: section.title,
-          content: `已按教师要求定向修改“${section.title}”的中文教学内容。`,
-        })),
+        protocol: 'lesson_patch.v1',
+        operations: targetedOperations,
+        ...(forceInvalidTargetedOutput ? { unexpectedField: '不允许返回的字段' } : {}),
       })
     : requestedCustomSections
     ? JSON.stringify({
@@ -1128,6 +1211,144 @@ try {
     ['sourceSummary', 'coreCompetencies', 'learningObjectives'],
     '模型结构化输出只能包含选中模块对应的标准字段',
   );
+  assert.equal(targetedUpstreamRequest.targetedContainsFullLesson, false, '定向修改不得再发送整份教案');
+  assert.equal(targetedUpstreamRequest.maxOutputTokens < 24_000, true, '定向修改应按所选内容自适应输出上限');
+
+  const standardSectionFields = new Map([
+    ['objectives', ['sourceSummary', 'coreCompetencies', 'learningObjectives']],
+    ['learner', ['metadata', 'learnerAnalysis']],
+    ['keypoints', ['keyPoints', 'difficultPoints']],
+    ['preparation', ['preparation', 'safetyAndInclusion']],
+    ['timeline', ['timeline']],
+    ['interaction', ['differentiation', 'assessmentPlan']],
+    ['board', ['boardDesign']],
+    ['homework', ['homework', 'reflectionPrompts']],
+    ['exercises', ['exercises']],
+  ]);
+  const coverageCookies = [
+    await registerRevisionTestUser(client, 'revision-coverage-a@example.com', currentPrivacyPolicyUpdatedAt),
+    await registerRevisionTestUser(client, 'revision-coverage-b@example.com', currentPrivacyPolicyUpdatedAt),
+  ];
+  let coverageIndex = 0;
+  for (const [sectionKey, selectedFields] of standardSectionFields) {
+    const coverageCreated = await client.json('/api/ai/revision-jobs', {
+      method: 'POST',
+      cookie: coverageCookies[Math.floor(coverageIndex / 5)],
+      headers: { 'Idempotency-Key': `revision-coverage-${sectionKey}-0001` },
+      body: {
+        lessonPlan: structuredClone(baseLessonPlan),
+        sectionKeys: [sectionKey],
+        customSections: [],
+        feedback: `定向修改 ${sectionKey} 模块。`,
+      },
+    });
+    assert.equal(coverageCreated.status, 202);
+    const coverageJob = await waitForRevisionJob(
+      client,
+      coverageCookies[Math.floor(coverageIndex / 5)],
+      coverageCreated.body.data.job.id,
+    );
+    assert.equal(
+      coverageJob.status,
+      'completed',
+      `${sectionKey} 必须支持通用增量修改：${JSON.stringify(coverageJob.error || null)}`,
+    );
+    assert.deepEqual(coverageJob.data.changedSections, [sectionKey]);
+    for (const fields of standardSectionFields.values()) {
+      for (const field of fields) {
+        if (selectedFields.includes(field)) assert.notDeepEqual(coverageJob.data.lessonPlan[field], baseLessonPlan[field]);
+        else assert.deepEqual(coverageJob.data.lessonPlan[field], baseLessonPlan[field], `${sectionKey} 不得改写 ${field}`);
+      }
+    }
+    coverageIndex += 1;
+  }
+
+  const combinationCookie = await registerRevisionTestUser(
+    client,
+    'revision-combination@example.com',
+    currentPrivacyPolicyUpdatedAt,
+  );
+  const combinationCreated = await client.json('/api/ai/revision-jobs', {
+    method: 'POST',
+    cookie: combinationCookie,
+    headers: { 'Idempotency-Key': 'revision-combination-0001' },
+    body: {
+      lessonPlan: structuredClone(baseLessonPlan),
+      sectionKeys: ['objectives', 'timeline', 'exercises'],
+      customSections: [],
+      feedback: '同时修改目标、过程和习题。',
+    },
+  });
+  assert.equal(combinationCreated.status, 202);
+  const combinationJob = await waitForRevisionJob(client, combinationCookie, combinationCreated.body.data.job.id);
+  assert.equal(combinationJob.status, 'completed');
+  assert.deepEqual(combinationJob.data.changedSections, ['objectives', 'timeline', 'exercises']);
+  assert.notDeepEqual(combinationJob.data.lessonPlan.learningObjectives, baseLessonPlan.learningObjectives);
+  assert.notDeepEqual(combinationJob.data.lessonPlan.timeline, baseLessonPlan.timeline);
+  assert.notDeepEqual(combinationJob.data.lessonPlan.exercises, baseLessonPlan.exercises);
+  assert.deepEqual(combinationJob.data.lessonPlan.boardDesign, baseLessonPlan.boardDesign);
+
+  const exerciseRevisionCookie = await registerRevisionTestUser(
+    client,
+    'revision-exercises-five-star@example.com',
+    currentPrivacyPolicyUpdatedAt,
+  );
+  const exerciseRevisionCreated = await client.json('/api/ai/revision-jobs', {
+    method: 'POST',
+    cookie: exerciseRevisionCookie,
+    headers: { 'Idempotency-Key': 'revision-exercises-five-star-0001' },
+    body: {
+      lessonPlan: structuredClone(baseLessonPlan),
+      sectionKeys: ['exercises'],
+      customSections: [],
+      feedback: '题目出得太简单了，难度全部五星',
+    },
+  });
+  assert.equal(exerciseRevisionCreated.status, 202);
+  const exerciseRevisionJob = await waitForRevisionJob(
+    client,
+    exerciseRevisionCookie,
+    exerciseRevisionCreated.body.data.job.id,
+  );
+  assert.equal(exerciseRevisionJob.status, 'completed');
+  assert.equal(exerciseRevisionJob.data.lessonPlan.exercises.length, baseLessonPlan.exercises.length);
+  exerciseRevisionJob.data.lessonPlan.exercises.forEach((exercise, index) => {
+    const before = baseLessonPlan.exercises[index];
+    assert.equal(exercise.difficulty, 5, `第 ${index + 1} 道题必须提升为五星难度`);
+    assert.notEqual(exercise.stem, before.stem, `第 ${index + 1} 道题题干必须实质改写`);
+    assert.notEqual(exercise.answer, before.answer, `第 ${index + 1} 道题答案必须同步改写`);
+    assert.notEqual(exercise.explanation, before.explanation, `第 ${index + 1} 道题解析必须同步改写`);
+    assert.equal(exercise.id, before.id);
+    assert.equal(exercise.type, before.type);
+    assert.deepEqual(exercise.knowledgePoints, before.knowledgePoints);
+    assert.deepEqual(exercise.sourceRefs, before.sourceRefs);
+  });
+  for (const field of Object.keys(baseLessonPlan)) {
+    if (field !== 'exercises') {
+      assert.deepEqual(exerciseRevisionJob.data.lessonPlan[field], baseLessonPlan[field], `五星习题修改不得改写 ${field}`);
+    }
+  }
+
+  const customOnlyCreated = await client.json('/api/ai/revision-jobs', {
+    method: 'POST',
+    cookie: combinationCookie,
+    headers: { 'Idempotency-Key': 'revision-custom-only-0001' },
+    body: {
+      lessonPlan: structuredClone(baseLessonPlan),
+      sectionKeys: [],
+      customSections: [
+        { id: 'custom_a', title: '自定义甲', content: '原内容甲。' },
+        { id: 'custom_b', title: '自定义乙', content: '原内容乙。' },
+      ],
+      feedback: '完整修改两个自定义模块。',
+    },
+  });
+  assert.equal(customOnlyCreated.status, 202);
+  const customOnlyJob = await waitForRevisionJob(client, combinationCookie, customOnlyCreated.body.data.job.id);
+  assert.equal(customOnlyJob.status, 'completed');
+  assert.deepEqual(customOnlyJob.data.changedSections, ['custom:custom_a', 'custom:custom_b']);
+  assert.deepEqual(customOnlyJob.data.lessonPlan, baseLessonPlan);
+  assert.deepEqual(customOnlyJob.data.customSections.map((item) => item.id), ['custom_a', 'custom_b']);
 
   const failedRevisionCreated = await client.json('/api/ai/revision-jobs', {
     method: 'POST',
@@ -1224,6 +1445,7 @@ try {
   assert.equal(sameRequestAttempts.length, 2);
   assert.equal(sameRequestAttempts[0].targetedRepair, false);
   assert.equal(sameRequestAttempts[1].targetedRepair, true);
+  assert.equal(sameRequestAttempts[1].targetedContainsFullLesson, false, '修复请求不得重复嵌入整份教案');
   assert.equal(sameRequestAttempts[0].model, sameRequestAttempts[1].model);
   assert.equal(repairedJob.data.lessonPlan.sourceSummary, '已按教师要求定向修改章节概述。');
 
@@ -1246,6 +1468,50 @@ try {
   );
   assert.equal(repairFailedJob.status, 'failed');
   assert.equal(repairFailedJob.error.code, 'AI_REVISION_SCOPE_VIOLATION');
+
+  const patchValidationCookies = [
+    await registerRevisionTestUser(client, 'revision-patch-validation-a@example.com', currentPrivacyPolicyUpdatedAt),
+    await registerRevisionTestUser(client, 'revision-patch-validation-b@example.com', currentPrivacyPolicyUpdatedAt),
+    await registerRevisionTestUser(client, 'revision-patch-validation-c@example.com', currentPrivacyPolicyUpdatedAt),
+  ];
+  const patchValidationCases = [
+    ['out-of-scope', 'keypoints', 'FORCE_PATCH_OUT_OF_SCOPE', 'AI_REVISION_SCOPE_VIOLATION', []],
+    ['prototype-path', 'learner', 'FORCE_PATCH_PROTOTYPE_PATH', 'AI_REVISION_SCOPE_VIOLATION', []],
+    ['prototype-value', 'learner', 'FORCE_PATCH_PROTOTYPE_VALUE', 'AI_REVISION_SCOPE_VIOLATION', []],
+    ['empty', 'keypoints', 'FORCE_PATCH_EMPTY', 'AI_REVISION_SCOPE_VIOLATION', []],
+    ['no-change', 'keypoints', 'FORCE_PATCH_NO_CHANGE', 'AI_REVISION_NO_CHANGE', []],
+    ['conflict', 'keypoints', 'FORCE_PATCH_CONFLICT', 'AI_REVISION_PATCH_CONFLICT', []],
+    ['invalid-lesson', 'exercises', 'FORCE_PATCH_INVALID_LESSON', 'AI_INVALID_OUTPUT', []],
+    ['root-container', 'exercises', 'FORCE_PATCH_ROOT_CONTAINER', 'AI_REVISION_SCOPE_VIOLATION', []],
+    ['object-add', 'learner', 'FORCE_PATCH_OBJECT_ADD', 'AI_REVISION_SCOPE_VIOLATION', []],
+    ['structured-replace', 'exercises', 'FORCE_PATCH_STRUCTURED_REPLACE', 'AI_REVISION_SCOPE_VIOLATION', []],
+    ['insert-extra-field', 'homework', 'FORCE_PATCH_INSERT_EXTRA_FIELD', 'AI_INVALID_OUTPUT', []],
+    ['custom-unchanged', null, 'FORCE_CUSTOM_UNCHANGED', 'AI_REVISION_NO_CHANGE', [{ id: 'custom_guard', title: '安全扩展', content: '原有中文内容。' }]],
+    ['custom-missing', null, 'FORCE_CUSTOM_MISSING', 'AI_SECTION_SCOPE_VIOLATION', [{ id: 'custom_complete', title: '完整性扩展', content: '原有中文内容。' }]],
+  ];
+  for (const [index, [suffix, sectionKey, marker, expectedCode, customSections]] of patchValidationCases.entries()) {
+    const validationCookie = patchValidationCookies[Math.floor(index / 5)];
+    const validationCreated = await client.json('/api/ai/revision-jobs', {
+      method: 'POST',
+      cookie: validationCookie,
+      headers: { 'Idempotency-Key': `revision-patch-${suffix}-0001` },
+      body: {
+        lessonPlan: structuredClone(baseLessonPlan),
+        sectionKeys: sectionKey ? [sectionKey] : [],
+        customSections,
+        feedback: marker,
+      },
+    });
+    assert.equal(validationCreated.status, 202);
+    const validationJob = await waitForRevisionJob(
+      client,
+      validationCookie,
+      validationCreated.body.data.job.id,
+    );
+    assert.equal(validationJob.status, 'failed', `${suffix} 必须被本地校验拒绝`);
+    assert.equal(validationJob.error.code, expectedCode, suffix);
+  }
+  assert.equal({}.polluted, undefined, '模型增量输出不得污染对象原型');
 
   for (const [idempotencyKey, marker] of [
     ['revision-double-json-0001', 'RETURN_DOUBLE_ENCODED_JSON'],
@@ -1287,6 +1553,8 @@ try {
   );
   assert.equal(sharedDeadlineJob.status, 'failed');
   assert.equal(sharedDeadlineJob.error.code, 'AI_TIMEOUT');
+  assert.match(sharedDeadlineJob.error.message, /处理时间超过 1 秒/);
+  assert.equal(sharedDeadlineJob.error.message.includes('750ms'), false, '面向用户的超时提示不得显示原始毫秒值');
   assert.equal(Date.now() - sharedDeadlineStartedAt < 1_100, true, '首次调用与修复调用必须共享同一个总 deadline');
   await delay(20);
   assert.match(appLog, /"event":"ai_revision_upstream_started"/);
@@ -2013,6 +2281,105 @@ try {
   });
   assert.equal(chatFinishRegistration.status, 201);
   const chatFinishCookie = cookiePair(chatFinishRegistration.headers.get('set-cookie'));
+  const deepseekDisabledForReasoningProbe = await client.json(`/api/admin/providers/${encodeURIComponent(providerId)}`, {
+    method: 'PATCH',
+    cookie: adminCookie,
+    body: { enabled: false },
+  });
+  assert.equal(deepseekDisabledForReasoningProbe.status, 200);
+  const gptReasoningProviderCreated = await client.json('/api/admin/providers', {
+    method: 'POST',
+    cookie: adminCookie,
+    body: {
+      name: 'GPT 低推理测试通道',
+      providerType: 'custom_openai_compatible',
+      adapter: 'openai_chat_completions',
+      baseUrl: `http://127.0.0.1:${mockPort}/v1`,
+      apiKey: providerKey,
+      model: 'gpt-5.6-sol',
+      capabilities: ['lesson_generation', 'lesson_revision'],
+      priority: 0,
+    },
+  });
+  assert.equal(gptReasoningProviderCreated.status, 201);
+  const gptReasoningProviderId = gptReasoningProviderCreated.body.data.provider.id;
+  const gptRevisionCreated = await client.json('/api/ai/revision-jobs', {
+    method: 'POST',
+    cookie: chatFinishCookie,
+    headers: { 'Idempotency-Key': 'chat-gpt-low-reasoning-0001' },
+    body: {
+      lessonPlan: structuredClone(secondGeneration.body.data.lessonPlan),
+      sectionKeys: ['keypoints'],
+      customSections: [],
+      feedback: '精炼重点难点。',
+    },
+  });
+  assert.equal(gptRevisionCreated.status, 202);
+  const gptRevisionJob = await waitForRevisionJob(client, chatFinishCookie, gptRevisionCreated.body.data.job.id);
+  assert.equal(gptRevisionJob.status, 'completed');
+  const gptRevisionRequestId = gptRevisionCreated.headers.get('x-request-id');
+  const gptRevisionRequest = upstreamRequests.find((item) => item.clientRequestId === gptRevisionRequestId);
+  assert.equal(gptRevisionRequest.endpoint, 'chat/completions');
+  assert.equal(gptRevisionRequest.reasoningEffort, 'low', 'GPT/o 系聊天补全定向修改必须使用低推理强度');
+  const gptReasoningProviderDeleted = await client.json(`/api/admin/providers/${encodeURIComponent(gptReasoningProviderId)}`, {
+    method: 'DELETE',
+    cookie: adminCookie,
+  });
+  assert.equal(gptReasoningProviderDeleted.status, 200);
+  const compatibilityProviderCreated = await client.json('/api/admin/providers', {
+    method: 'POST',
+    cookie: adminCookie,
+    body: {
+      name: 'OpenAI Compatible 参数回退测试通道',
+      providerType: 'custom_openai_compatible',
+      adapter: 'openai_chat_completions',
+      baseUrl: `http://127.0.0.1:${mockPort}/v1`,
+      apiKey: providerKey,
+      model: 'gpt-5.6-compat-fallback',
+      capabilities: ['lesson_generation', 'lesson_revision'],
+      priority: 0,
+    },
+  });
+  assert.equal(compatibilityProviderCreated.status, 201);
+  const compatibilityProviderId = compatibilityProviderCreated.body.data.provider.id;
+  const compatibilityRevisionCreated = await client.json('/api/ai/revision-jobs', {
+    method: 'POST',
+    cookie: chatFinishCookie,
+    headers: { 'Idempotency-Key': 'chat-compatible-parameter-fallback-0001' },
+    body: {
+      lessonPlan: structuredClone(secondGeneration.body.data.lessonPlan),
+      sectionKeys: ['keypoints'],
+      customSections: [],
+      feedback: '精炼重点难点。',
+    },
+  });
+  assert.equal(compatibilityRevisionCreated.status, 202);
+  const compatibilityRevisionJob = await waitForRevisionJob(
+    client,
+    chatFinishCookie,
+    compatibilityRevisionCreated.body.data.job.id,
+  );
+  assert.equal(compatibilityRevisionJob.status, 'completed');
+  const compatibilityRequestId = compatibilityRevisionCreated.headers.get('x-request-id');
+  const compatibilityAttempts = upstreamRequests.filter((item) => item.clientRequestId === compatibilityRequestId);
+  assert.equal(compatibilityAttempts.length, 3, '未知参数回退最多应分别移除 reasoning_effort 并替换 max_tokens');
+  assert.equal(compatibilityAttempts[0].reasoningEffort, 'low');
+  assert.equal(compatibilityAttempts[0].maxTokenParameter, 'max_tokens');
+  assert.equal(compatibilityAttempts[1].reasoningEffort, null);
+  assert.equal(compatibilityAttempts[1].maxTokenParameter, 'max_tokens');
+  assert.equal(compatibilityAttempts[2].reasoningEffort, null);
+  assert.equal(compatibilityAttempts[2].maxTokenParameter, 'max_completion_tokens');
+  const compatibilityProviderDeleted = await client.json(`/api/admin/providers/${encodeURIComponent(compatibilityProviderId)}`, {
+    method: 'DELETE',
+    cookie: adminCookie,
+  });
+  assert.equal(compatibilityProviderDeleted.status, 200);
+  const deepseekReenabledAfterReasoningProbe = await client.json(`/api/admin/providers/${encodeURIComponent(providerId)}`, {
+    method: 'PATCH',
+    cookie: adminCookie,
+    body: { enabled: true },
+  });
+  assert.equal(deepseekReenabledAfterReasoningProbe.status, 200);
   for (const [suffix, marker, expectedCode] of [
     ['length', 'FORCE_CHAT_LENGTH', 'AI_INCOMPLETE'],
     ['filter', 'FORCE_CHAT_CONTENT_FILTER', 'AI_REFUSED'],
@@ -2254,6 +2621,70 @@ function generationBody(requirements) {
     sourceText: '这是一段用于集成测试的章节文字。',
     requirements,
   };
+}
+
+function buildMockTargetedPatchOperations(lessonPlan, fields, customSections = []) {
+  const operations = [];
+  const replace = (path, value) => operations.push({ op: 'replace', path, valueJson: JSON.stringify(value) });
+  for (const field of fields) {
+    if (field === 'sourceSummary') replace('/sourceSummary', '已按教师要求定向修改章节概述。');
+    else if (field === 'coreCompetencies') replace('/coreCompetencies/0', `${lessonPlan.coreCompetencies[0]}（已修改）`);
+    else if (field === 'learningObjectives') replace('/learningObjectives/0/content', `${lessonPlan.learningObjectives[0].content}（已修改）`);
+    else if (field === 'metadata') replace('/metadata/classProfile', '已按教师要求定向修改班级学情。');
+    else if (field === 'learnerAnalysis') replace('/learnerAnalysis/currentKnowledge', `${lessonPlan.learnerAnalysis.currentKnowledge}（已修改）`);
+    else if (field === 'keyPoints') replace('/keyPoints/0', `${lessonPlan.keyPoints[0]}（已修改）`);
+    else if (field === 'difficultPoints') replace('/difficultPoints/0', `${lessonPlan.difficultPoints[0]}（已修改）`);
+    else if (field === 'preparation') {
+      if (lessonPlan.preparation.teacher.length) replace('/preparation/teacher/0', `${lessonPlan.preparation.teacher[0]}（已修改）`);
+      else operations.push({ op: 'add', path: '/preparation/teacher/-', valueJson: JSON.stringify('已修改的教师准备') });
+    }
+    else if (field === 'safetyAndInclusion') {
+      if (lessonPlan.safetyAndInclusion.length) replace('/safetyAndInclusion/0', `${lessonPlan.safetyAndInclusion[0]}（已修改）`);
+      else operations.push({ op: 'add', path: '/safetyAndInclusion/-', valueJson: JSON.stringify('已修改的安全与包容提示') });
+    }
+    else if (field === 'timeline') replace('/timeline/0/teacherScript', `${lessonPlan.timeline[0].teacherScript}（已修改）`);
+    else if (field === 'differentiation') {
+      if (lessonPlan.differentiation.standard.length) replace('/differentiation/standard/0', `${lessonPlan.differentiation.standard[0]}（已修改）`);
+      else operations.push({ op: 'add', path: '/differentiation/standard/-', valueJson: JSON.stringify('已修改的标准任务') });
+    }
+    else if (field === 'assessmentPlan') {
+      if (lessonPlan.assessmentPlan.formative.length) replace('/assessmentPlan/formative/0', `${lessonPlan.assessmentPlan.formative[0]}（已修改）`);
+      else operations.push({ op: 'add', path: '/assessmentPlan/formative/-', valueJson: JSON.stringify('已修改的形成性评价') });
+    }
+    else if (field === 'boardDesign') replace('/boardDesign/layoutDescription', `${lessonPlan.boardDesign.layoutDescription}（已修改）`);
+    else if (field === 'homework') {
+      if (lessonPlan.homework.length) replace('/homework/0/description', `${lessonPlan.homework[0].description}（已修改）`);
+      else operations.push({
+        op: 'add',
+        path: '/homework/-',
+        valueJson: JSON.stringify(materialize(lessonSchema.properties.homework.items, lessonSchema)),
+      });
+    } else if (field === 'reflectionPrompts') {
+      if (lessonPlan.reflectionPrompts.length) replace('/reflectionPrompts/0', `${lessonPlan.reflectionPrompts[0]}（已修改）`);
+      else operations.push({ op: 'add', path: '/reflectionPrompts/-', valueJson: JSON.stringify('已修改的课后反思问题') });
+    }
+    else if (field === 'exercises') replace('/exercises/0/stem', `${lessonPlan.exercises[0].stem}（已修改）`);
+  }
+  customSections.forEach((section, index) => {
+    replace(`/customSections/${index}/content`, `已按教师要求定向修改“${section.title}”的中文教学内容。`);
+  });
+  return operations;
+}
+
+async function registerRevisionTestUser(client, identifier, privacyPolicyUpdatedAt) {
+  const registration = await client.json('/api/auth/register', {
+    method: 'POST',
+    body: {
+      identifier,
+      password: 'RevisionCoveragePass1',
+      displayName: '增量修改覆盖测试教师',
+      subject: '语文',
+      privacyAccepted: true,
+      privacyPolicyUpdatedAt,
+    },
+  });
+  assert.equal(registration.status, 201, JSON.stringify(registration.body));
+  return cookiePair(registration.headers.get('set-cookie'));
 }
 
 async function waitForGenerationJob(client, cookie, jobId, { timeoutMs = 3_000 } = {}) {
