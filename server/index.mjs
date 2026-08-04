@@ -66,7 +66,7 @@ const MAX_PDF_BYTES = parsePositiveInteger(process.env.MAX_PDF_BYTES, 16 * 1024 
 const GENERATION_MAX_SOURCE_BYTES = parsePositiveInteger(process.env.GENERATION_MAX_SOURCE_BYTES, 64 * 1024 * 1024);
 const MATERIAL_UPLOAD_TTL_MS = parsePositiveInteger(process.env.MATERIAL_UPLOAD_TTL_SECONDS, 24 * 60 * 60) * 1000;
 const MATERIAL_UPLOAD_MAX_ACTIVE_BYTES = parsePositiveInteger(process.env.MATERIAL_UPLOAD_MAX_ACTIVE_BYTES, 256 * 1024 * 1024);
-const AI_TIMEOUT_MS = parsePositiveInteger(process.env.AI_REQUEST_TIMEOUT_MS, 180_000);
+const AI_TIMEOUT_MS = parsePositiveInteger(process.env.AI_REQUEST_TIMEOUT_MS, 600_000);
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').trim().replace(/\/+$/, '');
 const OPENAI_MODEL = process.env.OPENAI_MODEL?.trim() || 'gpt-5.6';
 const OPENAI_REASONING_EFFORT = allowedReasoningEffort(process.env.OPENAI_REASONING_EFFORT);
@@ -167,6 +167,13 @@ const authRateBuckets = new Map();
 const aiUserRateBuckets = new Map();
 const aiIpRateBuckets = new Map();
 let activeAiRequests = 0;
+const GENERATION_JOB_TERMINAL_TTL_MS = 30 * 60 * 1000;
+const GENERATION_JOB_MAX_ENTRIES = 100;
+const GENERATION_JOB_POLL_AFTER_MS = 1_000;
+const generationJobs = new Map();
+const generationJobIdsByIdempotencyKey = new Map();
+const generationJobQueue = [];
+let generationJobDrainScheduled = false;
 const adminMfaCoordinator = createAdminMfaCoordinator({
   pepper: stablePrivateHash('admin-mfa-challenges', SESSION_SECRET),
   loginTtlMs: ADMIN_MFA_LOGIN_TTL_MS,
@@ -880,7 +887,70 @@ async function handleRequest(request, response) {
       return;
     }
 
+    if (request.method === 'POST' && url.pathname === '/api/ai/generation-jobs') {
+      assertSameOriginMutation(request);
+      const session = requireUserSession(request);
+      const idempotencyKey = normalizeGenerationIdempotencyKey(request.headers['idempotency-key']);
+      const body = await readJsonBody(request);
+      assertPlainObject(body, '请求体必须是 JSON 对象');
+      assertNoInlineGenerationSources(body);
+      const attachmentIds = normalizeRequestedAttachmentIds(body.attachmentIds);
+      const requestHash = generationRequestHash(body);
+      pruneGenerationJobs();
+
+      const idempotencyMapKey = generationJobIdempotencyMapKey(session.user.id, idempotencyKey);
+      const existingJobId = generationJobIdsByIdempotencyKey.get(idempotencyMapKey);
+      const existingJob = existingJobId ? generationJobs.get(existingJobId) : null;
+      if (existingJob) {
+        if (existingJob.requestHash !== requestHash) {
+          throw new HttpError(409, 'IDEMPOTENCY_CONFLICT', '同一幂等键不能用于不同的教案生成参数');
+        }
+        sendJson(response, 202, { ok: true, data: { job: publicGenerationJob(existingJob) } });
+        return;
+      }
+
+      enforceAiRateLimits(session.user.id, getClientIp(request));
+      ensureGenerationJobCapacity();
+      const storedSources = materialUploads.resolveAttachments(session.user.id, attachmentIds);
+      const normalized = normalizeGenerateRequest(body, storedSources);
+      const input = generationJobInput(normalized);
+      const reservation = store.reserveGeneration(session.user.id);
+      if (!reservation.ok) {
+        throw new HttpError(402, 'QUOTA_EXHAUSTED', '免费生成额度已用完，请购买会员或等待额度补充', {
+          credits: reservation.credits,
+        });
+      }
+
+      const job = createGenerationJob({
+        userId: session.user.id,
+        idempotencyKey,
+        requestHash,
+        requestId,
+        input,
+        attachmentIds,
+        reservation,
+      });
+      generationJobs.set(job.id, job);
+      generationJobIdsByIdempotencyKey.set(idempotencyMapKey, job.id);
+      sendJson(response, 202, { ok: true, data: { job: publicGenerationJob(job) } });
+      enqueueGenerationJob(job.id);
+      return;
+    }
+
+    const generationJobMatch = url.pathname.match(/^\/api\/ai\/generation-jobs\/(gen_[0-9a-f-]{36})$/i);
+    if (request.method === 'GET' && generationJobMatch) {
+      const session = requireUserSession(request);
+      pruneGenerationJobs();
+      const job = generationJobs.get(generationJobMatch[1]);
+      if (!job || job.userId !== session.user.id) {
+        throw new HttpError(404, 'GENERATION_JOB_NOT_FOUND', '教案生成任务不存在');
+      }
+      sendJson(response, 200, { ok: true, data: { job: publicGenerationJob(job) } });
+      return;
+    }
+
     if (request.method === 'POST' && url.pathname === '/api/ai/generate') {
+      assertSameOriginMutation(request);
       const session = requireUserSession(request);
       enforceAiRateLimits(session.user.id, getClientIp(request));
       const body = await readJsonBody(request);
@@ -913,6 +983,7 @@ async function handleRequest(request, response) {
     }
 
     if (request.method === 'POST' && url.pathname === '/api/ai/revise') {
+      assertSameOriginMutation(request);
       const session = requireUserSession(request);
       enforceAiRateLimits(session.user.id, getClientIp(request));
       const body = await readJsonBody(request);
@@ -2991,6 +3062,221 @@ function createTrainingSubmission(user, body) {
   };
 }
 
+function normalizeGenerationIdempotencyKey(value) {
+  if (Array.isArray(value) && value.length !== 1) {
+    throw new HttpError(400, 'IDEMPOTENCY_KEY_INVALID', 'Idempotency-Key 格式无效');
+  }
+  const key = String(Array.isArray(value) ? value[0] : value || '').trim();
+  if (!key) {
+    throw new HttpError(400, 'IDEMPOTENCY_KEY_REQUIRED', '创建教案生成任务必须提供 Idempotency-Key');
+  }
+  if (!/^[A-Za-z0-9._~-]{8,200}$/.test(key)) {
+    throw new HttpError(400, 'IDEMPOTENCY_KEY_INVALID', 'Idempotency-Key 必须为 8 到 200 位 URL 安全字符');
+  }
+  return key;
+}
+
+function generationRequestHash(body) {
+  return stablePrivateHash(JSON.stringify(canonicalJsonValue(body)), SAFETY_ID_SALT);
+}
+
+function canonicalJsonValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.keys(value).sort().map((key) => [key, canonicalJsonValue(value[key])]),
+  );
+}
+
+function generationJobIdempotencyMapKey(userId, idempotencyKey) {
+  return `${userId}:${idempotencyKey}`;
+}
+
+function createGenerationJob({
+  userId,
+  idempotencyKey,
+  requestHash,
+  requestId,
+  input,
+  attachmentIds,
+  reservation,
+}) {
+  return {
+    id: `gen_${randomUUID()}`,
+    userId,
+    idempotencyKey,
+    requestHash,
+    requestId,
+    status: 'queued',
+    createdAt: new Date().toISOString(),
+    startedAt: null,
+    finishedAt: null,
+    data: null,
+    error: null,
+    input,
+    attachmentIds,
+    reservation,
+  };
+}
+
+function publicGenerationJob(job) {
+  const terminal = job.status === 'completed' || job.status === 'failed';
+  return {
+    id: job.id,
+    status: job.status,
+    pollAfterMs: terminal ? 0 : GENERATION_JOB_POLL_AFTER_MS,
+    createdAt: job.createdAt,
+    ...(job.startedAt ? { startedAt: job.startedAt } : {}),
+    ...(job.finishedAt ? { finishedAt: job.finishedAt } : {}),
+    ...(job.status === 'completed' ? { data: job.data } : {}),
+    ...(job.status === 'failed' ? { error: job.error } : {}),
+  };
+}
+
+function removeGenerationJob(job) {
+  generationJobs.delete(job.id);
+  generationJobIdsByIdempotencyKey.delete(
+    generationJobIdempotencyMapKey(job.userId, job.idempotencyKey),
+  );
+}
+
+function pruneGenerationJobs() {
+  const cutoff = Date.now() - GENERATION_JOB_TERMINAL_TTL_MS;
+  for (const job of generationJobs.values()) {
+    if (!job.finishedAt) continue;
+    const finishedAt = new Date(job.finishedAt).getTime();
+    if (Number.isFinite(finishedAt) && finishedAt <= cutoff) removeGenerationJob(job);
+  }
+  if (generationJobs.size <= GENERATION_JOB_MAX_ENTRIES) return;
+  const terminal = [...generationJobs.values()]
+    .filter((job) => job.finishedAt)
+    .sort((left, right) => left.finishedAt.localeCompare(right.finishedAt));
+  while (generationJobs.size > GENERATION_JOB_MAX_ENTRIES && terminal.length) {
+    removeGenerationJob(terminal.shift());
+  }
+}
+
+function ensureGenerationJobCapacity() {
+  pruneGenerationJobs();
+  if (generationJobs.size < GENERATION_JOB_MAX_ENTRIES) return;
+  const terminal = [...generationJobs.values()]
+    .filter((job) => job.finishedAt)
+    .sort((left, right) => left.finishedAt.localeCompare(right.finishedAt));
+  while (generationJobs.size >= GENERATION_JOB_MAX_ENTRIES && terminal.length) {
+    removeGenerationJob(terminal.shift());
+  }
+  if (generationJobs.size >= GENERATION_JOB_MAX_ENTRIES) {
+    throw new HttpError(503, 'GENERATION_QUEUE_FULL', '教案生成任务较多，请稍后再试', {
+      maximum: GENERATION_JOB_MAX_ENTRIES,
+      retryAfterSeconds: 5,
+    }, { 'Retry-After': '5' });
+  }
+}
+
+function enqueueGenerationJob(jobId) {
+  generationJobQueue.push(jobId);
+  scheduleGenerationJobDrain();
+}
+
+function scheduleGenerationJobDrain() {
+  if (generationJobDrainScheduled) return;
+  generationJobDrainScheduled = true;
+  setImmediate(drainGenerationJobQueue);
+}
+
+function drainGenerationJobQueue() {
+  generationJobDrainScheduled = false;
+  while (generationJobQueue.length && activeAiRequests < AI_MAX_CONCURRENCY) {
+    const jobId = generationJobQueue.shift();
+    const job = generationJobs.get(jobId);
+    if (!job || job.status !== 'queued') continue;
+    void runGenerationJob(job);
+  }
+}
+
+async function runGenerationJob(job) {
+  job.status = 'running';
+  job.startedAt = new Date().toISOString();
+  try {
+    const result = await withAiSlot(() => {
+      const storedSources = materialUploads.resolveAttachments(job.userId, job.attachmentIds);
+      const normalized = normalizeGenerateRequest(job.input, storedSources);
+      return generateLesson(normalized, job.requestId, { id: job.userId });
+    });
+    let updatedUser;
+    try {
+      updatedUser = store.commitGeneration(job.reservation);
+    } finally {
+      job.reservation = null;
+    }
+    if (!updatedUser) {
+      throw new HttpError(500, 'QUOTA_COMMIT_FAILED', '教案已生成，但额度状态保存失败，请联系管理员并提供请求编号');
+    }
+    if (job.attachmentIds.length) {
+      try {
+        materialUploads.deleteAttachments(job.userId, job.attachmentIds);
+      } catch (cleanupError) {
+        console.warn(`[teacher-helper] generated attachment cleanup failed: ${cleanupError.code || cleanupError.message}`);
+      }
+    }
+    job.status = 'completed';
+    job.data = { ...result, creditsRemaining: updatedUser.credits };
+  } catch (error) {
+    if (job.reservation) {
+      store.releaseGeneration(job.reservation);
+      job.reservation = null;
+    }
+    job.status = 'failed';
+    job.error = publicGenerationJobError(error, job.requestId);
+    console.warn(`[teacher-helper] ${JSON.stringify({
+      event: 'ai_generation_job_failed',
+      jobId: job.id,
+      requestId: job.requestId,
+      userRef: stablePrivateHash(job.userId, SAFETY_ID_SALT).slice(0, 16),
+      code: job.error.code,
+      status: Number.isInteger(error?.status) ? error.status : 500,
+      durationMs: Date.now() - new Date(job.startedAt).getTime(),
+    })}`);
+  } finally {
+    job.finishedAt = new Date().toISOString();
+    job.input = null;
+    job.attachmentIds = [];
+    pruneGenerationJobs();
+    scheduleGenerationJobDrain();
+  }
+}
+
+function assertNoInlineGenerationSources(body) {
+  const legacyFields = ['images', 'imageDataUrls', 'textbookImages', 'files'];
+  const supplied = legacyFields.some((field) => {
+    const value = body[field];
+    return Array.isArray(value) ? value.length > 0 : Boolean(value);
+  });
+  if (supplied) {
+    throw new HttpError(
+      400,
+      'ASYNC_INLINE_SOURCES_UNSUPPORTED',
+      '异步生成不接收内联图片或 PDF，请先上传教材并通过 attachmentIds 创建任务',
+    );
+  }
+}
+
+function generationJobInput(normalized) {
+  const { sources: _sources, ...input } = normalized;
+  return input;
+}
+
+function publicGenerationJobError(error, requestId) {
+  const known = error instanceof HttpError
+    || (Number.isInteger(error?.status) && typeof error?.code === 'string');
+  return {
+    code: known ? error.code : 'INTERNAL_ERROR',
+    message: known ? error.message : '服务器内部错误',
+    details: known && error.details ? error.details : null,
+    requestId,
+  };
+}
+
 function enforceAuthRateLimit(ip) {
   consumeRateLimit(
     authRateBuckets,
@@ -3053,6 +3339,7 @@ async function withAiSlot(operation) {
     return await operation();
   } finally {
     activeAiRequests -= 1;
+    if (generationJobQueue.length) scheduleGenerationJobDrain();
   }
 }
 
@@ -3194,6 +3481,7 @@ async function callOpenAI({ inputText, sources, requestId, taskType, user, expec
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
   let upstream;
+  let rawText;
   try {
     upstream = await fetch(`${provider.baseUrl}/responses`, {
       method: 'POST',
@@ -3205,6 +3493,7 @@ async function callOpenAI({ inputText, sources, requestId, taskType, user, expec
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
+    rawText = await upstream.text();
   } catch (error) {
     if (error?.name === 'AbortError') {
       throw new HttpError(504, 'AI_TIMEOUT', `AI 服务在 ${AI_TIMEOUT_MS}ms 内没有响应`);
@@ -3214,7 +3503,6 @@ async function callOpenAI({ inputText, sources, requestId, taskType, user, expec
     clearTimeout(timeout);
   }
 
-  const rawText = await upstream.text();
   const upstreamBody = safeJsonParse(rawText);
   if (!upstream.ok) {
     const upstreamMessage = upstreamBody?.error?.message || `上游返回 HTTP ${upstream.status}`;
@@ -3324,6 +3612,7 @@ async function callOpenAIChatCompletions({ provider, inputText, sources, request
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
   let upstream;
+  let rawText;
   try {
     upstream = await fetch(`${provider.baseUrl}/chat/completions`, {
       method: 'POST',
@@ -3335,6 +3624,7 @@ async function callOpenAIChatCompletions({ provider, inputText, sources, request
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
+    rawText = await upstream.text();
   } catch (error) {
     if (error?.name === 'AbortError') {
       throw new HttpError(504, 'AI_TIMEOUT', `AI 服务在 ${AI_TIMEOUT_MS}ms 内没有响应`);
@@ -3344,7 +3634,6 @@ async function callOpenAIChatCompletions({ provider, inputText, sources, request
     clearTimeout(timeout);
   }
 
-  const rawText = await upstream.text();
   const upstreamBody = safeJsonParse(rawText);
   if (!upstream.ok) {
     const upstreamMessage = upstreamBody?.error?.message || `上游返回 HTTP ${upstream.status}`;
@@ -3972,8 +4261,8 @@ function parseBoundedInteger(value, fallback, minimum, maximum) {
 }
 
 function allowedReasoningEffort(value) {
-  const candidate = (value || 'medium').trim().toLowerCase();
-  return ['none', 'low', 'medium', 'high', 'xhigh', 'max'].includes(candidate) ? candidate : 'medium';
+  const candidate = (value || 'low').trim().toLowerCase();
+  return ['none', 'low', 'medium', 'high', 'xhigh', 'max'].includes(candidate) ? candidate : 'low';
 }
 
 function allowedImageDetail(value) {

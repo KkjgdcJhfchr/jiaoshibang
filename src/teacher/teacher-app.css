@@ -101,6 +101,10 @@
 .orbital i:last-of-type { right: 2px; bottom: 5px; background: var(--amber); }
 .orbital.failed { color: var(--danger); background: var(--danger-soft); }
 .orbital.failed::before { border-color: #edb6b2; animation: none; }
+.orbital.protocol_failed { color: var(--danger); background: var(--danger-soft); }
+.orbital.protocol_failed::before { border-color: #edb6b2; animation: none; }
+.orbital.disconnected, .orbital.delivery_failed { color: #a46816; background: #fff5df; }
+.orbital.disconnected::before, .orbital.delivery_failed::before { border-color: #e7c78b; animation: none; }
 .orbital.done { color: var(--success); background: var(--success-soft); }
 .orbital.done::before { border-color: #9ed5ba; animation: none; }
 .generation-visual h2 { margin-bottom: 9px; font: 700 24px 'Noto Serif SC', serif; }
@@ -111,12 +115,16 @@
 .processing-list > div > span { width: 28px; height: 28px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 50%; color: var(--faint); font-size: 10px; }
 .processing-list > div.current > span { border-color: var(--brand); color: var(--brand); background: var(--brand-pale); }
 .processing-list > div.done > span { border-color: var(--brand); background: var(--brand); color: #fff; }
+.processing-list > div.failed > span { border-color: var(--danger); color: var(--danger); background: var(--danger-soft); }
+.processing-list > div.disconnected > span { border-color: var(--amber); color: #8b5a13; background: #fff5df; }
 .processing-list p { margin: 0; display: flex; flex-direction: column; gap: 4px; }
 .processing-list b { font-size: 12px; }
 .processing-list small { color: var(--muted); font-size: 10px; }
 .processing-list em { color: var(--muted); font-size: 10px; font-style: normal; text-align: right; }
 .processing-list .current em { color: var(--brand); }
 .processing-list .done em { color: var(--success); }
+.processing-list .failed em { color: var(--danger); }
+.processing-list .disconnected em { color: #8b5a13; }
 .leave-generation { display: block; margin: 18px auto 0; padding: 8px; border: 0; background: transparent; color: var(--brand); font-size: 11px; cursor: pointer; }
 .leave-generation:disabled { color: var(--muted); cursor: not-allowed; }
 .generation-actions { margin-top: 18px; display: flex; justify-content: center; flex-wrap: wrap; gap: 10px; }

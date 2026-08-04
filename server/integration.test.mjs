@@ -171,23 +171,28 @@ const mockUpstream = createServer(async (request, response) => {
     : inputText.includes('唯一一行') && inputKinds.some((kind) => ['file', 'input_file'].includes(kind))
       ? 'BKX-PROBE'
       : inputText.includes('"ok"') ? '{"ok":"OK"}' : null;
+  const responseBody = isChatCompletions
+    ? {
+        id: `chatcmpl_${upstreamRequests.length}`,
+        model: body.model,
+        choices: [{ index: 0, message: { role: 'assistant', content: capabilityProbeText || JSON.stringify(lessonPlan) }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
+      }
+    : {
+        id: `resp_${upstreamRequests.length}`,
+        status: 'completed',
+        model: body.model,
+        output: [{ type: 'message', content: [{ type: 'output_text', text: capabilityProbeText || JSON.stringify(lessonPlan) }] }],
+        usage: { input_tokens: 10, output_tokens: 20, total_tokens: 30 },
+      };
   response.writeHead(200, { 'Content-Type': 'application/json' });
-  if (isChatCompletions) {
-    response.end(JSON.stringify({
-      id: `chatcmpl_${upstreamRequests.length}`,
-      model: body.model,
-      choices: [{ index: 0, message: { role: 'assistant', content: capabilityProbeText || JSON.stringify(lessonPlan) }, finish_reason: 'stop' }],
-      usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
-    }));
+  if (inputText.includes('DELAY_BODY_AFTER_HEADERS')) {
+    response.flushHeaders();
+    await delay(1_200);
+    if (!response.destroyed && !response.writableEnded) response.end(JSON.stringify(responseBody));
     return;
   }
-  response.end(JSON.stringify({
-    id: `resp_${upstreamRequests.length}`,
-    status: 'completed',
-    model: body.model,
-    output: [{ type: 'message', content: [{ type: 'output_text', text: capabilityProbeText || JSON.stringify(lessonPlan) }] }],
-    usage: { input_tokens: 10, output_tokens: 20, total_tokens: 30 },
-  }));
+  response.end(JSON.stringify(responseBody));
 });
 
 let appProcess;
@@ -214,6 +219,7 @@ try {
     AI_RATE_LIMIT_USER_MAX: '5',
     AI_RATE_LIMIT_IP_MAX: '100',
     AI_MAX_CONCURRENCY: '1',
+    AI_REQUEST_TIMEOUT_MS: '750',
   };
 
   const firstRunPort = await reservePort();
@@ -728,6 +734,164 @@ try {
   assert.equal(stalePrivacyRegistration.status, 409);
   assert.equal(stalePrivacyRegistration.body.error.code, 'PRIVACY_POLICY_CHANGED');
   currentPrivacyPolicyUpdatedAt = reopenedPublicSettings.body.data.privacyPolicy.updatedAt;
+
+  const asyncJobRegistration = await client.json('/api/auth/register', {
+    method: 'POST',
+    body: {
+      identifier: 'async-job@example.com',
+      password: 'AsyncJobPass1',
+      displayName: '异步任务测试教师',
+      subject: '语文',
+      privacyAccepted: true,
+      privacyPolicyUpdatedAt: currentPrivacyPolicyUpdatedAt,
+    },
+  });
+  assert.equal(asyncJobRegistration.status, 201);
+  const asyncJobCookie = cookiePair(asyncJobRegistration.headers.get('set-cookie'));
+
+  const missingIdempotencyKey = await client.json('/api/ai/generation-jobs', {
+    method: 'POST',
+    cookie: asyncJobCookie,
+    body: generationBody('异步生成缺少幂等键'),
+  });
+  assert.equal(missingIdempotencyKey.status, 400);
+  assert.equal(missingIdempotencyKey.body.error.code, 'IDEMPOTENCY_KEY_REQUIRED');
+
+  const inlineSourceRejected = await client.json('/api/ai/generation-jobs', {
+    method: 'POST',
+    cookie: asyncJobCookie,
+    headers: { 'Idempotency-Key': 'async-inline-source-0001' },
+    body: {
+      ...generationBody('异步接口不允许内联教材'),
+      images: ['data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlWQAAAAASUVORK5CYII='],
+    },
+  });
+  assert.equal(inlineSourceRejected.status, 400);
+  assert.equal(inlineSourceRejected.body.error.code, 'ASYNC_INLINE_SOURCES_UNSUPPORTED');
+
+  const asyncMaterialUpload = await client.json('/api/app/material-uploads', {
+    method: 'POST',
+    cookie: asyncJobCookie,
+    body: {
+      name: 'async-material.png',
+      type: 'image/png',
+      dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlWQAAAAASUVORK5CYII=',
+    },
+  });
+  assert.equal(asyncMaterialUpload.status, 201);
+  const asyncAttachmentId = asyncMaterialUpload.body.data.attachment.id;
+
+  const successfulJobBody = {
+    ...generationBody('异步生成正常完成'),
+    attachmentIds: [asyncAttachmentId],
+  };
+  const successfulJobCreated = await client.json('/api/ai/generation-jobs', {
+    method: 'POST',
+    cookie: asyncJobCookie,
+    headers: { 'Idempotency-Key': 'async-success-request-0001' },
+    body: successfulJobBody,
+  });
+  assert.equal(successfulJobCreated.status, 202);
+  assert.equal(successfulJobCreated.body.data.job.status, 'queued');
+  assert.equal(successfulJobCreated.body.data.job.pollAfterMs, 1_000);
+  assert.match(successfulJobCreated.body.data.job.id, /^gen_[0-9a-f-]{36}$/);
+  for (const privateField of ['userId', 'idempotencyKey', 'requestHash', 'input', 'normalized', 'reservation', 'attachmentIds']) {
+    assert.equal(Object.hasOwn(successfulJobCreated.body.data.job, privateField), false, `生成任务不得公开 ${privateField}`);
+  }
+  const successfulJobId = successfulJobCreated.body.data.job.id;
+
+  const successfulJobReplay = await client.json('/api/ai/generation-jobs', {
+    method: 'POST',
+    cookie: asyncJobCookie,
+    headers: { 'Idempotency-Key': 'async-success-request-0001' },
+    body: { ...successfulJobBody },
+  });
+  assert.equal(successfulJobReplay.status, 202);
+  assert.equal(successfulJobReplay.body.data.job.id, successfulJobId, '相同用户和幂等键必须重放原任务');
+
+  const successfulJobConflict = await client.json('/api/ai/generation-jobs', {
+    method: 'POST',
+    cookie: asyncJobCookie,
+    headers: { 'Idempotency-Key': 'async-success-request-0001' },
+    body: generationBody('同一幂等键但参数不同'),
+  });
+  assert.equal(successfulJobConflict.status, 409);
+  assert.equal(successfulJobConflict.body.error.code, 'IDEMPOTENCY_CONFLICT');
+
+  const hiddenFromOtherUser = await client.json(`/api/ai/generation-jobs/${successfulJobId}`, {
+    cookie: userCookie,
+  });
+  assert.equal(hiddenFromOtherUser.status, 404);
+  assert.equal(hiddenFromOtherUser.body.error.code, 'GENERATION_JOB_NOT_FOUND');
+
+  const successfulJob = await waitForGenerationJob(client, asyncJobCookie, successfulJobId);
+  assert.equal(successfulJob.status, 'completed');
+  assert.equal(successfulJob.pollAfterMs, 0);
+  assert.equal(successfulJob.data.creditsRemaining, 2);
+  assert.equal(successfulJob.data.providerId, 'environment-fallback');
+  assert.equal(successfulJob.data.lessonPlan.schemaVersion, 'lesson-plan.v1');
+  const removedAsyncMaterial = await client.json(`/api/app/material-uploads/${encodeURIComponent(asyncAttachmentId)}`, {
+    cookie: asyncJobCookie,
+  });
+  assert.equal(removedAsyncMaterial.status, 404, '异步生成成功后应删除教材暂存附件');
+  const completedJobReplay = await client.json('/api/ai/generation-jobs', {
+    method: 'POST',
+    cookie: asyncJobCookie,
+    headers: { 'Idempotency-Key': 'async-success-request-0001' },
+    body: successfulJobBody,
+  });
+  assert.equal(completedJobReplay.status, 202);
+  assert.equal(completedJobReplay.body.data.job.id, successfulJobId, '附件清理后仍应重放已完成的幂等任务');
+  assert.equal(completedJobReplay.body.data.job.status, 'completed');
+
+  const retainedMaterialUpload = await client.json('/api/app/material-uploads', {
+    method: 'POST',
+    cookie: asyncJobCookie,
+    body: {
+      name: 'retained-after-failure.png',
+      type: 'image/png',
+      dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlWQAAAAASUVORK5CYII=',
+    },
+  });
+  assert.equal(retainedMaterialUpload.status, 201);
+  const retainedAttachmentId = retainedMaterialUpload.body.data.attachment.id;
+  const timeoutJobStartedAt = Date.now();
+  const timeoutJobCreated = await client.json('/api/ai/generation-jobs', {
+    method: 'POST',
+    cookie: asyncJobCookie,
+    headers: { 'Idempotency-Key': 'async-timeout-request-0001' },
+    body: {
+      ...generationBody('DELAY_BODY_AFTER_HEADERS'),
+      attachmentIds: [retainedAttachmentId],
+    },
+  });
+  assert.equal(timeoutJobCreated.status, 202);
+  const timeoutJob = await waitForGenerationJob(
+    client,
+    asyncJobCookie,
+    timeoutJobCreated.body.data.job.id,
+    { timeoutMs: 5_000 },
+  );
+  assert.equal(timeoutJob.status, 'failed');
+  assert.equal(timeoutJob.error.code, 'AI_TIMEOUT', '收到响应头后正文迟延仍必须受 AI 超时控制');
+  assert.equal(timeoutJob.error.details, null);
+  assert.match(timeoutJob.error.requestId, /^[a-f0-9]{16}$/);
+  assert.equal(Date.now() - timeoutJobStartedAt < 2_000, true, '正文读取应在 AI 超时后及时终止');
+  const asyncUserAfterTimeout = await client.json('/api/auth/session', { cookie: asyncJobCookie });
+  assert.equal(asyncUserAfterTimeout.body.data.user.credits, 2, '异步生成失败不得扣除额度');
+  const retainedMaterial = await client.json(`/api/app/material-uploads/${encodeURIComponent(retainedAttachmentId)}`, {
+    cookie: asyncJobCookie,
+  });
+  assert.equal(retainedMaterial.status, 200, '异步生成失败后应保留教材附件供用户重试');
+  const retainedMaterialCleanup = await client.json(`/api/app/material-uploads/${encodeURIComponent(retainedAttachmentId)}`, {
+    method: 'DELETE',
+    cookie: asyncJobCookie,
+  });
+  assert.equal(retainedMaterialCleanup.status, 200);
+  await delay(20);
+  assert.match(appLog, /"event":"ai_generation_job_failed"/);
+  assert.equal(appLog.includes('DELAY_BODY_AFTER_HEADERS'), false, '任务失败日志不得包含教材或生成要求');
+  assert.equal(appLog.includes('integration-environment-key'), false, '任务失败日志不得包含模型密钥');
 
   const adminPlans = await client.json('/api/admin/payments/plans', { cookie: adminCookie });
   assert.equal(adminPlans.status, 200);
@@ -1580,6 +1744,8 @@ try {
       authAndSignedCookies: true,
       aiRequiresLogin: true,
       successOnlyQuotaDeduction: true,
+      asyncGenerationIdempotencyAndPolling: true,
+      delayedResponseBodyTimeout: true,
       encryptedProviderRouting: true,
       globalConcurrency: true,
       perUserAndIpRateLimit: true,
@@ -1618,6 +1784,18 @@ function generationBody(requirements) {
     sourceText: '这是一段用于集成测试的章节文字。',
     requirements,
   };
+}
+
+async function waitForGenerationJob(client, cookie, jobId, { timeoutMs = 3_000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const response = await client.json(`/api/ai/generation-jobs/${encodeURIComponent(jobId)}`, { cookie });
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    const job = response.body.data.job;
+    if (job.status === 'completed' || job.status === 'failed') return job;
+    if (Date.now() >= deadline) assert.fail(`生成任务 ${jobId} 在 ${timeoutMs}ms 内没有进入终态`);
+    await delay(Math.min(50, Math.max(10, Number(job.pollAfterMs || 10))));
+  }
 }
 
 function extractEmailCode(message) {

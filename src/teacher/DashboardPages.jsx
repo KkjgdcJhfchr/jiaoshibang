@@ -37,6 +37,9 @@ import { accountDisplayName, Button, EmptyState, Field, Modal, Status, TeacherSh
 
 const LESSON_LIBRARY_KEY = 'teacher-helper.lesson-library.v2';
 const LESSON_DRAFT_VERSION = 2;
+const GENERATION_JOB_STORAGE_KEY = 'teacher-helper.generation-job.v1';
+const GENERATION_JOB_STORAGE_VERSION = 1;
+const GENERATION_POLL_INTERVAL_MS = 1_500;
 
 const draftDefaults = {
   subject: '语文', grade: '七年级', edition: '人教版', chapterTitle: '', lessonType: '新授课',
@@ -45,6 +48,7 @@ const draftDefaults = {
 };
 
 let pendingGeneration = null;
+let generationJobMemoryState = null;
 const MATERIAL_UPLOAD_CONCURRENCY = 3;
 
 function safeRead(key, fallback) {
@@ -65,6 +69,48 @@ function readDraft() {
       chapterTitle: draftVersion !== LESSON_DRAFT_VERSION && draft.chapterTitle === '《春》' ? '' : (draft.chapterTitle || ''),
     };
   } catch { return draftDefaults; }
+}
+
+function readGenerationJobState() {
+  if (generationJobMemoryState) return generationJobMemoryState;
+  try {
+    const stored = JSON.parse(sessionStorage.getItem(GENERATION_JOB_STORAGE_KEY));
+    if (stored?.version !== GENERATION_JOB_STORAGE_VERSION || !stored.idempotencyKey || !stored.requestBody) return null;
+    generationJobMemoryState = stored;
+    return stored;
+  } catch { return null; }
+}
+
+function saveGenerationJobState(state) {
+  generationJobMemoryState = {
+    version: GENERATION_JOB_STORAGE_VERSION,
+    ownerRef: state.ownerRef || '',
+    idempotencyKey: state.idempotencyKey,
+    jobId: state.jobId || '',
+    deliveredLessonId: state.deliveredLessonId || '',
+    requestBody: state.requestBody,
+    sourceFiles: Array.isArray(state.sourceFiles) ? state.sourceFiles : [],
+    createdAt: state.createdAt || Date.now(),
+  };
+  try {
+    sessionStorage.setItem(GENERATION_JOB_STORAGE_KEY, JSON.stringify(generationJobMemoryState));
+  } catch {
+    // The in-memory copy still preserves idempotency for retries in this tab.
+  }
+}
+
+function clearGenerationJobState() {
+  generationJobMemoryState = null;
+  try { sessionStorage.removeItem(GENERATION_JOB_STORAGE_KEY); } catch {}
+}
+
+function createGenerationIdempotencyKey() {
+  const unique = crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `lesson-${unique}`;
+}
+
+function waitForNextPoll(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function chapterPlaceholder(subject) {
@@ -490,6 +536,7 @@ export function CreateLessonPage({ path }) {
   function submit() {
     if (!rights) { setError('请先确认你有权将这些内容用于本次备课服务。'); return; }
     setError('');
+    clearGenerationJobState();
     const attachments = materials.map((item) => ({
       ...item.attachment,
       id: item.attachment.id,
@@ -575,30 +622,28 @@ export function CreateLessonPage({ path }) {
 }
 
 const processingSteps = [
-  { key: 'security', label: '文件安全检查', detail: '检查文件格式、大小和页面完整性' },
-  { key: 'ocr', label: '识别教材内容', detail: '理解正文、例题、插图和章节结构' },
-  { key: 'plan', label: '规划课堂流程', detail: '拆解目标、重点难点与分钟级教学环节' },
-  { key: 'write', label: '生成教案与习题', detail: '补充教师话术、课堂互动和至少 10 道习题' },
-  { key: 'quality', label: '质量与结构检查', detail: '检查时间总和、答案解析和内容完整性' },
+  { key: 'submitted', label: '生成任务已提交', detail: '教材与课堂要求已安全交给后台任务' },
+  { key: 'generating', label: '理解教材并生成教案', detail: '模型正在组织课堂流程、教师话术、互动与习题' },
+  { key: 'saving', label: '校验并保存结果', detail: '结构校验通过后才会扣除额度并打开编辑器' },
 ];
 
 export function GeneratingPage({ path }) {
+  const account = useAccount();
+  const ownerRef = String(account?.id || account?.account || '');
   const [active, setActive] = useState(0);
   const [state, setState] = useState('running');
   const [error, setError] = useState('');
-  const started = useRef(false);
+  const runToken = useRef(0);
+  const terminalFailure = useRef(false);
+  const completedDelivery = useRef(null);
+  const deliveryRetryable = useRef(false);
 
-  async function run() {
-    if (started.current) return;
-    started.current = true;
-    setState('running'); setError(''); setActive(0);
-    const draft = pendingGeneration || readDraft();
-    const timer = setInterval(() => setActive((value) => Math.min(value + 1, processingSteps.length - 1)), 1700);
-    try {
-      if (!draft.attachments?.length) throw new Error('没有找到待处理的教材文件，请返回创建页面重新上传。');
-      const attachmentIds = draft.attachments.map((file) => file.id || file.attachmentId).filter(Boolean);
-      if (attachmentIds.length !== draft.attachments.length) throw new Error('部分教材没有上传完成，请返回创建页面重新上传。');
-      const response = await api.generateLesson({
+  function generationRequestFromDraft(draft) {
+    if (!draft.attachments?.length) throw new Error('没有找到待处理的教材文件，请返回创建页面重新上传。');
+    const attachmentIds = draft.attachments.map((file) => file.id || file.attachmentId).filter(Boolean);
+    if (attachmentIds.length !== draft.attachments.length) throw new Error('部分教材没有上传完成，请返回创建页面重新上传。');
+    return {
+      requestBody: {
         subject: draft.subject,
         grade: draft.grade,
         textbookEdition: draft.edition,
@@ -608,44 +653,207 @@ export function GeneratingPage({ path }) {
         classProfile: draft.classProfile,
         requirements: `${draft.requirements || ''}\n教学风格：${draft.style}；详细程度：${draft.detailLevel}；互动密度：${draft.interaction}；习题数量：${draft.exerciseCount}。`,
         attachmentIds,
-      });
-      const lesson = response.data?.lessonPlan || response.lessonPlan;
-      if (!lesson) throw new Error('模型返回了空教案，请稍后重试。');
-      const generatedId = `lesson-${Date.now()}`;
-      const storedLesson = {
-        ...lesson,
-        id: generatedId,
-        source_files: draft.attachments.map((file) => ({ name: file.name, type: file.type, size: file.size })),
-        updated_at: '刚刚',
-      };
+      },
+      sourceFiles: draft.attachments.map((file) => ({ name: file.name, type: file.type, size: file.size })),
+    };
+  }
+
+  async function pollGenerationJob(jobId, token) {
+    let consecutiveNetworkErrors = 0;
+    for (;;) {
+      if (runToken.current !== token) return null;
+      try {
+        const response = await api.getGenerationJob(jobId);
+        const job = response.data?.job || response.job;
+        if (!job) throw new Error('服务器没有返回生成任务状态。');
+        if (runToken.current !== token) return null;
+        consecutiveNetworkErrors = 0;
+        if (job.status === 'completed' || job.status === 'succeeded') return job;
+        if (job.status === 'failed') {
+          const jobError = new Error(job.error?.message || '教案生成未完成，请稍后重试。');
+          jobError.code = job.error?.code || 'GENERATION_FAILED';
+          jobError.details = job.error?.details || null;
+          jobError.terminal = true;
+          throw jobError;
+        }
+        if (!['queued', 'running'].includes(job.status)) {
+          const protocolError = new Error('服务器返回了无法识别的生成任务状态，请联系管理员并提供任务编号。');
+          protocolError.code = 'GENERATION_JOB_PROTOCOL_ERROR';
+          protocolError.protocol = true;
+          throw protocolError;
+        }
+        setActive(1);
+        await waitForNextPoll(Math.min(5_000, Math.max(750, Number(job.pollAfterMs) || GENERATION_POLL_INTERVAL_MS)));
+      } catch (pollError) {
+        if (pollError.protocol) throw pollError;
+        const transient = !pollError.code || pollError.code === 'REQUEST_TIMEOUT' || Number(pollError.status || 0) >= 500;
+        if (!transient) throw pollError;
+        consecutiveNetworkErrors += 1;
+        if (consecutiveNetworkErrors >= 4) {
+          pollError.connectionLost = true;
+          throw pollError;
+        }
+        await waitForNextPoll(GENERATION_POLL_INTERVAL_MS * consecutiveNetworkErrors);
+      }
+    }
+  }
+
+  function deliverCompletedJob(job, stored, token) {
+    completedDelivery.current = { job, stored };
+    setActive(2);
+    const lesson = job.data?.lessonPlan || job.data?.result?.lessonPlan;
+    if (!lesson) {
+      const protocolError = new Error(`后台任务已经完成，但返回结果缺少教案内容。请联系管理员并提供任务编号 ${job.id || stored.jobId}。`);
+      protocolError.delivery = true;
+      protocolError.retryable = false;
+      throw protocolError;
+    }
+    const generatedId = `lesson-${Date.now()}`;
+    const storedLesson = {
+      ...lesson,
+      id: generatedId,
+      source_files: stored.sourceFiles,
+      updated_at: '刚刚',
+    };
+    try {
       localStorage.setItem('current-lesson', JSON.stringify(storedLesson));
       localStorage.setItem('current-lesson-canonical', JSON.stringify(lesson));
       localStorage.setItem('current-lesson-rights-confirmed', 'true');
       persistCurrentLessonSummary(storedLesson);
-      pendingGeneration = null;
-      setActive(processingSteps.length); setState('done');
-      setTimeout(() => navigate(`/app/lesson/${generatedId}`), 650);
-    } catch (requestError) {
-      setState('failed'); setError(requestError.message);
-    } finally {
-      clearInterval(timer);
+    } catch {
+      const storageError = new Error('教案已经生成且不会再次扣费，但浏览器无法保存结果。请清理浏览器存储空间后点击“重新保存并打开”。');
+      storageError.delivery = true;
+      storageError.retryable = true;
+      throw storageError;
+    }
+    saveGenerationJobState({ ...stored, deliveredLessonId: generatedId });
+    completedDelivery.current = null;
+    pendingGeneration = null;
+    setActive(processingSteps.length); setState('done');
+    setTimeout(() => {
+      if (runToken.current === token) navigate(`/app/lesson/${generatedId}`);
+    }, 650);
+  }
+
+  function retryCompletedDelivery() {
+    const pending = completedDelivery.current;
+    if (!pending) {
+      void run();
+      return;
+    }
+    const token = runToken.current + 1;
+    runToken.current = token;
+    setState('running'); setError(''); setActive(2);
+    try {
+      deliverCompletedJob(pending.job, pending.stored, token);
+    } catch (deliveryError) {
+      deliveryRetryable.current = deliveryError.retryable === true;
+      setState('delivery_failed');
+      setError(deliveryError.message || '教案已经生成，但暂时无法在浏览器中保存。');
     }
   }
 
-  useEffect(() => { run(); }, []);
+  async function run({ retry = false } = {}) {
+    const token = runToken.current + 1;
+    runToken.current = token;
+    const shouldStartNewJob = retry && terminalFailure.current;
+    terminalFailure.current = false;
+    setState('running'); setError(''); setActive(0);
+    let stored = null;
+    try {
+      stored = readGenerationJobState();
+      if (stored?.ownerRef && ownerRef && stored.ownerRef !== ownerRef) {
+        clearGenerationJobState();
+        stored = null;
+      }
+      if (stored?.deliveredLessonId) {
+        pendingGeneration = null;
+        navigate(`/app/lesson/${stored.deliveredLessonId}`, { replace: true, instant: true });
+        return;
+      }
+      if (!stored) {
+        const prepared = generationRequestFromDraft(pendingGeneration || readDraft());
+        stored = {
+          version: GENERATION_JOB_STORAGE_VERSION,
+          ownerRef,
+          idempotencyKey: createGenerationIdempotencyKey(),
+          jobId: '',
+          ...prepared,
+          createdAt: Date.now(),
+        };
+        saveGenerationJobState(stored);
+      } else if (!stored.ownerRef && ownerRef) {
+        stored = { ...stored, ownerRef };
+        saveGenerationJobState(stored);
+      }
+      if (shouldStartNewJob && stored.jobId) {
+        stored = { ...stored, idempotencyKey: createGenerationIdempotencyKey(), jobId: '', createdAt: Date.now() };
+        saveGenerationJobState(stored);
+      }
+
+      if (!stored.jobId) {
+        const response = await api.createGenerationJob(stored.requestBody, stored.idempotencyKey);
+        const createdJob = response.data?.job || response.job;
+        const jobId = createdJob?.id || createdJob?.jobId;
+        if (!jobId) throw new Error('服务器没有返回生成任务编号。');
+        if (runToken.current !== token) return;
+        stored = { ...stored, jobId };
+        saveGenerationJobState(stored);
+      }
+
+      setActive(1);
+      const job = await pollGenerationJob(stored.jobId, token);
+      if (!job || runToken.current !== token) return;
+      deliverCompletedJob(job, stored, token);
+    } catch (requestError) {
+      if (runToken.current !== token) return;
+      terminalFailure.current = requestError.terminal === true;
+      if (requestError.status === 404 && stored) saveGenerationJobState({ ...stored, jobId: '' });
+      deliveryRetryable.current = requestError.delivery && requestError.retryable === true;
+      setState(requestError.delivery
+        ? 'delivery_failed'
+        : requestError.connectionLost
+          ? 'disconnected'
+          : requestError.protocol ? 'protocol_failed' : 'failed');
+      setError(requestError.message || '教案生成未完成，请稍后重试。');
+    }
+  }
+
+  useEffect(() => {
+    void run();
+    return () => { runToken.current += 1; };
+  }, []);
+
+  const heading = state === 'failed'
+    ? '本次生成未完成'
+    : state === 'disconnected'
+      ? '暂时无法连接后台任务'
+      : state === 'delivery_failed'
+        ? '教案已生成，等待保存'
+        : state === 'protocol_failed'
+          ? '生成任务状态异常'
+          : state === 'done' ? '教案已经准备好' : '正在理解教材，组织这堂课';
+  const statusMessage = state === 'running'
+    ? '任务已在后台持续处理，通常需要 1—5 分钟，复杂章节可能更久。'
+    : state === 'done' ? '正在打开教案编辑器…' : error;
 
   return (
-    <TeacherShell path={path} title="AI 正在准备教案" subtitle="请保持页面打开，系统会在完成后自动进入教案编辑器。" contentClass="generating-shell">
+    <TeacherShell path={path} title="AI 正在准备教案" subtitle="任务会在后台继续处理，刷新页面后仍可恢复当前进度。" contentClass="generating-shell">
       <section className="generating-page">
-        <div className="generation-visual"><div className={`orbital ${state}`}><BookOpen size={29} /><i /><i /></div><h2>{state === 'failed' ? '本次生成未完成' : state === 'done' ? '教案已经准备好' : '正在理解教材，组织这堂课'}</h2><p>{state === 'running' ? '通常需要 1—3 分钟，章节页数较多时会更久。' : state === 'done' ? '正在打开教案编辑器…' : error}</p></div>
+        <div className="generation-visual"><div className={`orbital ${state}`}><BookOpen size={29} /><i /><i /></div><h2>{heading}</h2><p>{statusMessage}</p></div>
         <div className="processing-list">
           {processingSteps.map((item, index) => {
             const done = state === 'done' || index < active;
             const current = state === 'running' && index === active;
-            return <div key={item.key} className={`${done ? 'done' : ''} ${current ? 'current' : ''}`}><span>{done ? <Check size={16} /> : current ? <LoaderCircle className="spin" size={17} /> : index + 1}</span><p><b>{item.label}</b><small>{item.detail}</small></p>{current ? <em>处理中</em> : done ? <em>已完成</em> : null}</div>;
+            const failed = ['failed', 'delivery_failed', 'protocol_failed'].includes(state) && index === active;
+            const disconnected = state === 'disconnected' && index === active;
+            return <div key={item.key} className={`${done ? 'done' : ''} ${current ? 'current' : ''} ${failed ? 'failed' : ''} ${disconnected ? 'disconnected' : ''}`}><span>{done ? <Check size={16} /> : current ? <LoaderCircle className="spin" size={17} /> : index + 1}</span><p><b>{item.label}</b><small>{item.detail}</small></p>{current ? <em>后台处理中</em> : disconnected ? <em>等待重新连接</em> : failed ? <em>需要处理</em> : done ? <em>已完成</em> : null}</div>;
           })}
         </div>
-        {state === 'failed' ? <div className="generation-actions"><Button variant="secondary" icon={RotateCcw} onClick={() => { started.current = false; run(); }}>重新尝试</Button><Button onClick={() => navigate('/app/create')}>返回检查教材</Button></div> : null}
+        {state === 'failed' ? <div className="generation-actions"><Button variant="secondary" icon={RotateCcw} onClick={() => void run({ retry: true })}>{terminalFailure.current ? '重新生成' : '重新尝试'}</Button><Button onClick={() => { clearGenerationJobState(); pendingGeneration = null; navigate('/app/create'); }}>返回检查教材</Button></div> : null}
+        {state === 'disconnected' ? <div className="generation-actions"><Button variant="secondary" icon={RotateCcw} onClick={() => void run()}>重新连接</Button><Button onClick={() => navigate('/app')}>返回首页（任务继续处理）</Button></div> : null}
+        {state === 'delivery_failed' ? <div className="generation-actions">{deliveryRetryable.current ? <Button variant="secondary" icon={RotateCcw} onClick={retryCompletedDelivery}>重新保存并打开</Button> : null}<Button onClick={() => navigate('/app')}>返回首页（保留生成结果）</Button></div> : null}
+        {state === 'protocol_failed' ? <div className="generation-actions"><Button onClick={() => navigate('/app')}>返回首页（保留任务信息）</Button></div> : null}
         <div className="generation-note"><WandSparkles size={18} /><p><b>教师仍是最终审核者</b><span>AI 会检查结构完整性和习题数量，但知识准确性、学情适配与课堂安全仍需由教师确认。</span></p></div>
       </section>
     </TeacherShell>
