@@ -125,6 +125,14 @@ const ALLOW_INSECURE_PROVIDER_URLS = parseBoolean(process.env.ALLOW_INSECURE_PRO
 const ALLOW_PRIVATE_PROVIDER_NETWORKS = parseBoolean(process.env.ALLOW_PRIVATE_PROVIDER_NETWORKS, false);
 const MODEL_CAPABILITIES = new Set(['lesson_generation', 'lesson_revision', 'multimodal_input']);
 const MODEL_ADAPTERS = new Set(['openai_responses', 'openai_chat_completions']);
+const PROVIDER_PROBE_TIMEOUT_MS = Math.min(
+  parsePositiveInteger(process.env.AI_PROVIDER_PROBE_TIMEOUT_MS, 20_000),
+  60_000,
+);
+const PROVIDER_DISCOVERY_MODEL_LIMIT = 1000;
+const PROVIDER_PROBE_IMAGE_MARKER = 'BKX7319';
+const PROVIDER_PROBE_IMAGE_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAUAAAABaAQAAAADh0bJOAAACSUlEQVR42u2Wv43bMBSHP8pCzCKIuYE5QgYIcBzFm4TpUmYEj8LbICPQQIqUTHAFD+DxpaAkS7LukDaIVZnUx/f3xycr4e+ejjt4B+/gPwVelLJcLI/60aI8wIsGvsAv28B+PPEDIGiS8KJAnp7b/refAyAiIhGUxKNwjIdKASTwWQQRlIiIyBRjGy3W5KoACIS2LetkPAhutowIVPBL1zzEY0HyLu9Kc3CQgmR4WLoGKIq+5n6K5Anyqo5HIUKejimImQTsQ1zGGIDU00nSDTVwBrRdJWOBqIETO6ldRSMeEibdtjCAAgO1p4MKYLZ67Q34YKHoXRg39S0o2OviU0tpUz0VBw4H2QB6eJmXYLQUfEuKZCHD+y2LDrIaewmQzJTIDLwoHEkAo4Do4Gw5ASlviGI01tZO+Wt1rsIdM9QdEK6nnr7fChceRJISEUSkCTfBfiVcD8S5+fOs3PMYAzhoGbW0F6FdwQjnBBHfxJjz1r0+ik+zjnVAX9qvfmXxBJ3J7VLVqyHl16DJ9JQhhh7oGn76uCjPUfI+HvJOBHeUsheRqlqZ8v7mcpm+IpxTM8xSkK8Oqa9vTbNOqMpk0Dz718BWNV+gkGF0LyZvWFRApye9A/weBTSB3zXgQ+77CtDXMlyEtJDZRXFgpgqQ5lKXuHZtAEfSnZAMHabZeHF2ozw2RaPwbw97yyovPYTmVqADTA4WH9oVMsN7vwTbt6BMOnfNhRrFN4Efhra6wZVtMxz/bq6ejafsZBSWiIio+x/NO3gH/1/wD5C7MO3sPzT5AAAAAElFTkSuQmCC';
+const PROVIDER_PROBE_PDF_DATA_URL = createProbePdfDataUrl();
 const MODEL_PROVIDER_LABELS = Object.freeze({
   deepseek: 'DeepSeek',
   openai: 'OpenAI 官方',
@@ -755,7 +763,7 @@ async function handleRequest(request, response) {
 
     if (request.method === 'GET' && isProviderCollectionPath(url.pathname)) {
       requireAdminSession(request);
-      const channels = store.listChannels().map(publicChannel);
+      const channels = store.listChannels().map((channel, index) => publicChannel(channel, { routeOrder: index + 1 }));
       const environmentChannel = publicEnvironmentChannel();
       if (environmentChannel) channels.push(environmentChannel);
       sendJson(response, 200, { ok: true, data: { providers: channels, channels } });
@@ -768,6 +776,14 @@ async function handleRequest(request, response) {
       const channel = createModelChannel(body, session.admin.username);
       const visible = publicChannel(channel);
       sendJson(response, 201, { ok: true, data: { provider: visible, channel: visible } });
+      return;
+    }
+
+    if (request.method === 'POST' && isProviderDiscoveryPath(url.pathname)) {
+      requireAdminSession(request);
+      const body = await readJsonBody(request, 64 * 1024);
+      const result = await discoverModelChannel(body);
+      sendJson(response, 200, { ok: true, data: { result } });
       return;
     }
 
@@ -786,6 +802,16 @@ async function handleRequest(request, response) {
       const channel = patchModelChannel(providerId, body, session.admin.username);
       const visible = publicChannel(channel);
       sendJson(response, 200, { ok: true, data: { provider: visible, channel: visible } });
+      return;
+    }
+
+    if (request.method === 'DELETE' && providerId) {
+      const session = requireAdminSession(request);
+      if (providerId === 'environment-fallback') {
+        throw new HttpError(403, 'PROVIDER_READONLY', '服务器安全配置的模型通道不能在后台删除');
+      }
+      const deleted = deleteModelChannel(providerId, session.admin.username);
+      sendJson(response, 200, { ok: true, data: { provider: deleted, channel: deleted } });
       return;
     }
 
@@ -2047,6 +2073,15 @@ function isProviderCollectionPath(pathname) {
   return pathname === '/api/admin/providers' || pathname === '/api/admin/model-channels';
 }
 
+function isProviderDiscoveryPath(pathname) {
+  return [
+    '/api/admin/providers/discover',
+    '/api/admin/providers/probe',
+    '/api/admin/model-channels/discover',
+    '/api/admin/model-channels/probe',
+  ].includes(pathname);
+}
+
 function providerIdFromPath(pathname) {
   const match = pathname.match(/^\/api\/admin\/(?:providers|model-channels)\/([^/]+)$/);
   if (!match) return null;
@@ -2068,106 +2103,390 @@ function providerTestIdFromPath(pathname) {
 }
 
 async function testModelChannel(channelId) {
-  let baseUrl;
-  let model;
-  let apiKey;
-  let displayName;
-  let adapter;
-  let providerType;
+  let configuration;
   if (channelId === 'environment-fallback') {
-    apiKey = getApiKey();
+    const apiKey = getApiKey();
     if (!apiKey) throw new HttpError(404, 'PROVIDER_NOT_FOUND', '服务器安全配置的模型通道不存在');
-    baseUrl = OPENAI_BASE_URL;
-    model = OPENAI_MODEL;
-    displayName = 'OpenAI（服务器安全配置）';
-    adapter = 'openai_responses';
-    providerType = 'openai';
+    configuration = {
+      providerId: channelId,
+      baseUrl: OPENAI_BASE_URL,
+      model: OPENAI_MODEL,
+      apiKey,
+      displayName: 'OpenAI（服务器安全配置）',
+      adapter: 'openai_responses',
+      providerType: 'openai',
+    };
   } else {
     const channel = store.findChannel(channelId);
     if (!channel) throw new HttpError(404, 'PROVIDER_NOT_FOUND', '模型通道不存在');
+    let apiKey;
     try {
       apiKey = decryptSecret(channel.encryptedApiKey, SESSION_SECRET, `model-channel:${channel.id}`);
     } catch {
       throw new HttpError(503, 'AI_PROVIDER_SECRET_ERROR', `模型通道“${channel.displayName}”的密钥无法解密`);
     }
-    baseUrl = channel.baseUrl;
-    model = channel.models?.generation || channel.models?.revision || '';
-    displayName = channel.displayName;
-    adapter = normalizeStoredProviderAdapter(channel.adapter, channel.provider);
-    providerType = normalizeStoredProviderType(channel.provider);
+    configuration = {
+      providerId: channel.id,
+      baseUrl: channel.baseUrl,
+      model: channel.models?.generation || channel.models?.revision || '',
+      apiKey,
+      displayName: channel.displayName,
+      adapter: normalizeStoredProviderAdapter(channel.adapter, channel.provider),
+      providerType: normalizeStoredProviderType(channel.provider),
+    };
   }
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), Math.min(AI_TIMEOUT_MS, 15_000));
-  const startedAt = Date.now();
-  let modelsUpstream;
-  let invocationUpstream;
-  try {
-    modelsUpstream = await fetch(`${baseUrl}/models`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal: controller.signal,
-    });
-    const modelsBody = await modelsUpstream.json().catch(() => ({}));
-    if (!modelsUpstream.ok) {
-      throw new HttpError(502, 'AI_PROVIDER_TEST_FAILED', safeMessage(modelsBody?.error?.message || `模型服务返回 HTTP ${modelsUpstream.status}`), {
-        upstreamStatus: modelsUpstream.status,
-      });
-    }
 
-    const invocationPayload = adapter === 'openai_chat_completions'
-      ? {
-          model,
-          messages: [{ role: 'user', content: '请只回复 OK' }],
-          max_tokens: 32,
-          stream: false,
-          ...(providerType === 'deepseek' ? { thinking: { type: 'disabled' } } : {}),
-        }
-      : {
-          model,
-          input: '请只回复 OK',
-          max_output_tokens: 128,
-          store: false,
-        };
-    invocationUpstream = await fetch(`${baseUrl}/${adapter === 'openai_chat_completions' ? 'chat/completions' : 'responses'}`, {
-      method: 'POST',
+  try {
+    const result = await runProviderDiscovery(configuration);
+    if (channelId !== 'environment-fallback') persistProviderProbeResult(channelId, result);
+    return result;
+  } catch (error) {
+    if (channelId !== 'environment-fallback') persistProviderProbeFailure(channelId, error);
+    throw error;
+  }
+}
+
+async function discoverModelChannel(body) {
+  assertPlainObject(body, '模型通道检测配置必须是 JSON 对象');
+  const providerType = normalizeProviderType(body.providerType ?? body.provider);
+  const baseUrl = normalizeProviderBaseUrl(body.baseUrl ?? body.url);
+  const apiKey = normalizeProviderApiKey(body.apiKey ?? body.key);
+  const adapter = normalizeProviderAdapter(body.adapter, providerType);
+  const model = cleanText(body.model ?? body.modelId, 300);
+  return runProviderDiscovery({
+    providerId: null,
+    displayName: cleanText(body.displayName ?? body.name, 100) || MODEL_PROVIDER_LABELS[providerType],
+    providerType,
+    adapter,
+    baseUrl,
+    apiKey,
+    model,
+  });
+}
+
+async function runProviderDiscovery({ providerId, displayName, providerType, adapter, baseUrl, apiKey, model = '' }) {
+  const startedAt = Date.now();
+  const modelsResponse = await fetchProviderJson(`${baseUrl}/models`, {
+    apiKey,
+    method: 'GET',
+  });
+  if (!modelsResponse.ok) {
+    const inconclusive = providerProbeIsInconclusive(modelsResponse);
+    throw new HttpError(
+      inconclusive ? 503 : 502,
+      inconclusive ? 'AI_PROVIDER_TEST_INCONCLUSIVE' : 'AI_PROVIDER_DISCOVERY_FAILED',
+      providerProbeMessage(modelsResponse, apiKey, '模型列表读取失败'),
+      { upstreamStatus: modelsResponse.status || null, inconclusive },
+    );
+  }
+  const modelIds = extractProviderModelIds(modelsResponse.body);
+  const availableModels = modelIds.map((id) => ({
+    id,
+    capabilities: { text: null, vision: null, image: null, pdf: null },
+    capabilitySource: 'not_tested',
+  }));
+  let selectedModel = null;
+  let supportedAdapters = [];
+  let recommendedAdapter = adapter;
+
+  if (model) {
+    const probe = await probeSelectedProviderModel({ baseUrl, apiKey, model, providerType, preferredAdapter: adapter });
+    selectedModel = {
+      id: model,
+      adapter: probe.adapter,
+      capabilities: probe.capabilities,
+      capabilitySource: 'live_probe',
+      diagnostics: probe.diagnostics,
+    };
+    supportedAdapters = probe.supportedAdapters;
+    recommendedAdapter = probe.adapter;
+    const listed = availableModels.find((item) => item.id === model);
+    if (listed) Object.assign(listed, selectedModel);
+    else availableModels.unshift(selectedModel);
+  }
+
+  const checkedAt = new Date().toISOString();
+  return {
+    providerId,
+    displayName,
+    connected: true,
+    providerType,
+    adapter: recommendedAdapter,
+    recommendedAdapter,
+    supportedAdapters,
+    model: model || null,
+    modelAvailable: model ? modelIds.includes(model) : null,
+    invocationVerified: selectedModel?.capabilities?.text === true,
+    availableModels,
+    selectedModel,
+    selectedModelCapabilities: selectedModel?.capabilities || null,
+    latencyMs: Date.now() - startedAt,
+    checkedAt,
+  };
+}
+
+async function probeSelectedProviderModel({ baseUrl, apiKey, model, providerType, preferredAdapter }) {
+  const adapters = providerType === 'custom_openai_compatible'
+    ? [...new Set([preferredAdapter, 'openai_responses', 'openai_chat_completions'])]
+    : [preferredAdapter];
+  const adapterResults = await Promise.all(adapters.map((candidate) => probeProviderAdapter({
+    baseUrl,
+    apiKey,
+    model,
+    providerType,
+    adapter: candidate,
+  })));
+  const usable = adapterResults.filter((item) => item.capabilities.text === true);
+  if (!usable.length) {
+    const firstFailure = adapterResults.map((item) => item.diagnostics.text).find((item) => item?.message);
+    const inconclusive = adapterResults.some((item) => item.capabilities.text === null);
+    throw new HttpError(inconclusive ? 503 : 502, inconclusive ? 'AI_PROVIDER_TEST_INCONCLUSIVE' : 'AI_PROVIDER_TEST_FAILED', safeMessage(firstFailure?.message || '模型列表读取成功，但所选模型无法完成实际文字调用'), {
+      upstreamStatus: firstFailure?.upstreamStatus || null,
+      inconclusive,
+    });
+  }
+  usable.sort((left, right) => providerAdapterScore(right) - providerAdapterScore(left));
+  const selected = usable[0];
+  return {
+    ...selected,
+    supportedAdapters: usable.map((item) => item.adapter),
+  };
+}
+
+function providerAdapterScore(result) {
+  return 100
+    + (result.capabilities.image === true ? 10 : 0)
+    + (result.capabilities.pdf === true ? 10 : 0)
+    + (result.adapter === 'openai_responses' ? 1 : 0);
+}
+
+async function probeProviderAdapter({ baseUrl, apiKey, model, providerType, adapter }) {
+  const text = await probeProviderInput({ baseUrl, apiKey, model, providerType, adapter, kind: 'text' });
+  if (text.supported !== true) {
+    return {
+      adapter,
+      capabilities: { text: text.supported, vision: null, image: null, pdf: null },
+      diagnostics: { text: publicProbeDiagnostic(text), image: null, pdf: null },
+    };
+  }
+  const [image, pdf] = await Promise.all([
+    probeProviderInput({ baseUrl, apiKey, model, providerType, adapter, kind: 'image' }),
+    probeProviderInput({ baseUrl, apiKey, model, providerType, adapter, kind: 'pdf' }),
+  ]);
+  return {
+    adapter,
+    capabilities: {
+      text: true,
+      vision: image.supported,
+      image: image.supported,
+      pdf: pdf.supported,
+    },
+    diagnostics: {
+      text: publicProbeDiagnostic(text),
+      image: publicProbeDiagnostic(image),
+      pdf: publicProbeDiagnostic(pdf),
+    },
+  };
+}
+
+async function probeProviderInput({ baseUrl, apiKey, model, providerType, adapter, kind }) {
+  const request = providerProbeRequest({ model, providerType, adapter, kind });
+  const result = await fetchProviderJson(`${baseUrl}/${request.endpoint}`, {
+    apiKey,
+    method: 'POST',
+    body: request.body,
+  });
+  const responseText = result.ok
+    ? (adapter === 'openai_chat_completions' ? extractChatCompletionText(result.body) : extractOutputText(result.body))
+    : '';
+  if (result.ok && responseText) {
+    const normalizedAnswer = responseText.toUpperCase().replace(/[^A-Z0-9-]/g, '');
+    const attachmentRead = kind === 'image'
+      ? normalizedAnswer.includes(PROVIDER_PROBE_IMAGE_MARKER)
+      : kind === 'pdf' ? normalizedAnswer.includes('BKX-PROBE') : true;
+    return {
+      supported: attachmentRead,
+      ok: attachmentRead,
+      upstreamStatus: result.status,
+      code: attachmentRead ? 'verified' : 'attachment_not_read',
+      message: attachmentRead ? '实际调用成功' : `接口接受了${kind === 'image' ? '图片' : ' PDF'}，但模型未能读取其中的未知探测标记`,
+      latencyMs: result.latencyMs,
+    };
+  }
+  const definitiveUnsupported = [400, 404, 405, 415, 422].includes(result.status);
+  return {
+    supported: definitiveUnsupported || (result.ok && !responseText) ? false : null,
+    ok: false,
+    upstreamStatus: result.status || null,
+    code: result.timedOut ? 'timeout' : result.ok ? 'empty_response' : 'upstream_error',
+    message: providerProbeMessage(result, apiKey, result.timedOut ? '能力检测超时' : '能力检测失败'),
+    latencyMs: result.latencyMs,
+  };
+}
+
+function providerProbeRequest({ model, providerType, adapter, kind }) {
+  const prompt = kind === 'pdf'
+    ? '请读取附件页面中的唯一一行大写字母和连字符，只回复原文，不要解释。'
+    : kind === 'image'
+      ? '请读取图片中的唯一一行大写字母和数字，只回复原文，不要解释。'
+      : '请输出 JSON 对象 {"ok":"OK"}。';
+  if (adapter === 'openai_chat_completions') {
+    let content = prompt;
+    if (kind === 'image') {
+      content = [
+        { type: 'text', text: prompt },
+        { type: 'image_url', image_url: { url: PROVIDER_PROBE_IMAGE_DATA_URL, detail: 'low' } },
+      ];
+    } else if (kind === 'pdf') {
+      content = [
+        { type: 'text', text: prompt },
+        { type: 'file', file: { filename: 'bkx-probe.pdf', file_data: PROVIDER_PROBE_PDF_DATA_URL } },
+      ];
+    }
+    return {
+      endpoint: 'chat/completions',
+      body: {
+        model,
+        messages: kind === 'text'
+          ? [
+              { role: 'system', content: '你是接口兼容性检测助手，只能输出 JSON 对象。' },
+              { role: 'user', content },
+            ]
+          : [{ role: 'user', content }],
+        ...(kind === 'text' ? { response_format: { type: 'json_object' } } : {}),
+        max_tokens: 32,
+        stream: false,
+        ...(providerType === 'deepseek' ? { thinking: { type: 'disabled' } } : {}),
+      },
+    };
+  }
+  const content = [{ type: 'input_text', text: prompt }];
+  if (kind === 'image') content.push({ type: 'input_image', image_url: PROVIDER_PROBE_IMAGE_DATA_URL, detail: 'low' });
+  if (kind === 'pdf') content.push({ type: 'input_file', filename: 'bkx-probe.pdf', file_data: PROVIDER_PROBE_PDF_DATA_URL });
+  return {
+    endpoint: 'responses',
+    body: {
+      model,
+      input: [{ role: 'user', content }],
+      ...(kind === 'text' ? {
+        instructions: '你是接口兼容性检测助手，只能输出符合指定 Schema 的 JSON。',
+        reasoning: { effort: 'low' },
+        text: {
+          verbosity: 'low',
+          format: {
+            type: 'json_schema',
+            name: 'provider_probe',
+            strict: true,
+            schema: {
+              type: 'object',
+              properties: { ok: { type: 'string' } },
+              required: ['ok'],
+              additionalProperties: false,
+            },
+          },
+        },
+        safety_identifier: stablePrivateHash('provider-probe', SAFETY_ID_SALT),
+      } : {}),
+      max_output_tokens: 128,
+      store: false,
+    },
+  };
+}
+
+async function fetchProviderJson(url, { apiKey, method, body = null }) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), PROVIDER_PROBE_TIMEOUT_MS);
+  const startedAt = Date.now();
+  try {
+    const upstream = await fetch(url, {
+      method,
       headers: {
         Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
       },
-      body: JSON.stringify(invocationPayload),
+      ...(body ? { body: JSON.stringify(body) } : {}),
       signal: controller.signal,
     });
-    const invocationBody = await invocationUpstream.json().catch(() => ({}));
-    if (!invocationUpstream.ok) {
-      throw new HttpError(502, 'AI_PROVIDER_TEST_FAILED', safeMessage(invocationBody?.error?.message || `模型调用返回 HTTP ${invocationUpstream.status}`), {
-        upstreamStatus: invocationUpstream.status,
-      });
-    }
-    const invocationText = adapter === 'openai_chat_completions'
-      ? extractChatCompletionText(invocationBody)
-      : extractOutputText(invocationBody);
-    if (!invocationText) {
-      throw new HttpError(502, 'AI_PROVIDER_TEST_FAILED', '模型连接成功，但实际调用没有返回内容');
-    }
-
-    const availableModels = Array.isArray(modelsBody?.data) ? modelsBody.data.map((item) => item?.id).filter(Boolean) : [];
+    const raw = await upstream.text();
     return {
-      providerId: channelId,
-      displayName,
-      model,
-      adapter,
-      providerType,
-      modelAvailable: availableModels.length ? availableModels.includes(model) : null,
-      invocationVerified: true,
+      ok: upstream.ok,
+      status: upstream.status,
+      body: safeJsonParse(raw) || {},
       latencyMs: Date.now() - startedAt,
-      checkedAt: new Date().toISOString(),
+      timedOut: false,
     };
   } catch (error) {
-    if (error instanceof HttpError) throw error;
-    const message = error?.name === 'AbortError' ? '连接测试超时' : `无法连接模型服务：${safeMessage(error?.message)}`;
-    throw new HttpError(502, 'AI_PROVIDER_TEST_FAILED', message);
+    return {
+      ok: false,
+      status: 0,
+      body: {},
+      latencyMs: Date.now() - startedAt,
+      timedOut: error?.name === 'AbortError',
+      networkMessage: safeMessage(error?.message),
+    };
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function extractProviderModelIds(body) {
+  const entries = Array.isArray(body?.data) ? body.data : Array.isArray(body?.models) ? body.models : Array.isArray(body) ? body : [];
+  return [...new Set(entries.map((entry) => cleanText(typeof entry === 'string' ? entry : entry?.id, 300)).filter(Boolean))]
+    .slice(0, PROVIDER_DISCOVERY_MODEL_LIMIT);
+}
+
+function providerProbeMessage(result, apiKey, fallback) {
+  const upstream = result?.body?.error?.message || result?.body?.message || result?.networkMessage || fallback;
+  return safeProviderMessage(upstream || fallback, apiKey);
+}
+
+function publicProbeDiagnostic(result) {
+  if (!result) return null;
+  return {
+    ok: result.ok === true,
+    supported: result.supported,
+    upstreamStatus: result.upstreamStatus || null,
+    code: result.code || null,
+    message: safeMessage(result.message),
+    latencyMs: Number(result.latencyMs || 0),
+  };
+}
+
+function persistProviderProbeResult(channelId, result) {
+  store.updateChannel(channelId, (channel) => {
+    const probed = normalizeDetectedCapabilities(result.selectedModel?.capabilities, { source: 'live_probe' });
+    const detected = mergeDetectedCapabilities(
+      storedDetectedCapabilities(channel),
+      probed,
+    );
+    const partial = [probed.text, probed.image, probed.pdf].some((value) => value === null);
+    return {
+      ...channel,
+      adapter: result.recommendedAdapter || channel.adapter,
+      detectedCapabilities: detected,
+      discoveredModels: result.availableModels.map((item) => item.id).slice(0, PROVIDER_DISCOVERY_MODEL_LIMIT),
+      health: detected.text === true ? 'healthy' : channel.health || 'unknown',
+      lastCheckStatus: partial ? 'partial' : 'verified',
+      lastCheckedAt: result.checkedAt,
+      lastCheckLatencyMs: result.latencyMs,
+      lastCheckError: null,
+    };
+  });
+}
+
+function persistProviderProbeFailure(channelId, error) {
+  const inconclusive = error?.details?.inconclusive === true || error?.code === 'AI_PROVIDER_TEST_INCONCLUSIVE';
+  store.updateChannel(channelId, (channel) => ({
+    ...channel,
+    health: inconclusive ? (channel.health === 'healthy' ? 'healthy' : 'unknown') : 'error',
+    lastCheckStatus: inconclusive ? 'inconclusive' : 'failed',
+    lastCheckedAt: new Date().toISOString(),
+    lastCheckError: safeMessage(error?.message),
+  }));
+}
+
+function providerProbeIsInconclusive(result) {
+  return !result?.status || [408, 409, 425, 429].includes(result.status) || result.status >= 500;
 }
 
 function createModelChannel(body, updatedBy) {
@@ -2182,7 +2501,9 @@ function createModelChannel(body, updatedBy) {
   const provider = normalizeProviderType(body.providerType ?? body.provider);
   const adapter = normalizeProviderAdapter(body.adapter, provider);
   const capabilities = normalizeProviderCapabilities(body);
-  assertProviderCapabilitiesSupported(adapter, capabilities);
+  const detectedCapabilities = normalizeDetectedCapabilities(body.detectedCapabilities, {
+    source: body.lastCheckedAt ? 'live_probe' : 'unknown',
+  });
   const now = new Date().toISOString();
   return store.addChannel({
     schemaVersion: 'model-channel.v2',
@@ -2194,10 +2515,15 @@ function createModelChannel(body, updatedBy) {
     baseUrl,
     models,
     capabilities,
+    detectedCapabilities,
     priority: parseBoundedInteger(body.priority, 100, 1, 1000),
     encryptedApiKey: encryptSecret(apiKey, SESSION_SECRET, `model-channel:${id}`),
     keyLastFour: apiKey.slice(-4),
     configVersion: 1,
+    health: body.lastCheckedAt && detectedCapabilities.text === true ? 'healthy' : 'unknown',
+    lastCheckedAt: validProviderTimestamp(body.lastCheckedAt),
+    lastCheckError: null,
+    useCount: 0,
     createdAt: now,
     updatedAt: now,
     updatedBy,
@@ -2209,6 +2535,7 @@ function patchModelChannel(channelId, body, updatedBy) {
   const existing = store.findChannel(channelId);
   if (!existing) throw new HttpError(404, 'PROVIDER_NOT_FOUND', '模型通道不存在');
   const updated = store.updateChannel(channelId, (next) => {
+    let capabilityIdentityChanged = false;
     if (body.displayName !== undefined || body.name !== undefined) {
       const displayName = cleanText(body.displayName ?? body.name, 100);
       if (!displayName) throw new HttpError(400, 'PROVIDER_NAME_REQUIRED', '模型通道名称不能为空');
@@ -2219,30 +2546,51 @@ function patchModelChannel(channelId, body, updatedBy) {
       next.enabled = body.enabled;
     }
     if (body.baseUrl !== undefined || body.url !== undefined) {
-      next.baseUrl = normalizeProviderBaseUrl(body.baseUrl ?? body.url);
+      const baseUrl = normalizeProviderBaseUrl(body.baseUrl ?? body.url);
+      capabilityIdentityChanged ||= baseUrl !== next.baseUrl;
+      next.baseUrl = baseUrl;
     }
     if (body.providerType !== undefined || body.provider !== undefined) {
-      next.provider = normalizeProviderType(body.providerType ?? body.provider, next.provider);
-      next.adapter = normalizeProviderAdapter(body.adapter, next.provider);
+      const provider = normalizeProviderType(body.providerType ?? body.provider, next.provider);
+      const adapter = normalizeProviderAdapter(body.adapter, provider);
+      capabilityIdentityChanged ||= provider !== next.provider || adapter !== next.adapter;
+      next.provider = provider;
+      next.adapter = adapter;
     } else if (body.adapter !== undefined) {
-      next.adapter = normalizeProviderAdapter(body.adapter, next.provider);
+      const adapter = normalizeProviderAdapter(body.adapter, next.provider);
+      capabilityIdentityChanged ||= adapter !== next.adapter;
+      next.adapter = adapter;
     }
     if (body.priority !== undefined) next.priority = parseBoundedInteger(body.priority, next.priority, 1, 1000);
     if (body.model !== undefined || body.modelId !== undefined || body.models !== undefined) {
-      next.models = normalizeProviderModels(body, next.models);
+      const models = normalizeProviderModels(body, next.models);
+      capabilityIdentityChanged ||= models.generation !== next.models?.generation || models.revision !== next.models?.revision;
+      next.models = models;
     }
     if (body.capabilities !== undefined || body.purposes !== undefined || body.purpose !== undefined) {
       next.capabilities = normalizeProviderCapabilities(body, next.capabilities);
     }
-    assertProviderCapabilitiesSupported(
-      normalizeStoredProviderAdapter(next.adapter, next.provider),
-      normalizeStoredProviderCapabilities(next.capabilities),
-    );
+    if (body.detectedCapabilities !== undefined) {
+      next.detectedCapabilities = normalizeDetectedCapabilities(body.detectedCapabilities, {
+        source: body.lastCheckedAt ? 'live_probe' : 'unknown',
+      });
+    }
+    if (body.lastCheckedAt !== undefined) next.lastCheckedAt = validProviderTimestamp(body.lastCheckedAt);
     if (body.apiKey !== undefined || body.key !== undefined) {
       requirePersistentSessionSecret();
       const apiKey = normalizeProviderApiKey(body.apiKey ?? body.key);
       next.encryptedApiKey = encryptSecret(apiKey, SESSION_SECRET, `model-channel:${channelId}`);
       next.keyLastFour = apiKey.slice(-4);
+      capabilityIdentityChanged = true;
+    }
+    if (capabilityIdentityChanged) {
+      next.detectedCapabilities = normalizeDetectedCapabilities(null, { source: 'unknown' });
+      next.discoveredModels = [];
+      next.health = 'unknown';
+      next.lastCheckStatus = null;
+      next.lastCheckedAt = null;
+      next.lastCheckLatencyMs = null;
+      next.lastCheckError = null;
     }
     next.configVersion = Number(next.configVersion || 0) + 1;
     next.updatedAt = new Date().toISOString();
@@ -2252,7 +2600,15 @@ function patchModelChannel(channelId, body, updatedBy) {
   return updated;
 }
 
-function publicChannel(channel) {
+function deleteModelChannel(channelId) {
+  const existing = store.findChannel(channelId);
+  if (!existing) throw new HttpError(404, 'PROVIDER_NOT_FOUND', '模型通道不存在');
+  const visible = publicChannel(existing);
+  store.deleteChannel(channelId);
+  return visible;
+}
+
+function publicChannel(channel, { routeOrder = null } = {}) {
   const model = channel.models?.generation || channel.models?.revision || '';
   const providerType = normalizeStoredProviderType(channel.provider);
   return {
@@ -2268,7 +2624,22 @@ function publicChannel(channel) {
     model,
     models: { generation: channel.models?.generation || '', revision: channel.models?.revision || '' },
     capabilities: normalizeStoredProviderCapabilities(channel.capabilities),
+    detectedCapabilities: storedDetectedCapabilities(channel),
     priority: Number(channel.priority || 100),
+    routeOrder,
+    routing: {
+      order: routeOrder,
+      rule: '按用途和输入能力筛选后，优先级数字越小越先使用',
+    },
+    health: ['healthy', 'error', 'unknown'].includes(channel.health) ? channel.health : 'unknown',
+    lastCheckStatus: ['verified', 'partial', 'failed', 'inconclusive'].includes(channel.lastCheckStatus) ? channel.lastCheckStatus : null,
+    lastCheckedAt: channel.lastCheckedAt || null,
+    lastCheckLatencyMs: Number(channel.lastCheckLatencyMs || 0) || null,
+    lastCheckError: channel.lastCheckError ? safeMessage(channel.lastCheckError) : null,
+    lastUsedAt: channel.lastUsedAt || null,
+    lastSelectedTask: channel.lastSelectedTask || null,
+    lastSelectedModel: channel.lastSelectedModel || null,
+    useCount: Number(channel.useCount || 0),
     keyLastFour: channel.keyLastFour || '',
     apiKeyMasked: channel.keyLastFour ? `••••${channel.keyLastFour}` : '',
     configVersion: Number(channel.configVersion || 1),
@@ -2295,7 +2666,19 @@ function publicEnvironmentChannel() {
     model: OPENAI_MODEL,
     models: { generation: OPENAI_MODEL, revision: OPENAI_MODEL },
     capabilities: [...MODEL_CAPABILITIES],
+    detectedCapabilities: { text: true, vision: true, image: true, pdf: true, source: 'provider_default' },
     priority: 1000,
+    routeOrder: null,
+    routing: { order: null, rule: '仅在没有匹配的后台通道时作为服务器兜底通道' },
+    health: 'unknown',
+    lastCheckStatus: null,
+    lastCheckedAt: null,
+    lastCheckLatencyMs: null,
+    lastCheckError: null,
+    lastUsedAt: null,
+    lastSelectedTask: null,
+    lastSelectedModel: null,
+    useCount: 0,
     keyLastFour: apiKey.slice(-4),
     apiKeyMasked: `••••${apiKey.slice(-4)}`,
     configVersion: 1,
@@ -2357,12 +2740,6 @@ function normalizeStoredProviderAdapter(value, provider) {
   return normalizeStoredProviderType(provider) === 'openai' ? 'openai_responses' : 'openai_chat_completions';
 }
 
-function assertProviderCapabilitiesSupported(adapter, capabilities) {
-  if (adapter === 'openai_chat_completions' && capabilities.includes('multimodal_input')) {
-    throw new HttpError(400, 'PROVIDER_CAPABILITY_INVALID', '当前兼容接口仅接入文字生成与修改；图片/PDF 请使用支持 Responses 多模态的通道');
-  }
-}
-
 function normalizeProviderModels(body, current = null) {
   const generation = cleanText(
     body.model
@@ -2414,6 +2791,55 @@ function normalizeStoredProviderCapabilities(capabilities) {
   return normalized.length ? normalized : [...MODEL_CAPABILITIES];
 }
 
+function normalizeDetectedCapabilities(value, { source = 'unknown' } = {}) {
+  const input = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const image = nullableBoolean(input.image ?? input.vision);
+  return {
+    text: nullableBoolean(input.text),
+    vision: image,
+    image,
+    pdf: nullableBoolean(input.pdf),
+    source: ['live_probe', 'legacy', 'provider_default', 'unknown'].includes(input.source)
+      ? input.source
+      : source,
+  };
+}
+
+function mergeDetectedCapabilities(previous, next) {
+  const before = normalizeDetectedCapabilities(previous, { source: 'unknown' });
+  const after = normalizeDetectedCapabilities(next, { source: 'live_probe' });
+  const image = after.image === null ? before.image : after.image;
+  return {
+    text: after.text === null ? before.text : after.text,
+    vision: image,
+    image,
+    pdf: after.pdf === null ? before.pdf : after.pdf,
+    source: 'live_probe',
+  };
+}
+
+function storedDetectedCapabilities(channel) {
+  if (channel?.detectedCapabilities && typeof channel.detectedCapabilities === 'object') {
+    return normalizeDetectedCapabilities(channel.detectedCapabilities, { source: 'unknown' });
+  }
+  const providerType = normalizeStoredProviderType(channel?.provider);
+  const adapter = normalizeStoredProviderAdapter(channel?.adapter, providerType);
+  if (providerType === 'openai' && adapter === 'openai_responses') {
+    return { text: true, vision: true, image: true, pdf: true, source: 'provider_default' };
+  }
+  return { text: true, vision: null, image: null, pdf: null, source: 'legacy' };
+}
+
+function nullableBoolean(value) {
+  return value === true ? true : value === false ? false : null;
+}
+
+function validProviderTimestamp(value) {
+  if (!value) return null;
+  const timestamp = new Date(value);
+  return Number.isFinite(timestamp.getTime()) ? timestamp.toISOString() : null;
+}
+
 function normalizeProviderApiKey(value) {
   const key = typeof value === 'string' ? value.trim() : '';
   if (!key || key.length > 4096 || /[\r\n]/.test(key)) {
@@ -2456,12 +2882,14 @@ function isPrivateHostname(hostname) {
     || (parts[0] === 192 && parts[1] === 168);
 }
 
-function resolveProviderRoute(taskType, { requiresMultimodal = false } = {}) {
+function resolveProviderRoute(taskType, { sourceKinds = [] } = {}) {
   const requiredCapability = taskType === 'revision' ? 'lesson_revision' : 'lesson_generation';
+  const requiredInputs = new Set(sourceKinds);
   const channel = store.listChannels().find((item) => (
     item.enabled
+    && item.health !== 'error'
     && normalizeStoredProviderCapabilities(item.capabilities).includes(requiredCapability)
-    && (!requiresMultimodal || normalizeStoredProviderCapabilities(item.capabilities).includes('multimodal_input'))
+    && providerSupportsSourceKinds(item, requiredInputs)
     && (taskType === 'revision' ? item.models?.revision : item.models?.generation)
   ));
   if (channel) {
@@ -2482,6 +2910,7 @@ function resolveProviderRoute(taskType, { requiresMultimodal = false } = {}) {
       baseUrl: channel.baseUrl,
       model: taskType === 'revision' ? channel.models.revision : channel.models.generation,
       apiKey,
+      priority: Number(channel.priority || 100),
     };
   }
   const apiKey = getApiKey();
@@ -2499,7 +2928,17 @@ function resolveProviderRoute(taskType, { requiresMultimodal = false } = {}) {
     baseUrl: OPENAI_BASE_URL,
     model: OPENAI_MODEL,
     apiKey,
+    priority: 1000,
   };
+}
+
+function providerSupportsSourceKinds(channel, sourceKinds) {
+  if (!sourceKinds.size) return storedDetectedCapabilities(channel).text !== false;
+  if (!normalizeStoredProviderCapabilities(channel.capabilities).includes('multimodal_input')) return false;
+  const detected = storedDetectedCapabilities(channel);
+  if (sourceKinds.has('image') && detected.image !== true) return false;
+  if (sourceKinds.has('pdf') && detected.pdf !== true) return false;
+  return detected.text !== false;
 }
 
 function hasConfiguredProvider() {
@@ -2709,15 +3148,14 @@ async function reviseLesson(input, requestId, user) {
 }
 
 async function callOpenAI({ inputText, sources, requestId, taskType, user, expectedDuration }) {
-  const provider = resolveProviderRoute(taskType, { requiresMultimodal: sources.length > 0 });
+  const provider = resolveProviderRoute(taskType, { sourceKinds: sources.map((source) => source.kind) });
   if (provider.adapter === 'openai_chat_completions') {
-    if (sources.length > 0) {
-      throw new HttpError(400, 'AI_PROVIDER_MULTIMODAL_UNSUPPORTED', '当前模型通道仅支持文字内容，请配置支持图片/PDF识别的多模态通道');
-    }
     return callOpenAIChatCompletions({
       provider,
       inputText,
+      sources,
       requestId,
+      taskType,
       expectedDuration,
     });
   }
@@ -2730,7 +3168,6 @@ async function callOpenAI({ inputText, sources, requestId, taskType, user, expec
         type: 'input_file',
         filename: source.filename,
         file_data: source.dataUrl,
-        detail: OPENAI_IMAGE_DETAIL === 'original' ? 'high' : OPENAI_IMAGE_DETAIL,
       });
     }
   }
@@ -2772,7 +3209,7 @@ async function callOpenAI({ inputText, sources, requestId, taskType, user, expec
     if (error?.name === 'AbortError') {
       throw new HttpError(504, 'AI_TIMEOUT', `AI 服务在 ${AI_TIMEOUT_MS}ms 内没有响应`);
     }
-    throw new HttpError(502, 'AI_UNREACHABLE', `无法连接 AI 服务：${safeMessage(error?.message)}`);
+    throw new HttpError(502, 'AI_UNREACHABLE', `无法连接 AI 服务：${safeProviderMessage(error?.message, provider.apiKey)}`);
   } finally {
     clearTimeout(timeout);
   }
@@ -2795,7 +3232,7 @@ async function callOpenAI({ inputText, sources, requestId, taskType, user, expec
     const status = upstream.status === 429 || authFailure || billingFailure ? 503 : 502;
     const message = billingFailure
       ? 'AI 账户余额或计费状态不可用，请在对应模型平台充值或启用计费后重试'
-      : safeMessage(upstreamMessage);
+      : safeProviderMessage(upstreamMessage, provider.apiKey);
     throw new HttpError(status, code, message, {
       upstreamStatus: upstream.status,
       upstreamCode: upstreamBody?.error?.code || null,
@@ -2810,18 +3247,20 @@ async function callOpenAI({ inputText, sources, requestId, taskType, user, expec
     throw new HttpError(
       502,
       'AI_UPSTREAM_ERROR',
-      safeMessage(upstreamBody.error?.message || 'AI 未能完成教案生成'),
+      safeProviderMessage(upstreamBody.error?.message || 'AI 未能完成教案生成', provider.apiKey),
     );
   }
   if (upstreamBody.status === 'incomplete') {
     throw new HttpError(502, 'AI_INCOMPLETE', 'AI 未能完成教案生成', {
-      reason: upstreamBody.incomplete_details?.reason || null,
+      reason: upstreamBody.incomplete_details?.reason
+        ? safeProviderMessage(upstreamBody.incomplete_details.reason, provider.apiKey)
+        : null,
     });
   }
 
   const refusal = findRefusal(upstreamBody);
   if (refusal) {
-    throw new HttpError(422, 'AI_REFUSED', `AI 无法完成本次请求：${safeMessage(refusal)}`);
+    throw new HttpError(422, 'AI_REFUSED', `AI 无法完成本次请求：${safeProviderMessage(refusal, provider.apiKey)}`);
   }
 
   const outputText = extractOutputText(upstreamBody);
@@ -2838,16 +3277,35 @@ async function callOpenAI({ inputText, sources, requestId, taskType, user, expec
     throw new HttpError(502, 'AI_INVALID_OUTPUT', validationError);
   }
 
-  return {
+  const result = {
     lessonPlan,
     model: upstreamBody.model || provider.model,
     providerId: provider.providerId,
     responseId: upstreamBody.id || null,
     usage: upstreamBody.usage || null,
   };
+  recordProviderUsage(provider, taskType, result.model);
+  return result;
 }
 
-async function callOpenAIChatCompletions({ provider, inputText, requestId, expectedDuration }) {
+async function callOpenAIChatCompletions({ provider, inputText, sources, requestId, taskType, expectedDuration }) {
+  let userContent = inputText;
+  if (sources.length) {
+    userContent = [{ type: 'text', text: inputText }];
+    for (const source of sources) {
+      if (source.kind === 'image') {
+        userContent.push({
+          type: 'image_url',
+          image_url: { url: source.dataUrl, detail: OPENAI_IMAGE_DETAIL },
+        });
+      } else {
+        userContent.push({
+          type: 'file',
+          file: { filename: source.filename, file_data: source.dataUrl },
+        });
+      }
+    }
+  }
   const payload = {
     model: provider.model,
     messages: [
@@ -2855,7 +3313,7 @@ async function callOpenAIChatCompletions({ provider, inputText, requestId, expec
         role: 'system',
         content: `${SYSTEM_PROMPT}\n\n你必须只输出一个有效 JSON 对象，不要输出 Markdown 代码块或额外说明。输出 JSON 必须符合以下 JSON Schema：\n${JSON.stringify(LESSON_PLAN_SCHEMA)}`,
       },
-      { role: 'user', content: inputText },
+      { role: 'user', content: userContent },
     ],
     response_format: { type: 'json_object' },
     max_tokens: OPENAI_MAX_OUTPUT_TOKENS,
@@ -2881,7 +3339,7 @@ async function callOpenAIChatCompletions({ provider, inputText, requestId, expec
     if (error?.name === 'AbortError') {
       throw new HttpError(504, 'AI_TIMEOUT', `AI 服务在 ${AI_TIMEOUT_MS}ms 内没有响应`);
     }
-    throw new HttpError(502, 'AI_UNREACHABLE', `无法连接 AI 服务：${safeMessage(error?.message)}`);
+    throw new HttpError(502, 'AI_UNREACHABLE', `无法连接 AI 服务：${safeProviderMessage(error?.message, provider.apiKey)}`);
   } finally {
     clearTimeout(timeout);
   }
@@ -2907,7 +3365,7 @@ async function callOpenAIChatCompletions({ provider, inputText, requestId, expec
       code,
       billingFailure
         ? 'AI 账户余额或计费状态不可用，请在对应模型平台充值或启用计费后重试'
-        : safeMessage(upstreamMessage),
+        : safeProviderMessage(upstreamMessage, provider.apiKey),
       {
         upstreamStatus: upstream.status,
         upstreamCode: upstreamBody?.error?.code || null,
@@ -2926,13 +3384,26 @@ async function callOpenAIChatCompletions({ provider, inputText, requestId, expec
   const validationError = validateLessonPlan(lessonPlan, expectedDuration);
   if (validationError) throw new HttpError(502, 'AI_INVALID_OUTPUT', validationError);
 
-  return {
+  const result = {
     lessonPlan,
     model: upstreamBody.model || provider.model,
     providerId: provider.providerId,
     responseId: upstreamBody.id || null,
     usage: upstreamBody.usage || null,
   };
+  recordProviderUsage(provider, taskType, result.model);
+  return result;
+}
+
+function recordProviderUsage(provider, taskType, model) {
+  if (!provider?.providerId || provider.providerId === 'environment-fallback') return;
+  store.updateChannel(provider.providerId, (channel) => ({
+    ...channel,
+    lastUsedAt: new Date().toISOString(),
+    lastSelectedTask: taskType,
+    lastSelectedModel: cleanText(model || provider.model, 300),
+    useCount: Number(channel.useCount || 0) + 1,
+  }));
 }
 
 function normalizeGenerateRequest(body, storedSources = []) {
@@ -3523,6 +3994,34 @@ function safeMessage(value) {
   return String(value || '未知错误')
     .replace(/sk-[A-Za-z0-9_-]+/g, '[REDACTED]')
     .slice(0, 500);
+}
+
+function safeProviderMessage(value, apiKey) {
+  const key = typeof apiKey === 'string' ? apiKey : '';
+  const redacted = key ? String(value || '').replaceAll(key, '[REDACTED]') : String(value || '');
+  return safeMessage(redacted.replace(/Bearer\s+[A-Za-z0-9._~+\/-]+/gi, 'Bearer [REDACTED]'));
+}
+
+function createProbePdfDataUrl() {
+  const stream = 'BT\n/F1 18 Tf\n72 720 Td\n(BKX-PROBE) Tj\nET\n';
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    `<< /Length ${Buffer.byteLength(stream, 'ascii')} >>\nstream\n${stream}endstream`,
+  ];
+  let pdf = '%PDF-1.4\n%\xE2\xE3\xCF\xD3\n';
+  const offsets = [0];
+  for (let index = 0; index < objects.length; index += 1) {
+    offsets.push(Buffer.byteLength(pdf, 'binary'));
+    pdf += `${index + 1} 0 obj\n${objects[index]}\nendobj\n`;
+  }
+  const xrefOffset = Buffer.byteLength(pdf, 'binary');
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets.slice(1)) pdf += `${String(offset).padStart(10, '0')} 00000 n \n`;
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+  return `data:application/pdf;base64,${Buffer.from(pdf, 'binary').toString('base64')}`;
 }
 
 function runTeachingWorkflow(builder) {

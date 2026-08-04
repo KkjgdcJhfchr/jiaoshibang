@@ -101,6 +101,9 @@ if (/chapterTitle:\s*'《春》'/.test(dashboardPages)) {
 if (!dashboardPages.includes('placeholder={chapterPlaceholder(draft.subject)}')) {
   throw new Error('章节名称示例必须使用 placeholder，并随学科提供合适提示');
 }
+if (dashboardPages.includes('DashboardReferralCard') || dashboardPages.includes('dashboard-referral-card')) {
+  throw new Error('教师端首页不得重复展示推广有礼卡片');
+}
 
 const teacherNavigation = [
   fs.readFileSync(path.resolve('src/teacher/TeacherApp.jsx'), 'utf8'),
@@ -108,6 +111,9 @@ const teacherNavigation = [
 ].join('\n');
 if (teacherNavigation.includes('/app/materials') || teacherNavigation.includes('资源库')) {
   throw new Error('教师端不得保留无真实资源能力的资源库入口');
+}
+if (!teacherNavigation.includes("path === '/app/referrals'") || !teacherNavigation.includes("{ label: '推广有礼', path: '/app/referrals'")) {
+  throw new Error('移除首页推广卡片时必须保留侧栏入口和独立推广页');
 }
 
 const workflowPages = fs.readFileSync(path.resolve('src/teacher/WorkflowPages.jsx'), 'utf8');

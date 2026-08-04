@@ -24,10 +24,13 @@ import {
   Plus,
   ReceiptText,
   RefreshCw,
+  Route,
+  Save,
   Search,
   Server,
   Settings,
   ShieldCheck,
+  Trash2,
   UserRound,
   Users,
   X,
@@ -64,28 +67,85 @@ const navigationItems = [
 ]
 
 const modelProviderPresets = [
-  { value: 'deepseek', label: 'DeepSeek', adapter: 'openai_chat_completions', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-pro', capabilities: ['lesson_generation', 'lesson_revision'] },
-  { value: 'openai', label: 'OpenAI 官方', adapter: 'openai_responses', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.6', capabilities: ['lesson_generation', 'lesson_revision', 'multimodal_input'] },
-  { value: 'aliyun_bailian', label: '阿里云百炼', adapter: 'openai_chat_completions', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: '', capabilities: ['lesson_generation', 'lesson_revision'] },
-  { value: 'custom_openai_compatible', label: '自定义兼容接口（第三方/自研）', adapter: 'openai_chat_completions', baseUrl: '', model: '', capabilities: ['lesson_generation', 'lesson_revision'] },
+  { value: 'deepseek', label: 'DeepSeek', adapter: 'openai_chat_completions', baseUrl: 'https://api.deepseek.com' },
+  { value: 'openai', label: 'OpenAI 官方', adapter: 'openai_responses', baseUrl: 'https://api.openai.com/v1' },
+  { value: 'aliyun_bailian', label: '阿里云百炼', adapter: 'openai_chat_completions', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
+  { value: 'custom_openai_compatible', label: '自定义兼容接口（第三方/自研）', adapter: 'openai_chat_completions', baseUrl: '' },
 ]
+
+const modelCapabilityLabels = {
+  lesson_generation: '教案生成',
+  lesson_revision: '对话修改',
+  multimodal_input: '教材图片/PDF输入',
+  generation: '教案生成',
+  revision: '对话修改',
+}
+
+const providerRouteDefinitions = [
+  { id: 'generation_text', label: '生成·文字', summaryLabel: '教案生成 · 文字', purpose: 'lesson_generation', input: 'text' },
+  { id: 'generation_image', label: '生成·图片', summaryLabel: '教案生成 · 图片', purpose: 'lesson_generation', input: 'image' },
+  { id: 'generation_pdf', label: '生成·PDF', summaryLabel: '教案生成 · PDF', purpose: 'lesson_generation', input: 'pdf' },
+  { id: 'revision_text', label: '修改·文字', summaryLabel: '对话修改 · 文字', purpose: 'lesson_revision', input: 'text' },
+  { id: 'revision_image', label: '修改·图片', summaryLabel: '对话修改 · 图片', purpose: 'lesson_revision', input: 'image' },
+  { id: 'revision_pdf', label: '修改·PDF', summaryLabel: '对话修改 · PDF', purpose: 'lesson_revision', input: 'pdf' },
+]
+
+function providerTaskLabel(task) {
+  const normalized = String(task || '').trim().toLowerCase()
+  if (normalized === 'generation' || normalized === 'lesson_generation') return '教案生成'
+  if (normalized === 'revision' || normalized === 'lesson_revision') return '对话修改'
+  return modelCapabilityLabels[task] || task
+}
+
+function normalizeDetectedCapabilities(value = {}) {
+  const capabilities = value?.capabilities || value || {}
+  const normalizeFlag = (flag) => typeof flag === 'boolean' ? flag : null
+  return {
+    text: normalizeFlag(capabilities.text),
+    image: normalizeFlag(capabilities.image ?? capabilities.vision),
+    pdf: normalizeFlag(capabilities.pdf),
+    source: capabilities.source || value?.capabilitySource || 'unknown',
+  }
+}
+
+function normalizeDiscoveredModels(result = {}) {
+  const models = Array.isArray(result.availableModels) ? result.availableModels : []
+  return models
+    .map((model) => {
+      const id = typeof model === 'string' ? model : model?.id
+      if (!id) return null
+      return {
+        id,
+        capabilities: normalizeDetectedCapabilities(model),
+      }
+    })
+    .filter(Boolean)
+}
+
+function formatProviderTime(value) {
+  if (!value) return '尚未命中'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '尚未命中'
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(date)
+}
 
 function providerToChannel(provider, index = 0) {
   const health = provider.health || provider.healthCheck?.status || 'unknown'
-  const normalizedHealth = health === 'unhealthy' ? 'abnormal' : health
+  const normalizedHealth = health === 'unhealthy' || health === 'error' ? 'abnormal' : health
   const model = provider.model || provider.models?.generation?.modelId || provider.models?.generation || provider.models?.revision?.modelId || '未配置'
-  const capabilityLabels = {
-    lesson_generation: '教案生成',
-    lesson_revision: '对话修改',
-    multimodal_input: '图片/PDF识别',
-  }
   const capabilities = Array.isArray(provider.capabilities) ? provider.capabilities : []
   return {
     id: provider.id || provider.providerId,
     name: provider.displayName || provider.name || `模型通道 ${index + 1}`,
     provider: provider.provider || (provider.providerType === 'openai' ? 'OpenAI 官方' : '自定义兼容接口'),
     model,
-    purpose: capabilities.length ? capabilities.map((item) => capabilityLabels[item] || item).join('、') : provider.purpose || '教案生成、对话修改、图片/PDF识别',
+    purpose: capabilities.length ? capabilities.map((item) => modelCapabilityLabels[item] || item).join('、') : provider.purpose || '未配置用途',
     capabilities,
     priority: Number(provider.priority ?? provider.routing?.taskPriority?.generation ?? index + 1),
     latency: provider.latency || provider.averageLatency || '待检测',
@@ -95,6 +155,14 @@ function providerToChannel(provider, index = 0) {
     keyLastFour: provider.keyLastFour || provider.auth?.keyLastFour || '',
     readonly: provider.readonly === true,
     managedBy: provider.managedBy || 'admin',
+    detectedCapabilities: normalizeDetectedCapabilities(provider.detectedCapabilities || provider.modelCapabilities),
+    lastCheckedAt: provider.lastCheckedAt || provider.healthCheck?.checkedAt || null,
+    lastCheckLatencyMs: Number.isFinite(Number(provider.lastCheckLatencyMs)) && Number(provider.lastCheckLatencyMs) > 0 ? Number(provider.lastCheckLatencyMs) : null,
+    lastCheckError: provider.lastCheckError || provider.healthCheck?.error || null,
+    lastUsedAt: provider.lastUsedAt || null,
+    useCount: Number(provider.useCount || 0),
+    lastSelectedTask: provider.lastSelectedTask || '',
+    routeOrder: provider.routeOrder || null,
   }
 }
 
@@ -126,37 +194,97 @@ function PanelHeader({ title, action, onAction, children }) {
   )
 }
 
-function ChannelHealthTable({ channels, onToggle, onTest, query, busyIds }) {
+function ProviderCapabilitySummary({ capabilities }) {
+  const items = [
+    ['text', '文字'],
+    ['image', '图片'],
+    ['pdf', 'PDF'],
+  ]
+  return (
+    <span className="admin-provider-capability-summary" aria-label="模型实测能力">
+      {items.map(([key, label]) => {
+        const supported = capabilities?.[key]
+        return <small className={supported === true ? 'is-supported' : supported === false ? 'is-unsupported' : 'is-unknown'} key={key}>{label}{supported === true ? '可用' : supported === false ? '不可用' : '暂无法确认'}</small>
+      })}
+    </span>
+  )
+}
+
+function ProviderPriorityEditor({ channel, busy, onSave }) {
+  const [value, setValue] = useState(String(channel.priority))
+  useEffect(() => setValue(String(channel.priority)), [channel.priority])
+  const changed = Number(value) !== channel.priority
+  const invalid = !Number.isInteger(Number(value)) || Number(value) < 1 || Number(value) > 1000
+  return (
+    <span className="admin-provider-priority">
+      <input type="number" min="1" max="1000" step="1" value={value} aria-label={`${channel.name}的路由优先级`} disabled={channel.readonly || busy} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && changed && !invalid) onSave(channel, Number(value)) }} />
+      {!channel.readonly ? <button type="button" aria-label={`保存${channel.name}的路由优先级`} title="保存优先级" disabled={busy || invalid || !changed} onClick={() => onSave(channel, Number(value))}><Save size={14} /></button> : null}
+    </span>
+  )
+}
+
+function channelSupportsRoute(channel, route) {
+  const definition = typeof route === 'string'
+    ? providerRouteDefinitions.find((item) => item.id === route)
+    : route
+  if (!definition || !channel.capabilities.includes(definition.purpose)) return false
+  if (definition.input === 'text') return channel.detectedCapabilities.text !== false
+  if (channel.detectedCapabilities[definition.input] !== true) return false
+  if (definition.input !== 'text' && !channel.capabilities.includes('multimodal_input')) return false
+  return true
+}
+
+function channelParticipatesInRouting(channel) {
+  return channel.enabled && channel.health !== 'abnormal'
+}
+
+function buildRoutePositions(channels) {
+  const enabled = channels.filter(channelParticipatesInRouting).sort((left, right) => left.priority - right.priority)
+  const positions = new Map()
+  for (const channel of channels) positions.set(channel.id, [])
+  for (const route of providerRouteDefinitions) {
+    enabled.filter((channel) => channelSupportsRoute(channel, route)).forEach((channel, index) => {
+      positions.get(channel.id)?.push(`${route.label}${index === 0 ? '首选' : `第 ${index + 1} 顺位`}`)
+    })
+  }
+  return positions
+}
+
+function ChannelHealthTable({ channels, onToggle, onTest, onPrioritySave, onDelete, query, busyIds }) {
   const normalizedQuery = query.trim().toLowerCase()
   const filteredChannels = channels.filter((channel) => !normalizedQuery || Object.values(channel).join(' ').toLowerCase().includes(normalizedQuery))
+  const routePositions = buildRoutePositions(channels)
 
   return (
     <section className="admin-panel admin-channel-panel">
-      <PanelHeader title="通道健康状态" />
+      <PanelHeader title="通道与实际路由" />
+      <div className="admin-provider-routing-note"><Route size={18} /><div><b>多个通道同时启用时不会随机分配</b><p>系统先按任务用途和模型实测输入能力筛选，再选择优先级数字最小的通道。下表会直接标出每个通道当前承担的顺位和最近一次实际命中。</p></div></div>
       <div className="admin-table-wrap">
         <table className="admin-table admin-channel-table">
           <caption className="admin-sr-only">AI 模型通道健康状态</caption>
-          <thead><tr><th>通道名称</th><th>模型</th><th>用途</th><th>优先级</th><th>平均延迟</th><th>成功率</th><th>状态</th><th>连接测试</th><th>启用</th></tr></thead>
+          <thead><tr><th>通道名称</th><th>模型与实测能力</th><th>参与用途</th><th>当前路由顺位 / 实际命中</th><th>优先级</th><th>状态</th><th>检测</th><th>启用</th><th>操作</th></tr></thead>
           <tbody>
             {filteredChannels.map((channel) => (
               <tr key={channel.id}>
                 <td><span className={`admin-health-dot admin-health-dot-${channel.health}`} /><span className="admin-channel-identity"><b>{channel.name}</b><small>{channel.provider} · {channel.managedBy === 'environment' ? `服务器安全配置${channel.keyLastFour ? ` · 密钥尾号 ••••${channel.keyLastFour}` : ''}` : channel.keyLastFour ? `密钥尾号 ••••${channel.keyLastFour}` : '密钥已加密保存'}</small></span></td>
-                <td>{channel.model}</td>
+                <td><span className="admin-provider-model"><b>{channel.model}</b><ProviderCapabilitySummary capabilities={channel.detectedCapabilities} /></span></td>
                 <td>{channel.purpose}</td>
-                <td>{channel.priority}</td>
-                <td>{channel.latency}</td>
-                <td>{channel.success}</td>
+                <td><span className="admin-provider-route-state"><span>{!channel.enabled ? '已停用，不参与路由' : channel.health === 'abnormal' ? '通道异常，不参与路由' : (routePositions.get(channel.id)?.join('、') || '未参与当前路由')}</span><small>{channel.lastUsedAt ? `最近命中 ${formatProviderTime(channel.lastUsedAt)}${channel.lastSelectedTask ? ` · ${providerTaskLabel(channel.lastSelectedTask)}` : ''}${channel.useCount ? ` · 累计 ${channel.useCount} 次` : ''}` : '尚无实际命中记录'}</small></span></td>
+                <td><ProviderPriorityEditor channel={channel} busy={busyIds.has(channel.id)} onSave={onPrioritySave} /></td>
                 <td>
                   <StatusPill tone={channel.health === 'healthy' ? 'success' : channel.health === 'degraded' ? 'warning' : channel.health === 'unknown' || channel.health === 'disabled' ? 'muted' : 'danger'}>
                     {channel.health === 'healthy' ? '健康' : channel.health === 'degraded' ? '降级' : channel.health === 'unknown' ? '待检测' : channel.health === 'disabled' ? '已停用' : '异常'}
                   </StatusPill>
+                  <small className="admin-provider-checked-at">{channel.lastCheckedAt ? `检测于 ${formatProviderTime(channel.lastCheckedAt)}${channel.lastCheckLatencyMs ? ` · ${channel.lastCheckLatencyMs} ms` : ''}` : '尚未检测'}</small>
+                  {channel.lastCheckError ? <small className="admin-provider-check-error" title={channel.lastCheckError}>{channel.lastCheckError}</small> : null}
                 </td>
-                <td><button className="admin-channel-test" type="button" disabled={busyIds.has(channel.id)} onClick={() => onTest(channel)}>{busyIds.has(channel.id) ? <LoaderCircle className="spin" size={14} /> : <Activity size={14} />}测试</button></td>
+                <td><button className="admin-channel-test" type="button" disabled={busyIds.has(channel.id)} onClick={() => onTest(channel)}>{busyIds.has(channel.id) ? <LoaderCircle className="spin" size={14} /> : <Activity size={14} />}重新检测</button></td>
                 <td>
                   <button className={`admin-toggle ${channel.enabled ? 'admin-toggle-on' : ''}`} type="button" aria-label={channel.readonly ? `${channel.name}由服务器配置管理` : `${channel.enabled ? '停用' : '启用'}${channel.name}`} aria-pressed={channel.enabled} disabled={channel.readonly || busyIds.has(channel.id)} onClick={() => onToggle(channel)}>
                     <span className="admin-toggle-knob" />
                   </button>
                 </td>
+                <td><button className="admin-provider-delete" type="button" disabled={channel.readonly || busyIds.has(channel.id)} onClick={() => onDelete(channel)} title={channel.readonly ? '服务器配置通道不能在此删除' : `删除${channel.name}`}><Trash2 size={15} /><span>删除</span></button></td>
               </tr>
             ))}
             {filteredChannels.length === 0 ? <tr><td className="admin-empty-cell" colSpan="9">没有匹配的模型通道</td></tr> : null}
@@ -172,25 +300,16 @@ function ChannelHealthTable({ channels, onToggle, onTest, query, busyIds }) {
   )
 }
 
-function RecentTasksPanel() {
-  const filteredTasks = []
+function RoutingSummaryPanel({ channels }) {
+  const enabledChannels = channels.filter(channelParticipatesInRouting).sort((left, right) => left.priority - right.priority)
   return (
     <section className="admin-panel admin-recent-panel">
-      <PanelHeader title="近期任务" />
-      <div className="admin-table-wrap">
-        <table className="admin-table admin-task-table">
-          <caption className="admin-sr-only">近期 AI 任务</caption>
-          <thead><tr><th>时间</th><th>任务ID</th><th>模型/通道</th><th>任务类型</th><th>状态</th></tr></thead>
-          <tbody>
-            {filteredTasks.map((task) => (
-              <tr key={task.id}>
-                <td>{task.time}</td><td>{task.id}</td><td><span>{task.model}</span><small>{task.channel}</small></td><td>{task.type}</td>
-                <td><span className="admin-task-state admin-task-state-muted"><i />{task.status}</span></td>
-              </tr>
-            ))}
-            {filteredTasks.length === 0 ? <tr><td className="admin-empty-cell" colSpan="5">暂无近期调用任务</td></tr> : null}
-          </tbody>
-        </table>
+      <PanelHeader title="当前首选路由" />
+      <div className="admin-provider-route-overview">
+        {providerRouteDefinitions.map((route) => {
+          const selected = enabledChannels.find((channel) => channelSupportsRoute(channel, route))
+          return <div key={route.id}><span>{route.summaryLabel}</span>{selected ? <strong>{selected.name}<small>{selected.model} · 优先级 {selected.priority}</small></strong> : <strong className="is-empty">未配置可用通道<small>需同时满足任务用途与输入能力</small></strong>}</div>
+        })}
       </div>
     </section>
   )
@@ -390,31 +509,50 @@ function AddChannelModal({ open, onClose, onAdd }) {
     adapter: modelProviderPresets[0].adapter,
     baseUrl: modelProviderPresets[0].baseUrl,
     apiKey: '',
-    model: modelProviderPresets[0].model,
-    capabilities: [...modelProviderPresets[0].capabilities],
+    model: '',
+    capabilities: [],
+    detectedCapabilities: normalizeDetectedCapabilities(),
+    lastCheckedAt: null,
     priority: '7',
   })
+  const emptyDetection = () => ({ state: 'idle', message: '', models: [], checkedModel: '' })
   const [form, setForm] = useState(emptyForm)
+  const [detection, setDetection] = useState(emptyDetection)
   const [saving, setSaving] = useState(false)
+  const [detecting, setDetecting] = useState(false)
+  const [probingModel, setProbingModel] = useState(false)
   const [error, setError] = useState('')
 
   useEffect(() => {
     if (!open) {
-      setForm((current) => current.apiKey ? { ...current, apiKey: '' } : current)
+      setForm(emptyForm())
+      setDetection(emptyDetection())
       setError('')
       setSaving(false)
+      setDetecting(false)
+      setProbingModel(false)
       return undefined
     }
     const handleKeyDown = (event) => {
-      if (event.key === 'Escape') onClose()
+      if (event.key === 'Escape' && !saving && !detecting && !probingModel) onClose()
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [open, onClose])
+  }, [open, onClose, saving, detecting, probingModel])
 
   if (!open) return null
 
+  const resetDetection = () => {
+    setDetection(emptyDetection())
+    setForm((current) => ({ ...current, model: '', capabilities: [], detectedCapabilities: normalizeDetectedCapabilities(), lastCheckedAt: null }))
+  }
   const updateField = (field) => (event) => setForm((current) => ({ ...current, [field]: event.target.value }))
+  const updateCredentialField = (field) => (event) => {
+    const value = event.target.value
+    setForm((current) => ({ ...current, [field]: value, model: '', capabilities: [], detectedCapabilities: normalizeDetectedCapabilities(), lastCheckedAt: null }))
+    setDetection(emptyDetection())
+    setError('')
+  }
   const updateProvider = (event) => {
     const preset = modelProviderPresets.find((item) => item.value === event.target.value)
     if (!preset) return
@@ -423,24 +561,109 @@ function AddChannelModal({ open, onClose, onAdd }) {
       provider: preset.value,
       adapter: preset.adapter,
       baseUrl: preset.baseUrl,
-      model: preset.model,
-      capabilities: [...preset.capabilities],
+      model: '',
+      capabilities: [],
+      detectedCapabilities: normalizeDetectedCapabilities(),
+      lastCheckedAt: null,
     }))
+    setDetection(emptyDetection())
+    setError('')
   }
+
+  const probeModel = async (model, sourceForm = form) => {
+    if (!model || probingModel) return
+    setProbingModel(true)
+    setError('')
+    setDetection((current) => ({ ...current, state: 'probing', checkedModel: model, message: `正在实测 ${model} 的文字、图片和 PDF 能力…` }))
+    try {
+      const response = await api.discoverProvider({
+        providerType: sourceForm.provider,
+        adapter: sourceForm.adapter,
+        baseUrl: sourceForm.baseUrl,
+        apiKey: sourceForm.apiKey,
+        model,
+      })
+      const result = response.data?.result || response.data || {}
+      const selected = result.selectedModel || normalizeDiscoveredModels(result).find((item) => item.id === model) || { id: model }
+      const detectedCapabilities = normalizeDetectedCapabilities(selected.detectedCapabilities || selected)
+      const adapter = selected.adapter || result.recommendedAdapter || result.adapter || sourceForm.adapter
+      const capabilities = []
+      if (detectedCapabilities.text === true) capabilities.push('lesson_generation', 'lesson_revision')
+      if (detectedCapabilities.image === true || detectedCapabilities.pdf === true) capabilities.push('multimodal_input')
+      const checkedAt = result.checkedAt || new Date().toISOString()
+      setForm((current) => current.model === model ? { ...current, adapter, capabilities, detectedCapabilities: { ...detectedCapabilities, source: 'live_probe' }, lastCheckedAt: checkedAt } : current)
+      setDetection((current) => ({
+        ...current,
+        state: 'verified',
+        checkedModel: model,
+        message: `${model} 能力实测完成，接口协议已自动选择为 ${adapter === 'openai_responses' ? 'Responses API' : 'Chat Completions'}。`,
+      }))
+    } catch (requestError) {
+      setForm((current) => current.model === model ? { ...current, capabilities: [], detectedCapabilities: normalizeDetectedCapabilities(), lastCheckedAt: null } : current)
+      setDetection((current) => ({ ...current, state: 'model-error', checkedModel: model, message: requestError.message || '模型能力检测失败。' }))
+    } finally {
+      setProbingModel(false)
+    }
+  }
+
+  const handleDiscover = async () => {
+    if (detecting || probingModel) return
+    if (!form.baseUrl.trim() || !form.apiKey.trim()) {
+      setError('请先填写 API Base URL 和 API Key。')
+      return
+    }
+    setDetecting(true)
+    setError('')
+    setDetection({ state: 'connecting', message: '正在连接服务并读取可用模型列表…', models: [], checkedModel: '' })
+    try {
+      const response = await api.discoverProvider({
+        providerType: form.provider,
+        adapter: form.adapter,
+        baseUrl: form.baseUrl,
+        apiKey: form.apiKey,
+      })
+      const result = response.data?.result || response.data || {}
+      const models = normalizeDiscoveredModels(result)
+      if (!result.connected || models.length === 0) throw new Error(result.message || '连接成功，但接口没有返回可选择的模型。')
+      const adapter = result.recommendedAdapter || result.adapter || form.adapter
+      setForm((current) => ({ ...current, adapter, model: '', capabilities: [], detectedCapabilities: normalizeDetectedCapabilities(), lastCheckedAt: null }))
+      setDetection({ state: 'connected', message: `连接成功，已发现 ${models.length} 个可用模型。请选择模型，系统会继续实测图片和 PDF 能力。`, models, checkedModel: '' })
+    } catch (requestError) {
+      resetDetection()
+      setDetection({ state: 'connection-error', message: requestError.message || '连接检测失败，请核对地址、密钥和服务状态。', models: [], checkedModel: '' })
+    } finally {
+      setDetecting(false)
+    }
+  }
+
+  const handleModelChange = async (event) => {
+    const model = event.target.value
+    const nextForm = { ...form, model, capabilities: [], detectedCapabilities: normalizeDetectedCapabilities(), lastCheckedAt: null }
+    setForm(nextForm)
+    if (!model) {
+      setDetection((current) => ({ ...current, state: 'connected', checkedModel: '', message: `连接成功，已发现 ${current.models.length} 个可用模型。请选择需要使用的模型。` }))
+      return
+    }
+    await probeModel(model, nextForm)
+  }
+
   const handleSubmit = async (event) => {
     event.preventDefault()
     if (saving) return
-    if (form.capabilities.length === 0) {
-      setError('请至少选择一种支持用途。')
+    if (detection.state !== 'verified' || detection.checkedModel !== form.model) {
+      setError('请先完成连接检测并选择一个通过实测的模型。')
+      return
+    }
+    if (!form.capabilities.some((item) => item === 'lesson_generation' || item === 'lesson_revision')) {
+      setError('请至少选择“教案生成”或“对话修改”中的一项。')
       return
     }
     setSaving(true)
     setError('')
-    const submitted = { ...form }
-    setForm((current) => ({ ...current, apiKey: '' }))
     try {
-      await onAdd(submitted)
+      await onAdd({ ...form })
       setForm(emptyForm())
+      setDetection(emptyDetection())
     } catch (requestError) {
       setError(requestError.message || '模型通道保存失败，请检查配置后重试。')
     } finally {
@@ -454,37 +677,51 @@ function AddChannelModal({ open, onClose, onAdd }) {
       ? current.capabilities.filter((item) => item !== capability)
       : [...current.capabilities, capability],
   }))
+  const detectionBusy = detecting || probingModel
+  const hasVerifiedModel = detection.state === 'verified' && detection.checkedModel === form.model
 
   return (
-    <div className="admin-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
-      <section className="admin-modal" role="dialog" aria-modal="true" aria-labelledby="admin-add-channel-title">
-        <header className="admin-modal-header"><div><h2 id="admin-add-channel-title">添加模型通道</h2><p>选择官方供应商，或接入第三方兼容接口。</p></div><button type="button" onClick={onClose} aria-label="关闭"><X size={20} /></button></header>
+    <div className="admin-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving && !detectionBusy) onClose() }}>
+      <section className="admin-modal admin-provider-modal" role="dialog" aria-modal="true" aria-labelledby="admin-add-channel-title">
+        <header className="admin-modal-header"><div><h2 id="admin-add-channel-title">添加模型通道</h2><p>先检测真实连接和模型能力，再决定该通道参与哪些任务。</p></div><button type="button" onClick={onClose} aria-label="关闭" disabled={saving || detectionBusy}><X size={20} /></button></header>
         <form className="admin-modal-form" onSubmit={handleSubmit}>
           <div className="admin-form-grid">
-            <label><span>通道名称</span><input value={form.name} onChange={updateField('name')} placeholder="例如：DeepSeek 主通道" required autoFocus disabled={saving} /></label>
-            <label><span>供应商类型</span><select value={form.provider} onChange={updateProvider} disabled={saving}>{modelProviderPresets.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+            <label><span>通道名称</span><input value={form.name} onChange={updateField('name')} placeholder="例如：第三方 GPT 主通道" required autoFocus disabled={saving} /></label>
+            <label><span>供应商类型</span><select value={form.provider} onChange={updateProvider} disabled={saving || detectionBusy}>{modelProviderPresets.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
           </div>
-          <label><span>API Base URL</span><input value={form.baseUrl} onChange={updateField('baseUrl')} placeholder="https://api.example.com/v1" required disabled={saving} /></label>
-          <label><span>API Key</span><input value={form.apiKey} onChange={updateField('apiKey')} type="password" autoComplete="new-password" placeholder="密钥保存后仅显示末四位" required disabled={saving} /></label>
-          <label><span>模型名称</span><input value={form.model} onChange={updateField('model')} placeholder="例如：gpt-5.6" required disabled={saving} /></label>
+          <label><span>API Base URL</span><input value={form.baseUrl} onChange={updateCredentialField('baseUrl')} placeholder="https://api.example.com/v1" required disabled={saving || detectionBusy} /><small>应填写兼容接口的 API 根地址，末尾可以包含 /v1。</small></label>
+          <label><span>API Key</span><input value={form.apiKey} onChange={updateCredentialField('apiKey')} type="password" autoComplete="new-password" placeholder="密钥仅用于本次检测，保存后只显示末四位" required disabled={saving || detectionBusy} /></label>
+          <button className="admin-provider-discover-button" type="button" onClick={handleDiscover} disabled={saving || detectionBusy || !form.baseUrl.trim() || !form.apiKey.trim()}>{detecting ? <LoaderCircle className="spin" size={17} /> : <Activity size={17} />}{detecting ? '正在检测连接…' : '检测连接并发现模型'}</button>
+
+          {detection.state !== 'idle' ? <div className={`admin-provider-detection admin-provider-detection-${detection.state.includes('error') ? 'error' : detection.state === 'verified' || detection.state === 'connected' ? 'success' : 'pending'}`} role={detection.state.includes('error') ? 'alert' : 'status'}>{detection.state === 'verified' || detection.state === 'connected' ? <CheckCircle2 size={18} /> : detection.state.includes('error') ? <AlertTriangle size={18} /> : <LoaderCircle className="spin" size={18} />}<p>{detection.message}</p></div> : null}
+
+          <label><span>选择可用模型</span><select value={form.model} onChange={handleModelChange} required disabled={saving || detectionBusy || detection.models.length === 0}><option value="">{detection.models.length ? `请选择（已发现 ${detection.models.length} 个）` : '请先检测连接'}</option>{detection.models.map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}</select><small>选择后系统会真实调用该模型，分别验证文字、图片和 PDF。</small></label>
+
+          <div className="admin-provider-capability-results" aria-label="所选模型能力检测结果">
+            {[
+              ['text', '文字生成'],
+              ['image', '图片识别'],
+              ['pdf', 'PDF 识别'],
+            ].map(([key, label]) => {
+              const value = hasVerifiedModel ? form.detectedCapabilities[key] : null
+              return <div className={value === true ? 'is-supported' : value === false ? 'is-unsupported' : 'is-unknown'} key={key}><span>{label}</span><b>{value === true ? '实测支持' : value === false ? '实测不支持' : probingModel ? '检测中…' : hasVerifiedModel ? '暂无法确认' : '待检测'}</b></div>
+            })}
+          </div>
+
           <fieldset className="admin-capability-fieldset">
-            <legend>支持用途（可多选）</legend>
+            <legend>参与任务（可多选）</legend>
             <div className="admin-capability-options">
               {[
-                ['lesson_generation', '教案生成'],
-                ['lesson_revision', '对话修改'],
-                ['multimodal_input', '图片/PDF识别'],
-              ].map(([value, label]) => {
-                const unavailable = value === 'multimodal_input' && form.adapter === 'openai_chat_completions'
-                return <label key={value}><input type="checkbox" checked={form.capabilities.includes(value)} onChange={() => toggleCapability(value)} disabled={saving || unavailable} /><span>{label}{unavailable ? '（当前接口不支持）' : ''}</span></label>
-              })}
+                ['lesson_generation', '教案生成', form.detectedCapabilities.text === true],
+                ['lesson_revision', '对话修改', form.detectedCapabilities.text === true],
+              ].map(([value, label, supported]) => <label key={value}><input type="checkbox" checked={form.capabilities.includes(value)} onChange={() => toggleCapability(value)} disabled={saving || !hasVerifiedModel || !supported} /><span>{label}{hasVerifiedModel && !supported ? '（模型实测不支持）' : ''}</span></label>)}
             </div>
-            <small>{form.provider === 'deepseek' ? 'DeepSeek V4 官方 API 当前仅支持文字；图片/PDF 需另配支持多模态的通道。' : form.adapter === 'openai_chat_completions' ? '当前兼容接口用于文字教案生成和修改。' : 'OpenAI 官方 Responses 通道可同时承担文字与图片/PDF识别。'}</small>
+            <small>用途不再按供应商名称判断。图片与 PDF 属于所选模型的实测输入能力，不需要手动猜测或勾选；第三方模型实测支持后会自动参与对应教材任务。</small>
           </fieldset>
-          <label><span>路由优先级</span><input value={form.priority} onChange={updateField('priority')} type="number" min="1" max="99" required disabled={saving} /><small>数字越小，调用优先级越高。</small></label>
-          <div className="admin-modal-callout"><ShieldCheck size={18} /><p>密钥将以加密形式保存，页面、日志和任务响应中不会返回完整内容。</p></div>
+          <label><span>路由优先级</span><input value={form.priority} onChange={updateField('priority')} type="number" min="1" max="1000" required disabled={saving} /><small>多个通道同时启用时，先按任务能力筛选，再使用数字最小的通道；不是随机分配。</small></label>
+          <div className="admin-modal-callout"><ShieldCheck size={18} /><p>API Key 会在服务端加密保存，页面、日志和接口响应均不会回显完整密钥。</p></div>
           {error ? <p className="admin-form-error" role="alert">{error}</p> : null}
-          <footer className="admin-modal-footer"><button className="admin-button admin-button-secondary" type="button" onClick={onClose} disabled={saving}>取消</button><button className="admin-button admin-button-primary" type="submit" disabled={saving}><Plus size={17} />{saving ? '正在保存…' : '保存并启用'}</button></footer>
+          <footer className="admin-modal-footer"><button className="admin-button admin-button-secondary" type="button" onClick={onClose} disabled={saving || detectionBusy}>取消</button><button className="admin-button admin-button-primary" type="submit" disabled={saving || detectionBusy || !hasVerifiedModel}><Plus size={17} />{saving ? '正在保存…' : '保存并启用'}</button></footer>
         </form>
       </section>
     </div>
@@ -494,6 +731,7 @@ function AddChannelModal({ open, onClose, onAdd }) {
 function ModelChannelsPage({ query, onNotice }) {
   const [channels, setChannels] = useState([])
   const [modalOpen, setModalOpen] = useState(false)
+  const [deleteCandidate, setDeleteCandidate] = useState(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [busyIds, setBusyIds] = useState(() => new Set())
@@ -539,15 +777,69 @@ function ModelChannelsPage({ query, onNotice }) {
     try {
       const response = await api.testProvider(channel.id)
       const result = response.data?.result || response.data || {}
+      const selected = result.selectedModel || {}
+      const detectedCapabilities = normalizeDetectedCapabilities(selected.detectedCapabilities || selected.capabilities || result.detectedCapabilities)
       setChannels((current) => current.map((item) => item.id === channel.id ? {
         ...item,
         health: 'healthy',
         latency: Number.isFinite(Number(result.latencyMs)) ? `${result.latencyMs} ms` : item.latency,
+        detectedCapabilities: { ...detectedCapabilities, source: 'live_probe' },
+        lastCheckedAt: result.checkedAt || new Date().toISOString(),
+        lastCheckLatencyMs: Number.isFinite(Number(result.latencyMs)) && Number(result.latencyMs) > 0 ? Number(result.latencyMs) : null,
+        lastCheckError: null,
       } : item))
-      onNotice(`${channel.name}${result.invocationVerified ? '连接与实际调用均成功' : '连接成功'}${result.modelAvailable === false ? '，但当前模型不在服务商模型列表中' : ''}`)
+      const capabilityResultLabel = (label, value) => value === true ? `${label}可用` : value === false ? `${label}不可用` : `${label}暂无法确认`
+      const abilityText = [
+        capabilityResultLabel('文字', detectedCapabilities.text),
+        capabilityResultLabel('图片', detectedCapabilities.image),
+        capabilityResultLabel('PDF ', detectedCapabilities.pdf),
+      ].join('、')
+      onNotice(`${channel.name}连接成功，模型实测结果：${abilityText}`)
     } catch (requestError) {
-      setChannels((current) => current.map((item) => item.id === channel.id ? { ...item, health: 'abnormal' } : item))
+      setChannels((current) => current.map((item) => item.id === channel.id ? {
+        ...item,
+        health: 'abnormal',
+        lastCheckedAt: new Date().toISOString(),
+        lastCheckLatencyMs: null,
+        lastCheckError: requestError.message || '连接检测失败',
+      } : item))
       onNotice(`连接测试失败：${requestError.message}`)
+    } finally {
+      setBusyIds((current) => {
+        const next = new Set(current)
+        next.delete(channel.id)
+        return next
+      })
+    }
+  }
+  const savePriority = async (channel, priority) => {
+    setBusyIds((current) => new Set(current).add(channel.id))
+    try {
+      const response = await api.updateProvider(channel.id, { priority })
+      const updatedProvider = response.data?.provider || response.data?.channel
+      setChannels((current) => current.map((item) => item.id === channel.id ? (updatedProvider ? providerToChannel(updatedProvider) : { ...item, priority }) : item))
+      onNotice(`${channel.name}优先级已更新为 ${priority}`)
+    } catch (requestError) {
+      onNotice(`优先级保存失败：${requestError.message}`)
+    } finally {
+      setBusyIds((current) => {
+        const next = new Set(current)
+        next.delete(channel.id)
+        return next
+      })
+    }
+  }
+  const deleteChannel = async () => {
+    const channel = deleteCandidate
+    if (!channel || channel.readonly) return
+    setBusyIds((current) => new Set(current).add(channel.id))
+    try {
+      await api.deleteProvider(channel.id)
+      setChannels((current) => current.filter((item) => item.id !== channel.id))
+      setDeleteCandidate(null)
+      onNotice(`模型通道“${channel.name}”已删除`)
+    } catch (requestError) {
+      onNotice(`删除失败：${requestError.message}`)
     } finally {
       setBusyIds((current) => {
         const next = new Set(current)
@@ -567,12 +859,14 @@ function ModelChannelsPage({ query, onNotice }) {
       apiKey: form.apiKey,
       model: form.model,
       capabilities: form.capabilities,
+      detectedCapabilities: form.detectedCapabilities,
+      lastCheckedAt: form.lastCheckedAt,
       priority: Number(form.priority),
       enabled: true,
     })
     const provider = response.data?.provider || response.data?.channel
     if (!provider) throw new Error('服务端未返回新建模型通道。')
-    setChannels((current) => [...current, providerToChannel(provider, current.length)])
+    setChannels((current) => [...current, providerToChannel(provider, current.length)].sort((left, right) => left.priority - right.priority))
     setModalOpen(false)
     onNotice(`模型通道“${form.name}”已添加并启用`)
   }
@@ -592,23 +886,16 @@ function ModelChannelsPage({ query, onNotice }) {
         <MetricCard label="已配置通道" value={String(channels.length)} note="来自服务端配置" tone="neutral" icon={Server} />
         <MetricCard label="已启用通道" value={String(channels.filter((item) => item.enabled).length)} note="可参与模型路由" tone="positive" icon={ShieldCheck} />
         <MetricCard label="健康通道" value={String(channels.filter((item) => item.health === 'healthy').length)} note="未检测显示为待检测" tone="neutral" icon={Activity} />
-        <MetricCard label="今日调用与成本" value="—" note="暂无可用量数据" tone="neutral" icon={ReceiptText} />
+        <MetricCard label="已实测模型" value={String(channels.filter((item) => item.detectedCapabilities.source === 'live_probe').length)} note="能力来自真实模型调用" tone="neutral" icon={CheckCircle2} />
       </div>
 
-      <div className="admin-model-layout">
-        <div className="admin-model-main-column">
-          <section className="admin-panel admin-chart-panel">
-            <PanelHeader title="调用量与预估成本" />
-            <div className="admin-empty-metric"><Activity size={22} /><div><b>尚无可核验的用量日志</b><p>当前没有可用于计算调用量、延迟和成本的数据。</p></div></div>
-          </section>
-          <ChannelHealthTable channels={channels} onToggle={toggleChannel} onTest={testChannel} query={query} busyIds={busyIds} />
-        </div>
-        <div className="admin-model-side-column">
-          <RecentTasksPanel query={query} />
-          <TrainingReadiness />
-        </div>
+      <ChannelHealthTable channels={channels} onToggle={toggleChannel} onTest={testChannel} onPrioritySave={savePriority} onDelete={setDeleteCandidate} query={query} busyIds={busyIds} />
+      <div className="admin-model-insights">
+        <RoutingSummaryPanel channels={channels} />
+        <TrainingReadiness />
       </div>
       <AddChannelModal open={modalOpen} onClose={() => setModalOpen(false)} onAdd={addChannel} />
+      {deleteCandidate ? <div className="admin-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busyIds.has(deleteCandidate.id)) setDeleteCandidate(null) }}><section className="admin-confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="admin-delete-provider-title"><div className="admin-confirm-icon"><Trash2 size={22} /></div><h2 id="admin-delete-provider-title">删除模型通道？</h2><p>将永久删除“{deleteCandidate.name}”及其加密密钥配置。删除后，该通道会立即退出所有任务路由。</p><div><button className="admin-button admin-button-secondary" type="button" onClick={() => setDeleteCandidate(null)} disabled={busyIds.has(deleteCandidate.id)}>取消</button><button className="admin-button admin-button-danger" type="button" onClick={deleteChannel} disabled={busyIds.has(deleteCandidate.id)}>{busyIds.has(deleteCandidate.id) ? <LoaderCircle className="spin" size={17} /> : <Trash2 size={17} />}{busyIds.has(deleteCandidate.id) ? '正在删除…' : '确认删除'}</button></div></section></div> : null}
     </>
   )
 }

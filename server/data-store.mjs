@@ -536,6 +536,16 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
     return updated;
   }
 
+  function deleteChannel(channelId) {
+    const channel = findChannel(channelId);
+    if (!channel) return null;
+    const nextState = structuredClone(channelsState);
+    nextState.channels = nextState.channels.filter((item) => item.id !== channelId);
+    writeState(channelsFile, nextState);
+    replaceObject(channelsState, nextState);
+    return channel;
+  }
+
   function addTrainingCandidate(candidate) {
     const existing = candidatesState.candidates.find((item) => (
       item.ownerRef === candidate.ownerRef
@@ -598,6 +608,7 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
     addTrainingCandidate,
     canMigrateAdminTeacherUser,
     commitGeneration,
+    deleteChannel,
     deleteUsers,
     findChannel,
     findUserByAccountKey,

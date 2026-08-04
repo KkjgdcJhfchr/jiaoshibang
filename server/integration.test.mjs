@@ -19,6 +19,8 @@ const lessonSchema = JSON.parse(readFileSync(new URL('../shared/lesson-plan.sche
 const trainingSchema = JSON.parse(readFileSync(new URL('../shared/training-sample.schema.json', import.meta.url), 'utf8'));
 const baseLessonPlan = buildLessonPlan(lessonSchema);
 const upstreamRequests = [];
+const transientProbeModels = new Set();
+const echoAuthorizationModels = new Set();
 const smtpMessages = [];
 const smtpAuthentications = [];
 
@@ -115,16 +117,42 @@ const mockUpstream = createServer(async (request, response) => {
   for await (const chunk of request) chunks.push(chunk);
   const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
   const isChatCompletions = request.url?.endsWith('/chat/completions');
-  const inputText = isChatCompletions
-    ? body.messages?.filter((item) => item.role === 'user').at(-1)?.content || ''
-    : body.input?.[0]?.content?.find((item) => item.type === 'input_text')?.text || body.input || '';
+  const userContent = isChatCompletions
+    ? body.messages?.filter((item) => item.role === 'user').at(-1)?.content
+    : body.input?.[0]?.content;
+  const inputText = Array.isArray(userContent)
+    ? userContent.find((item) => ['text', 'input_text'].includes(item.type))?.text || ''
+    : typeof userContent === 'string' ? userContent : typeof body.input === 'string' ? body.input : '';
+  const inputKinds = Array.isArray(userContent) ? userContent.map((item) => item.type) : ['text'];
   upstreamRequests.push({
     authorization: request.headers.authorization,
     model: body.model,
     safetyIdentifier: body.safety_identifier,
     endpoint: isChatCompletions ? 'chat/completions' : 'responses',
     thinking: body.thinking?.type || null,
+    inputKinds,
+    responseFormat: body.response_format?.type || body.text?.format?.type || null,
+    strictSchema: body.text?.format?.strict === true,
+    reasoningEffort: body.reasoning?.effort || null,
+    hasInstructions: typeof body.instructions === 'string',
   });
+
+  if (transientProbeModels.has(body.model)) {
+    response.writeHead(429, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify({ error: { code: 'rate_limited', message: '模拟瞬时限流' } }));
+    return;
+  }
+  if (echoAuthorizationModels.has(body.model)) {
+    response.writeHead(500, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify({ error: { code: 'credential_echo', message: `模拟回显 ${request.headers.authorization}` } }));
+    return;
+  }
+
+  if (body.model === 'deepseek-v4-pro' && inputKinds.some((kind) => ['image_url', 'file', 'input_image', 'input_file'].includes(kind))) {
+    response.writeHead(400, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify({ error: { code: 'unsupported_input', message: '该模拟模型仅支持文字输入' } }));
+    return;
+  }
 
   if (inputText.includes('FORCE_UPSTREAM_ERROR')) {
     response.writeHead(500, { 'Content-Type': 'application/json' });
@@ -138,12 +166,17 @@ const mockUpstream = createServer(async (request, response) => {
   lessonPlan.metadata.durationMinutes = requestedDuration;
   lessonPlan.timeline[0].durationMinutes = requestedDuration;
   lessonPlan.generationMeta.modelRouteId = body.model;
+  const capabilityProbeText = inputText.includes('唯一一行') && inputKinds.some((kind) => ['image_url', 'input_image'].includes(kind))
+    ? 'BKX7319'
+    : inputText.includes('唯一一行') && inputKinds.some((kind) => ['file', 'input_file'].includes(kind))
+      ? 'BKX-PROBE'
+      : inputText.includes('"ok"') ? '{"ok":"OK"}' : null;
   response.writeHead(200, { 'Content-Type': 'application/json' });
   if (isChatCompletions) {
     response.end(JSON.stringify({
       id: `chatcmpl_${upstreamRequests.length}`,
       model: body.model,
-      choices: [{ index: 0, message: { role: 'assistant', content: inputText === '请只回复 OK' ? 'OK' : JSON.stringify(lessonPlan) }, finish_reason: 'stop' }],
+      choices: [{ index: 0, message: { role: 'assistant', content: capabilityProbeText || JSON.stringify(lessonPlan) }, finish_reason: 'stop' }],
       usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
     }));
     return;
@@ -152,7 +185,7 @@ const mockUpstream = createServer(async (request, response) => {
     id: `resp_${upstreamRequests.length}`,
     status: 'completed',
     model: body.model,
-    output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(lessonPlan) }] }],
+    output: [{ type: 'message', content: [{ type: 'output_text', text: capabilityProbeText || JSON.stringify(lessonPlan) }] }],
     usage: { input_tokens: 10, output_tokens: 20, total_tokens: 30 },
   }));
 });
@@ -178,7 +211,7 @@ try {
     ALLOW_INSECURE_SMTP: 'true',
     AUTH_RATE_LIMIT_IP_MAX: '100',
     REGISTRATION_VERIFICATION_REQUIRED: 'false',
-    AI_RATE_LIMIT_USER_MAX: '3',
+    AI_RATE_LIMIT_USER_MAX: '5',
     AI_RATE_LIMIT_IP_MAX: '100',
     AI_MAX_CONCURRENCY: '1',
   };
@@ -1094,6 +1127,57 @@ try {
   assert.equal(environmentProviderTest.body.data.result.modelAvailable, true);
 
   const providerKey = 'integration-provider-key';
+  const providerDiscovery = await client.json('/api/admin/providers/discover', {
+    method: 'POST',
+    cookie: adminCookie,
+    body: {
+      providerType: 'custom_openai_compatible',
+      adapter: 'openai_chat_completions',
+      baseUrl: `http://127.0.0.1:${mockPort}/v1`,
+      apiKey: providerKey,
+    },
+  });
+  assert.equal(providerDiscovery.status, 200);
+  assert.equal(providerDiscovery.body.data.result.connected, true);
+  assert.deepEqual(
+    providerDiscovery.body.data.result.availableModels.map((item) => item.id),
+    ['environment-test-model', 'deepseek-v4-pro'],
+  );
+  assert.equal(JSON.stringify(providerDiscovery.body).includes(providerKey), false);
+
+  const providerModelProbe = await client.json('/api/admin/providers/discover', {
+    method: 'POST',
+    cookie: adminCookie,
+    body: {
+      providerType: 'custom_openai_compatible',
+      adapter: 'openai_chat_completions',
+      baseUrl: `http://127.0.0.1:${mockPort}/v1`,
+      apiKey: providerKey,
+      model: 'environment-test-model',
+    },
+  });
+  assert.equal(providerModelProbe.status, 200);
+  assert.equal(providerModelProbe.body.data.result.recommendedAdapter, 'openai_responses');
+  assert.deepEqual(providerModelProbe.body.data.result.selectedModel.capabilities, {
+    text: true,
+    vision: true,
+    image: true,
+    pdf: true,
+  });
+  assert.equal(providerModelProbe.body.data.result.selectedModel.capabilitySource, 'live_probe');
+  assert.deepEqual(new Set(providerModelProbe.body.data.result.supportedAdapters), new Set(['openai_responses', 'openai_chat_completions']));
+  const responsesTextProbe = [...upstreamRequests].reverse().find((item) => (
+    item.endpoint === 'responses' && item.inputKinds.length === 1 && item.inputKinds[0] === 'input_text'
+  ));
+  assert.equal(responsesTextProbe.hasInstructions, true);
+  assert.equal(responsesTextProbe.reasoningEffort, 'low');
+  assert.equal(responsesTextProbe.responseFormat, 'json_schema');
+  assert.equal(responsesTextProbe.strictSchema, true);
+  const chatTextProbe = [...upstreamRequests].reverse().find((item) => (
+    item.endpoint === 'chat/completions' && item.inputKinds.length === 1 && item.inputKinds[0] === 'text'
+  ));
+  assert.equal(chatTextProbe.responseFormat, 'json_object');
+
   const providerCreated = await client.json('/api/admin/providers', {
     method: 'POST',
     cookie: adminCookie,
@@ -1143,6 +1227,154 @@ try {
   assert.equal(upstreamRequests.at(-1).authorization, `Bearer ${providerKey}`);
   assert.equal(upstreamRequests.at(-1).endpoint, 'chat/completions');
   assert.equal(upstreamRequests.at(-1).thinking, 'disabled');
+
+  const providerTemporarilyDisabled = await client.json(`/api/admin/providers/${encodeURIComponent(providerId)}`, {
+    method: 'PATCH',
+    cookie: adminCookie,
+    body: { enabled: false },
+  });
+  assert.equal(providerTemporarilyDisabled.status, 200);
+  const arbitraryFormatKey = 'opaque-secret-without-standard-prefix';
+  const echoProviderCreated = await client.json('/api/admin/providers', {
+    method: 'POST',
+    cookie: adminCookie,
+    body: {
+      name: '错误脱敏测试通道',
+      providerType: 'custom_openai_compatible',
+      adapter: 'openai_chat_completions',
+      baseUrl: `http://127.0.0.1:${mockPort}/v1`,
+      apiKey: arbitraryFormatKey,
+      model: 'echo-key-error-model',
+      capabilities: ['lesson_generation', 'lesson_revision'],
+      detectedCapabilities: { text: true, image: false, pdf: false },
+      lastCheckedAt: new Date().toISOString(),
+      priority: 1,
+    },
+  });
+  assert.equal(echoProviderCreated.status, 201);
+  const echoProviderId = echoProviderCreated.body.data.provider.id;
+  echoAuthorizationModels.add('echo-key-error-model');
+  const echoedSecretFailure = await client.json('/api/ai/generate', {
+    method: 'POST',
+    cookie: userCookie,
+    body: generationBody('上游错误脱敏'),
+  });
+  echoAuthorizationModels.delete('echo-key-error-model');
+  assert.equal(echoedSecretFailure.status, 502);
+  assert.equal(JSON.stringify(echoedSecretFailure.body).includes(arbitraryFormatKey), false, '任意格式密钥被上游回显时也必须精确脱敏');
+  assert.equal(JSON.stringify(echoedSecretFailure.body).includes('Bearer opaque-secret'), false);
+  const echoProviderDeleted = await client.json(`/api/admin/providers/${encodeURIComponent(echoProviderId)}`, {
+    method: 'DELETE',
+    cookie: adminCookie,
+  });
+  assert.equal(echoProviderDeleted.status, 200);
+  const providerReenabled = await client.json(`/api/admin/providers/${encodeURIComponent(providerId)}`, {
+    method: 'PATCH',
+    cookie: adminCookie,
+    body: { enabled: true },
+  });
+  assert.equal(providerReenabled.status, 200);
+
+  const discoveredCapabilities = providerModelProbe.body.data.result.selectedModel.capabilities;
+  const multimodalProviderCreated = await client.json('/api/admin/providers', {
+    method: 'POST',
+    cookie: adminCookie,
+    body: {
+      name: '兼容接口多模态通道',
+      providerType: 'custom_openai_compatible',
+      adapter: providerModelProbe.body.data.result.recommendedAdapter,
+      baseUrl: `http://127.0.0.1:${mockPort}/v1`,
+      apiKey: providerKey,
+      model: 'environment-test-model',
+      capabilities: ['lesson_generation', 'lesson_revision', 'multimodal_input'],
+      detectedCapabilities: discoveredCapabilities,
+      lastCheckedAt: providerModelProbe.body.data.result.checkedAt,
+      priority: 2,
+    },
+  });
+  assert.equal(multimodalProviderCreated.status, 201);
+  const multimodalProviderId = multimodalProviderCreated.body.data.provider.id;
+  assert.deepEqual(multimodalProviderCreated.body.data.provider.detectedCapabilities, {
+    ...discoveredCapabilities,
+    source: 'live_probe',
+  });
+
+  const multimodalProviderTest = await client.json(`/api/admin/providers/${encodeURIComponent(multimodalProviderId)}/test`, {
+    method: 'POST',
+    cookie: adminCookie,
+    body: {},
+  });
+  assert.equal(multimodalProviderTest.status, 200);
+  assert.equal(multimodalProviderTest.body.data.result.recommendedAdapter, 'openai_responses');
+  assert.equal(multimodalProviderTest.body.data.result.selectedModel.capabilities.image, true);
+  assert.equal(multimodalProviderTest.body.data.result.selectedModel.capabilities.pdf, true);
+
+  transientProbeModels.add('environment-test-model');
+  const inconclusiveProviderTest = await client.json(`/api/admin/providers/${encodeURIComponent(multimodalProviderId)}/test`, {
+    method: 'POST',
+    cookie: adminCookie,
+    body: {},
+  });
+  transientProbeModels.delete('environment-test-model');
+  assert.equal(inconclusiveProviderTest.status, 503);
+  assert.equal(inconclusiveProviderTest.body.error.code, 'AI_PROVIDER_TEST_INCONCLUSIVE');
+  const providersAfterInconclusive = await client.json('/api/admin/providers', { cookie: adminCookie });
+  const preservedProvider = providersAfterInconclusive.body.data.providers.find((item) => item.id === multimodalProviderId);
+  assert.equal(preservedProvider.health, 'healthy');
+  assert.equal(preservedProvider.lastCheckStatus, 'inconclusive');
+  assert.equal(preservedProvider.detectedCapabilities.image, true, '瞬时失败不得覆盖上次已验证的图片能力');
+  assert.equal(preservedProvider.detectedCapabilities.pdf, true, '瞬时失败不得覆盖上次已验证的 PDF 能力');
+
+  const multimodalGeneration = await client.json('/api/ai/generate', {
+    method: 'POST',
+    cookie: userCookie,
+    body: {
+      ...generationBody('使用图片能力路由'),
+      images: ['data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlWQAAAAASUVORK5CYII='],
+    },
+  });
+  assert.equal(multimodalGeneration.status, 200, JSON.stringify(multimodalGeneration.body));
+  assert.equal(multimodalGeneration.body.data.providerId, multimodalProviderId, '图片请求必须跳过仅文字的更高优先级通道');
+  assert.equal(upstreamRequests.at(-1).endpoint, 'responses');
+  assert.equal(upstreamRequests.at(-1).inputKinds.includes('input_image'), true);
+
+  const providersAfterUsage = await client.json('/api/admin/providers', { cookie: adminCookie });
+  const usedProvider = providersAfterUsage.body.data.providers.find((item) => item.id === multimodalProviderId);
+  assert.equal(usedProvider.routeOrder, 2);
+  assert.equal(usedProvider.useCount, 1);
+  assert.equal(usedProvider.lastSelectedTask, 'generation');
+  assert.equal(usedProvider.lastSelectedModel, 'environment-test-model');
+  assert.match(usedProvider.lastUsedAt, /^\d{4}-\d{2}-\d{2}T/);
+
+  const providerModelChanged = await client.json(`/api/admin/providers/${encodeURIComponent(multimodalProviderId)}`, {
+    method: 'PATCH',
+    cookie: adminCookie,
+    body: { model: 'changed-model-requires-new-probe' },
+  });
+  assert.equal(providerModelChanged.status, 200);
+  assert.equal(providerModelChanged.body.data.provider.health, 'unknown');
+  assert.deepEqual(providerModelChanged.body.data.provider.detectedCapabilities, {
+    text: null,
+    vision: null,
+    image: null,
+    pdf: null,
+    source: 'unknown',
+  }, '模型变化后不得沿用旧能力检测结果');
+  assert.equal(providerModelChanged.body.data.provider.lastCheckedAt, null);
+
+  const environmentDeleteDenied = await client.json('/api/admin/providers/environment-fallback', {
+    method: 'DELETE',
+    cookie: adminCookie,
+  });
+  assert.equal(environmentDeleteDenied.status, 403);
+  assert.equal(environmentDeleteDenied.body.error.code, 'PROVIDER_READONLY');
+  const multimodalProviderDeleted = await client.json(`/api/admin/providers/${encodeURIComponent(multimodalProviderId)}`, {
+    method: 'DELETE',
+    cookie: adminCookie,
+  });
+  assert.equal(multimodalProviderDeleted.status, 200);
+  const providersAfterDelete = await client.json('/api/admin/providers', { cookie: adminCookie });
+  assert.equal(providersAfterDelete.body.data.providers.some((item) => item.id === multimodalProviderId), false);
 
   const candidateCreated = await client.json('/api/training/candidates', {
     method: 'POST',
@@ -1224,7 +1456,7 @@ try {
     },
   });
   const thirdCookie = cookiePair(thirdRegistration.headers.get('set-cookie'));
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
     const revision = await client.json('/api/ai/revise', {
       method: 'POST',
       cookie: thirdCookie,

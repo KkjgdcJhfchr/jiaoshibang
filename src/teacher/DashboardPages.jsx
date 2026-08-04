@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertTriangle,
   ArrowRight,
   BadgeCheck,
   BookOpen,
@@ -192,68 +191,6 @@ async function writeClipboard(value) {
   if (!copied) throw new Error('clipboard unavailable');
 }
 
-function DashboardReferralCard() {
-  const { referralProgram } = useSiteConfig();
-  const [state, setState] = useState({ loading: true, error: '', overview: null });
-  const [copyStatus, setCopyStatus] = useState('');
-  const copyTimerRef = useRef(null);
-
-  useEffect(() => {
-    let active = true;
-    api.getReferralOverview().then((response) => {
-      if (active) setState({ loading: false, error: '', overview: normalizeReferralOverviewResponse(response) });
-    }).catch((requestError) => {
-      if (active) setState({ loading: false, error: requestError.message || '推广奖励暂时无法读取。', overview: null });
-    });
-    return () => {
-      active = false;
-      window.clearTimeout(copyTimerRef.current);
-    };
-  }, []);
-
-  async function copy(value, label) {
-    if (!value) return;
-    try {
-      await writeClipboard(value);
-      setCopyStatus(`${label}已复制`);
-    } catch {
-      setCopyStatus('复制失败，请手动选择复制');
-    }
-    window.clearTimeout(copyTimerRef.current);
-    copyTimerRef.current = window.setTimeout(() => setCopyStatus(''), 2_400);
-  }
-
-  if (state.loading) {
-    return <section className="dashboard-referral-card is-loading" aria-busy="true"><LoaderCircle className="spin" size={21} /><div><b>正在读取推广奖励</b><span>马上为你显示当前奖励规则和专属推广链接。</span></div></section>;
-  }
-  if (state.error) {
-    return <section className="dashboard-referral-card is-error" role="alert"><AlertTriangle size={21} /><div><b>推广奖励暂时无法读取</b><span>{state.error}</span></div><button type="button" onClick={() => navigate('/app/referrals')}>进入推广中心 <ChevronRight size={15} /></button></section>;
-  }
-
-  const overview = state.overview || {};
-  const program = { ...(overview.program || {}), ...(referralProgram || {}) };
-  const enabled = program.enabled === true;
-  const inviterReward = program.rewardMode === 'invitee_only' ? 0 : Number(program.inviterRewardCredits || 0);
-  const inviteeReward = program.rewardMode === 'inviter_only' ? 0 : Number(program.inviteeRewardCredits || 0);
-
-  return (
-    <section className={`dashboard-referral-card ${enabled ? 'is-enabled' : 'is-paused'}`}>
-      <div className="dashboard-referral-copy">
-        <span><PartyPopper size={17} />{enabled ? '推广有礼 · 活动进行中' : '推广有礼 · 活动暂停'}</span>
-        <h2>{program.headline || '邀请好友一起高效备课'}</h2>
-        <p>{program.description || '分享专属邀请链接，符合规则后获得教案生成额度。'}</p>
-        <div><b>邀请人 +{inviterReward} 额度</b><b>新用户 +{inviteeReward} 额度</b></div>
-      </div>
-      <div className="dashboard-referral-tools">
-        {!enabled ? <p className="dashboard-referral-paused"><Clock3 size={14} />当前活动尚未开启，入口会保留，开启后即可复制分享。</p> : null}
-        <label><span>我的邀请码</span><div><strong>{overview.referralCode || '暂未生成'}</strong><button type="button" disabled={!enabled || !overview.referralCode} onClick={() => void copy(overview.referralCode, '邀请码')}><Copy size={15} />复制</button></div></label>
-        <label><span>专属推广链接</span><div><input readOnly value={overview.referralLink || ''} aria-label="专属推广链接" /><button type="button" disabled={!enabled || !overview.referralLink} onClick={() => void copy(overview.referralLink, '推广链接')}><Share2 size={15} />复制链接</button></div></label>
-        <footer>{copyStatus ? <span role="status"><Check size={14} />{copyStatus}</span> : <span /> }<button type="button" onClick={() => navigate('/app/referrals')}>查看推广详情 <ArrowRight size={15} /></button></footer>
-      </div>
-    </section>
-  );
-}
-
 export function DashboardPage({ path }) {
   const account = useAccount();
   const displayName = accountDisplayName(account);
@@ -264,7 +201,6 @@ export function DashboardPage({ path }) {
     <TeacherShell path={path} title={`你好，${displayName}`} subtitle="今天也一起备好一堂课。">
       <div className="dashboard-layout">
         <div className="dashboard-main-column">
-          <DashboardReferralCard />
           <section className="recent-panel">
             <header><div><h2>最近教案</h2><p>继续编辑、查看生成进度或导出定稿。</p></div><Button variant="ghost" onClick={() => navigate('/app/plans')}>查看全部 <ChevronRight size={16} /></Button></header>
             <div className="lesson-list lesson-list-header"><span>教案名称</span><span>学科 / 年级</span><span>更新时间</span><span>状态</span><span /></div>
