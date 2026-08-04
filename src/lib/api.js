@@ -121,6 +121,9 @@ export const api = {
   createAdminPromotion: (body) => request('/api/admin/promotions', { method: 'POST', body, timeout: 20_000 }),
   updateAdminPromotion: (promotionId, body) => request(`/api/admin/promotions/${encodeURIComponent(promotionId)}`, { method: 'PUT', body, timeout: 20_000 }),
   deleteAdminPromotion: (promotionId) => request(`/api/admin/promotions/${encodeURIComponent(promotionId)}`, { method: 'DELETE', body: {}, timeout: 20_000 }),
+  listCreditResets: () => request('/api/admin/credit-resets', { timeout: 15_000 }),
+  createCreditReset: (body) => request('/api/admin/credit-resets', { method: 'POST', body, timeout: 30_000 }),
+  cancelCreditReset: (resetId) => request(`/api/admin/credit-resets/${encodeURIComponent(resetId)}`, { method: 'DELETE', body: {}, timeout: 20_000 }),
   getAdminPaymentOrders: ({ provider = '', status = '', offset = 0, limit = 25, query = '' } = {}) => {
     const search = new URLSearchParams({ offset: String(offset), limit: String(limit) });
     if (provider) search.set('provider', provider);
@@ -145,6 +148,7 @@ export const api = {
   getGenerationJob: (jobId) => request(`/api/ai/generation-jobs/${encodeURIComponent(jobId)}`, { timeout: 20_000 }),
   generateLesson: (body) => request('/api/ai/generate', { method: 'POST', body, timeout: 660_000 }),
   reviseLesson: (body) => request('/api/ai/revise', { method: 'POST', body, timeout: 660_000 }),
+  reviseCustomSections: (body) => request('/api/ai/revise-custom-sections', { method: 'POST', body, timeout: 660_000 }),
   buildKnowledgeMap: (body) => request('/api/workflow/knowledge-map', { method: 'POST', body, timeout: 30_000 }),
   recommendPaper: (body) => request('/api/workflow/papers/recommend', { method: 'POST', body, timeout: 30_000 }),
   submitTrainingCandidate: (body) => request('/api/training/candidates', { method: 'POST', body, timeout: 20_000 }),

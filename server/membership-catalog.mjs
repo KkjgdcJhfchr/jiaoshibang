@@ -7,15 +7,15 @@ const MAX_PRODUCTS = 50;
 
 const DEFAULT_PRODUCTS = Object.freeze([
   defaultFreeProduct('free', '免费版', 3,
-    ['基础教案生成', 'AI 修改与结构化导出', '点数余额查询']),
+    ['基础教案生成', 'AI 教案修改', 'DOC / 打印-PDF 导出', '点数余额查询']),
   defaultProduct('pro-monthly', '专业版月卡', 'pro', 10, 'month', 3_900, 30, 20,
-    ['20 次教案生成点数', 'AI 教案修改', 'DOC / 打印-PDF / JSON 导出', '历史版本长期保存']),
+    ['20 次教案生成点数', 'AI 教案修改', 'DOC / 打印-PDF 导出', '历史版本长期保存']),
   defaultProduct('pro-quarterly', '专业版季卡', 'pro', 10, 'quarter', 10_500, 90, 60,
-    ['60 次教案生成点数', 'AI 教案修改', 'DOC / 打印-PDF / JSON 导出', '历史版本长期保存']),
+    ['60 次教案生成点数', 'AI 教案修改', 'DOC / 打印-PDF 导出', '历史版本长期保存']),
   defaultProduct('pro-half-yearly', '专业版半年卡', 'pro', 10, 'half_year', 19_800, 180, 120,
-    ['120 次教案生成点数', 'AI 教案修改', 'DOC / 打印-PDF / JSON 导出', '历史版本长期保存']),
+    ['120 次教案生成点数', 'AI 教案修改', 'DOC / 打印-PDF 导出', '历史版本长期保存']),
   defaultProduct('pro-yearly', '专业版年卡', 'pro', 10, 'year', 32_400, 365, 240,
-    ['240 次教案生成点数', 'AI 教案修改', 'DOC / 打印-PDF / JSON 导出', '历史版本长期保存']),
+    ['240 次教案生成点数', 'AI 教案修改', 'DOC / 打印-PDF 导出', '历史版本长期保存']),
   defaultProduct('research-monthly', '教研版月卡', 'research', 20, 'month', 9_900, 30, 80,
     ['80 次教案生成点数', '共享教案模板库', '模型质量报告', '优先客服支持']),
   defaultProduct('research-quarterly', '教研版季卡', 'research', 20, 'quarter', 26_700, 90, 240,
@@ -138,7 +138,7 @@ export function publicMembershipProduct(product, { at = new Date(), getSiteName 
     tierRank: product.tierRank,
     kind: product.kind,
     purchasable: Boolean(product.purchasable),
-    features: [...product.features],
+    features: migrateMembershipFeatures(product.features),
     saleable: Boolean(product.saleable),
     autoRenew: false,
     promotion: product.promotion ? {
@@ -172,7 +172,7 @@ function buildPaymentProduct(product, at = new Date(), getSiteName) {
     kind: product.kind,
     purchasable: Boolean(product.purchasable),
     promotion: promotion ? { ...promotion } : null,
-    features: [...product.features],
+    features: migrateMembershipFeatures(product.features),
     entitlement: {
       type: 'membership',
       tier: product.tier,
@@ -254,7 +254,7 @@ function normalizeProduct(planId, input, existing, timestamp, actor) {
   if (kind === 'paid' && (!Number.isSafeInteger(durationDays) || durationDays < 1 || durationDays > 3_660)) throw catalogError(422, 'MEMBERSHIP_PRODUCT_DURATION_INVALID', '套餐有效期需为 1-3660 天');
   if (!Number.isSafeInteger(credits) || credits < 0 || credits > 1_000_000) throw catalogError(422, 'MEMBERSHIP_PRODUCT_CREDITS_INVALID', '套餐点数需为 0-1000000 的整数');
   if (!Array.isArray(rawFeatures) || rawFeatures.length > 12) throw catalogError(422, 'MEMBERSHIP_PRODUCT_FEATURES_INVALID', '套餐权益说明最多 12 项');
-  const features = rawFeatures.map((item) => String(item || '').trim().slice(0, 100)).filter(Boolean);
+  const features = migrateMembershipFeatures(rawFeatures);
   if (!features.length) throw catalogError(422, 'MEMBERSHIP_PRODUCT_FEATURES_INVALID', '请至少填写一项套餐权益说明');
   return {
     planId,
@@ -302,6 +302,22 @@ function writeCatalog(filename, state) {
   const temporary = `${filename}.tmp-${process.pid}-${randomBytes(4).toString('hex')}`;
   writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   renameSync(temporary, filename);
+}
+
+// 套餐权益属于用户可见承诺。旧部署可能已把已下线的导出能力写入持久化目录，
+// 因此在加载、保存和公开报价时都做同一份窄范围迁移，同时保留其他权益原文。
+function migrateMembershipFeatures(features) {
+  if (!Array.isArray(features)) return [];
+  return features
+    .map((item) => String(item || '').trim().slice(0, 100))
+    .filter(Boolean)
+    .map((feature) => feature
+      .replace(/DOC\s*\/\s*打印-?PDF\s*\/\s*JSON\s*导出/gi, 'DOC / 打印-PDF 导出')
+      .replace(/AI\s*修改与结构化(?:教案)?导出/gi, 'AI 修改与 DOC / 打印-PDF 导出')
+      .replace(/结构化(?:教案)?导出/gi, 'DOC / 打印-PDF 导出')
+      .replace(/JSON\s*导出/gi, 'DOC / 打印-PDF 导出')
+      .replace(/\s*\/\s*JSON\b/gi, '')
+      .replace(/\s{2,}/g, ' '));
 }
 
 function normalizePlanId(value) {

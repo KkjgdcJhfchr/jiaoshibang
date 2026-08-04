@@ -24,12 +24,14 @@
 .knowledge-metrics p { grid-column: 1 / -1; margin: 3px 0 0; overflow: hidden; color: var(--faint); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .knowledge-workbench { overflow: hidden; border: 1px solid var(--line); border-radius: 11px; background: #fff; box-shadow: var(--shadow-sm); }
 .knowledge-body { min-height: 585px; display: grid; grid-template-columns: minmax(650px, 1fr) 310px; }
+.knowledge-canvas-scroll { min-width: 0; min-height: 585px; max-height: min(78vh, 900px); overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; background: #f9fbfa; }
+.knowledge-canvas-scroll:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
 .knowledge-canvas { position: relative; min-width: 0; min-height: 585px; overflow: hidden; background-color: #f9fbfa; background-image: radial-gradient(#dce5e1 1px, transparent 1px); background-size: 22px 22px; }
 .knowledge-canvas > svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 .knowledge-canvas line { stroke: #9dbcb4; stroke-width: .38; vector-effect: non-scaling-stroke; }
 .knowledge-canvas line.question-edge { stroke: #d3b078; stroke-width: .34; stroke-dasharray: 2 2; }
 .graph-column-label { position: absolute; z-index: 2; top: 18px; color: var(--faint); font-size: 10px; font-weight: 700; letter-spacing: .12em; }
-.graph-column-label.lesson { left: 9%; }.graph-column-label.points { left: 39%; }.graph-column-label.questions { left: 75%; }
+.graph-column-label.lesson { left: 9%; }.graph-column-label.points { left: 39%; }.graph-column-label.questions { left: 79%; }
 .graph-node { position: absolute; z-index: 3; border: 0; cursor: pointer; transform: translate(-50%, -50%); transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease; }
 .graph-node:hover, .graph-node:focus-visible { z-index: 4; transform: translate(-50%, -50%) scale(1.04); }
 .graph-lesson-node { width: 122px; min-height: 62px; padding: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; border-radius: 13px; background: #173f37; color: #fff; box-shadow: 0 11px 25px rgba(21, 63, 54, .18); }
@@ -38,9 +40,9 @@
 .graph-point-node > span { width: 100%; overflow: hidden; font-size: 11px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .graph-point-node small { margin-top: 3px; color: var(--muted); font-size: 9px; }
 .graph-point-node.selected { border-color: var(--brand); background: var(--brand-soft); box-shadow: 0 0 0 3px rgba(12, 131, 112, .12); }
-.graph-question-node { width: 52px; height: 43px; display: grid; grid-template-columns: 18px 1fr; place-items: center; padding: 5px 7px; border: 1px solid #e3cda9; border-radius: 9px; background: #fffaf1; color: #856226; box-shadow: 0 4px 12px rgba(115, 80, 25, .08); }
+.graph-question-node { width: clamp(84px, 11%, 108px); min-width: 0; height: 43px; display: grid; grid-template-columns: 18px minmax(0, 1fr); place-items: center; gap: 5px; padding: 5px 7px; border: 1px solid #e3cda9; border-radius: 9px; background: #fffaf1; color: #856226; box-shadow: 0 4px 12px rgba(115, 80, 25, .08); }
 .graph-question-node > span { width: 18px; height: 18px; display: grid; place-items: center; border-radius: 50%; background: #ecd5ab; font-size: 8px; font-weight: 700; }
-.graph-question-node small { font-size: 8px; }
+.graph-question-node small { width: 100%; overflow: hidden; font-size: 9px; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .graph-legend { position: absolute; z-index: 2; left: 18px; bottom: 16px; padding: 8px 10px; display: flex; gap: 13px; border: 1px solid var(--line); border-radius: 7px; background: rgba(255,255,255,.92); color: var(--muted); font-size: 9px; }
 .graph-legend span { display: flex; align-items: center; gap: 5px; }
 .graph-legend i { width: 8px; height: 8px; border-radius: 3px; }.graph-legend .lesson-dot { background: #173f37; }.graph-legend .point-dot { background: #58a795; }.graph-legend .question-dot { background: #e0bd7e; }
@@ -57,7 +59,7 @@
 .knowledge-confidence > i, .difficulty-bars > i { height: 5px; display: block; overflow: hidden; border-radius: 10px; background: #dce5e1; }
 .knowledge-confidence > i span, .difficulty-bars > i span { height: 100%; display: block; border-radius: inherit; background: var(--brand); }
 .knowledge-confidence small { display: block; margin-top: 8px; color: var(--muted); font-size: 9px; line-height: 1.5; }
-.linked-question-list { margin: 21px 0; }.linked-question-list h4 { margin: 0 0 8px; font-size: 12px; }
+.linked-question-list { max-height: 320px; margin: 21px 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }.linked-question-list h4 { position: sticky; z-index: 1; top: 0; margin: 0 0 8px; padding: 2px 0 8px; background: #fff; font-size: 12px; }
 .linked-question-list > button { width: 100%; min-height: 52px; padding: 8px 0; display: grid; grid-template-columns: 23px 1fr 15px; align-items: center; gap: 8px; border: 0; border-top: 1px solid var(--line); background: transparent; color: var(--muted); text-align: left; cursor: pointer; }
 .linked-question-list > button > span { width: 21px; height: 21px; display: grid; place-items: center; border-radius: 50%; background: #f0e4cd; color: #8a672e; font-size: 8px; }
 .linked-question-list p { min-width: 0; margin: 0; }.linked-question-list b { display: block; overflow: hidden; color: var(--ink); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }.linked-question-list small { color: var(--faint); font-size: 8px; }
@@ -155,11 +157,12 @@
   .knowledge-metrics, .team-metrics { grid-template-columns: 1fr; gap: 9px; }
   .knowledge-metrics article { min-height: 83px; }.knowledge-metrics article div { width: 100%; }
   .workflow-panel-head { align-items: flex-start; flex-direction: column; gap: 10px; }
-  .knowledge-canvas { min-height: 520px; overflow-x: auto; }
+  .knowledge-canvas-scroll { min-height: 520px; max-height: 72vh; }
+  .knowledge-canvas { min-height: 520px; }
   .knowledge-canvas > svg { min-width: 690px; }
   .knowledge-canvas .graph-node, .knowledge-canvas .graph-column-label, .knowledge-canvas .graph-legend { margin-left: 0; }
   .knowledge-canvas { min-width: 690px; }
-  .knowledge-body { overflow-x: auto; }
+  .knowledge-body { overflow-x: visible; }
   .knowledge-detail { min-width: 0; }
   .knowledge-list-view { min-width: 650px; }
   .question-filters { grid-template-columns: 1fr 1fr; }

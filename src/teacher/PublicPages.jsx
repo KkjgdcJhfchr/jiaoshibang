@@ -342,7 +342,7 @@ export function LandingPage() {
             <ol>
               <li><span>1</span><div><h3>上传教材章节</h3><p>手机拍照或 PDF 均可，请确保图片清晰、端正、无反光并按页码上传。</p></div></li>
               <li><span>2</span><div><h3>确认学情和课堂偏好</h3><p>选择年级、课时与教学风格，也可以补充班级特点。</p></div></li>
-              <li><span>3</span><div><h3>生成、修改、定稿</h3><p>生成完成后可继续对话修改课堂流程、提问和习题，满意再定稿。</p></div></li>
+              <li><span>3</span><div><h3>生成、修改、保存</h3><p>生成完成后可继续对话修改课堂流程、提问和习题，满意后保存并导出。</p></div></li>
               <li><span>4</span><div><h3>沉淀知识点并智能组卷</h3><p>校验知识点关系，完成选题、排序、双版本导出或提交备课组评审。</p></div></li>
             </ol>
             <Button icon={ImageUp} onClick={() => navigate('/register')}>上传一章试试看</Button>
@@ -643,7 +643,7 @@ export function PricingPage() {
       <main>
         <section className="pricing-heading"><h1>把时间还给课堂</h1><p>所有价格均为本次实际支付总额，一次性购买，不会自动续费。</p><div className="billing-switch" aria-label="选择付费周期">{BILLING_PERIODS.map(([value, label]) => <button type="button" aria-pressed={period === value} className={period === value ? 'active' : ''} onClick={() => setPeriod(value)} key={value}>{label}</button>)}</div></section>
         <section className="pricing-grid">
-          <article><div><h2>{freePlan?.name || '免费版'}</h2><p>{freePlan ? `注册即享 ${freePlan.credits} 次教案生成点数` : '适合先体验完整备课流程'}</p></div><div className="price"><b>¥0</b><span>长期可用</span></div><ul>{(freePlan?.features?.length ? freePlan.features : ['注册赠送体验点数', '基础教案生成与修改', '结构化教案导出']).map((item) => <li key={item}><Check size={16} />{item}</li>)}</ul><Button variant="secondary" size="lg" onClick={() => navigate('/register')}>免费注册</Button></article>
+          <article><div><h2>{freePlan?.name || '免费版'}</h2><p>{freePlan ? `注册即享 ${freePlan.credits} 次教案生成点数` : '适合先体验完整备课流程'}</p></div><div className="price"><b>¥0</b><span>长期可用</span></div><ul>{(freePlan?.features?.length ? freePlan.features : ['注册赠送体验点数', '基础教案生成与修改', 'DOC / 打印-PDF 导出']).map((item) => <li key={item}><Check size={16} />{item}</li>)}</ul><Button variant="secondary" size="lg" onClick={() => navigate('/register')}>免费注册</Button></article>
           {visiblePlans.map((plan, index) => <article key={plan.planId} className={index === 0 ? 'featured' : ''}><div><h2>{plan.name}</h2><p>{plan.credits} 次教案生成点数 · 有效 {plan.durationDays} 天</p></div><div className="price"><b>{formatPlanPrice(plan.amountCents)}</b><span>本次支付</span>{plan.promotion?.active ? <del>{formatPlanPrice(plan.regularAmountCents)}</del> : null}</div><ul>{(plan.features || []).map((item) => <li key={item}><Check size={16} />{item}</li>)}</ul><Button variant={index === 0 ? 'primary' : 'secondary'} size="lg" onClick={() => navigate('/register')}>注册后购买</Button></article>)}
           {!visiblePlans.length ? <article className="pricing-empty-period"><div><h2>{BILLING_PERIODS.find(([value]) => value === period)?.[1]}套餐</h2><p>{plansStatus === 'loading' ? '正在读取可购买套餐…' : plansStatus === 'error' ? '会员套餐暂时无法读取，请稍后刷新页面' : '当前周期暂未上架套餐'}</p></div>{period !== 'month' && plansStatus === 'ready' ? <Button variant="secondary" size="lg" onClick={() => setPeriod('month')}>查看月付套餐</Button> : null}</article> : null}
         </section>

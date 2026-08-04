@@ -172,18 +172,31 @@ const mockUpstream = createServer(async (request, response) => {
     : inputText.includes('唯一一行') && inputKinds.some((kind) => ['file', 'input_file'].includes(kind))
       ? 'BKX-PROBE'
       : inputText.includes('"ok"') ? '{"ok":"OK"}' : null;
+  const customSectionsMatch = inputText.match(/待处理大类：\n([\s\S]*?)\n\n现有教案（仅供上下文参考）：/);
+  const requestedCustomSections = inputText.includes('[CUSTOM_SECTION_REVISION]') && customSectionsMatch
+    ? JSON.parse(customSectionsMatch[1])
+    : null;
+  const modelOutput = requestedCustomSections
+    ? JSON.stringify({
+        sections: requestedCustomSections.map((section) => ({
+          id: section.id,
+          title: section.title,
+          content: `已按教师要求完整修改“${section.title}”的中文教学内容。`,
+        })),
+      })
+    : capabilityProbeText || JSON.stringify(lessonPlan);
   const responseBody = isChatCompletions
     ? {
         id: `chatcmpl_${upstreamRequests.length}`,
         model: body.model,
-        choices: [{ index: 0, message: { role: 'assistant', content: capabilityProbeText || JSON.stringify(lessonPlan) }, finish_reason: 'stop' }],
+        choices: [{ index: 0, message: { role: 'assistant', content: modelOutput }, finish_reason: 'stop' }],
         usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
       }
     : {
         id: `resp_${upstreamRequests.length}`,
         status: 'completed',
         model: body.model,
-        output: [{ type: 'message', content: [{ type: 'output_text', text: capabilityProbeText || JSON.stringify(lessonPlan) }] }],
+        output: [{ type: 'message', content: [{ type: 'output_text', text: modelOutput }] }],
         usage: { input_tokens: 10, output_tokens: 20, total_tokens: 30 },
       };
   response.writeHead(200, { 'Content-Type': 'application/json' });
@@ -363,6 +376,16 @@ try {
   });
   assert.equal(unauthenticatedGeneration.status, 401);
   assert.equal(unauthenticatedGeneration.body.error.code, 'AUTH_REQUIRED');
+  const unauthenticatedCustomSectionRevision = await client.json('/api/ai/revise-custom-sections', {
+    method: 'POST',
+    body: {
+      lessonPlan: baseLessonPlan,
+      sections: [{ id: 'custom_1', title: '拓展阅读', content: '' }],
+      instruction: '生成详细内容',
+    },
+  });
+  assert.equal(unauthenticatedCustomSectionRevision.status, 401);
+  assert.equal(unauthenticatedCustomSectionRevision.body.error.code, 'AUTH_REQUIRED');
   const unauthenticatedKnowledgeMap = await client.json('/api/workflow/knowledge-map', {
     method: 'POST',
     body: { lessonPlan: baseLessonPlan },
@@ -622,6 +645,68 @@ try {
   assert.ok(searchedAdminUsers.body.data.items[0].lastLoginAt);
   assert.equal(searchedAdminUsers.body.data.items[0].loginCount, 1);
   assert.equal(searchedAdminUsers.body.data.items[0].onlineSeconds >= 0, true);
+
+  const unauthenticatedCreditResets = await client.json('/api/admin/credit-resets');
+  assert.equal(unauthenticatedCreditResets.status, 401);
+  assert.equal(unauthenticatedCreditResets.body.error.code, 'ADMIN_AUTH_REQUIRED');
+  const creditResetUserId = searchedAdminUsers.body.data.items[0].id;
+  const originalCreditBalance = searchedAdminUsers.body.data.items[0].credits;
+  const immediateCreditReset = await client.json('/api/admin/credit-resets', {
+    method: 'POST',
+    cookie: adminCookie,
+    body: {
+      userIds: [creditResetUserId],
+      credits: 7,
+      reason: '集成测试立即重置',
+      executeAt: new Date(Date.now() - 1_000).toISOString(),
+      idempotencyKey: 'integration-credit-reset-immediate-0001',
+    },
+  });
+  assert.equal(immediateCreditReset.status, 201);
+  assert.equal(immediateCreditReset.body.data.job.status, 'completed');
+  assert.equal(immediateCreditReset.body.data.job.result.updatedCount, 1);
+  const userAfterCreditReset = await client.json('/api/admin/users?query=teacher%40example.com&offset=0&limit=20', {
+    cookie: adminCookie,
+  });
+  assert.equal(userAfterCreditReset.body.data.items[0].credits, 7);
+
+  const restoredCreditBalance = await client.json('/api/admin/credit-resets', {
+    method: 'POST',
+    cookie: adminCookie,
+    body: {
+      userIds: [creditResetUserId],
+      credits: originalCreditBalance,
+      reason: '集成测试恢复额度',
+      executeAt: new Date(Date.now() - 1_000).toISOString(),
+      idempotencyKey: 'integration-credit-reset-restore-0001',
+    },
+  });
+  assert.equal(restoredCreditBalance.status, 201);
+  assert.equal(restoredCreditBalance.body.data.job.status, 'completed');
+
+  const scheduledCreditReset = await client.json('/api/admin/credit-resets', {
+    method: 'POST',
+    cookie: adminCookie,
+    body: {
+      userIds: [creditResetUserId],
+      credits: 30,
+      reason: '集成测试定时重置',
+      executeAt: '2099-09-10T00:00:00.000Z',
+      idempotencyKey: 'integration-credit-reset-scheduled-0001',
+    },
+  });
+  assert.equal(scheduledCreditReset.status, 201);
+  assert.equal(scheduledCreditReset.body.data.job.status, 'pending');
+  const cancelledCreditReset = await client.json(`/api/admin/credit-resets/${scheduledCreditReset.body.data.job.id}`, {
+    method: 'DELETE',
+    cookie: adminCookie,
+  });
+  assert.equal(cancelledCreditReset.status, 200);
+  assert.equal(cancelledCreditReset.body.data.job.status, 'cancelled');
+  const creditResetList = await client.json('/api/admin/credit-resets', { cookie: adminCookie });
+  assert.equal(creditResetList.status, 200);
+  assert.equal(creditResetList.body.data.jobs.some((job) => job.id === immediateCreditReset.body.data.job.id && job.status === 'completed'), true);
+  assert.equal(creditResetList.body.data.jobs.some((job) => job.id === scheduledCreditReset.body.data.job.id && job.status === 'cancelled'), true);
 
   const unauthenticatedSystemSettings = await client.json('/api/admin/system/settings');
   assert.equal(unauthenticatedSystemSettings.status, 401);
@@ -1614,6 +1699,33 @@ try {
     },
   });
   const secondCookie = cookiePair(secondRegistration.headers.get('set-cookie'));
+  const customSectionRevision = await client.json('/api/ai/revise-custom-sections', {
+    method: 'POST',
+    cookie: secondCookie,
+    body: {
+      lessonPlan: secondGeneration.body.data.lessonPlan,
+      sections: [
+        { id: 'custom_extension', title: '拓展阅读', content: '' },
+        { id: 'custom_local', title: '乡土素材', content: '结合本地春季景物。' },
+      ],
+      instruction: '补充可直接上课的讲解话术和学生任务。',
+    },
+  });
+  assert.equal(customSectionRevision.status, 200);
+  assert.deepEqual(
+    customSectionRevision.body.data.sections.map(({ id, title }) => ({ id, title })),
+    [
+      { id: 'custom_extension', title: '拓展阅读' },
+      { id: 'custom_local', title: '乡土素材' },
+    ],
+  );
+  assert.equal(customSectionRevision.body.data.sections.every((section) => /[\u3400-\u9fff]/u.test(section.content)), true);
+  assert.equal(customSectionRevision.body.data.providerId, providerId);
+  assert.equal(upstreamRequests.at(-1).endpoint, 'chat/completions');
+  assert.equal(upstreamRequests.at(-1).responseFormat, 'json_object');
+  assert.equal(Object.hasOwn(customSectionRevision.body.data, 'lessonPlan'), false, '定向修改不应回传完整教案');
+  assert.equal(appLog.includes('补充可直接上课的讲解话术'), false, '定向修改日志不得记录教师指令');
+  assert.equal(appLog.includes(providerKey), false, '定向修改日志不得记录模型密钥');
   const slowRevision = client.json('/api/ai/revise', {
     method: 'POST',
     cookie: secondCookie,
@@ -1766,6 +1878,7 @@ try {
       asyncGenerationIdempotencyAndPolling: true,
       delayedResponseBodyTimeout: true,
       encryptedProviderRouting: true,
+      targetedCustomSectionRevision: true,
       globalConcurrency: true,
       perUserAndIpRateLimit: true,
       consentGatedPendingTrainingCandidate: true,

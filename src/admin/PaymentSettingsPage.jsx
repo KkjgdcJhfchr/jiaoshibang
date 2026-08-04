@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  Clock3,
   CreditCard,
   Edit3,
   KeyRound,
@@ -14,7 +15,9 @@ import {
   PackageCheck,
   Plus,
   RefreshCw,
+  RotateCcw,
   Save,
+  Search,
   ShieldCheck,
   Tag,
   Trash2,
@@ -51,11 +54,19 @@ const CELEBRATION_TEMPLATES = Object.freeze({
 
 const EMPTY_PLAN_FORM = Object.freeze({
   planId: '', name: '', kind: 'paid', tier: 'pro', tierRank: '10', billingPeriod: 'month', price: '', credits: '',
-  durationDays: '30', features: '教案生成点数\nAI 教案修改\nDOC / 打印-PDF / JSON 导出', saleable: true,
+  durationDays: '30', features: '教案生成点数\nAI 教案修改\nDOC / 打印-PDF 导出', saleable: true,
 })
 
 const EMPTY_PROMOTION_FORM = Object.freeze({
   name: '', template: 'new_term', content: '', discountPercent: '10', targetPlanIds: [], startsAt: '', endsAt: '', enabled: true,
+})
+
+const EMPTY_CREDIT_RESET_FORM = Object.freeze({
+  credits: '', reason: '', mode: 'now', executeAt: '', userIds: [],
+})
+
+const CREDIT_RESET_STATUS = Object.freeze({
+  pending: '等待执行', processing: '正在执行', completed: '执行成功', cancelled: '已取消', failed: '执行失败',
 })
 
 export function PaymentChannelsPage({ onNotice = () => {} }) {
@@ -321,6 +332,16 @@ export function MembershipPlansPage({ onNotice = () => {} }) {
 export function PromotionsPage({ onNotice = () => {} }) {
   const [promotions, setPromotions] = useState([])
   const [plans, setPlans] = useState([])
+  const [creditResets, setCreditResets] = useState([])
+  const [creditResetPage, setCreditResetPage] = useState(1)
+  const [creditResetPageSize, setCreditResetPageSize] = useState(8)
+  const [creditResetEditor, setCreditResetEditor] = useState(null)
+  const [creditResetUsers, setCreditResetUsers] = useState([])
+  const [creditResetSearch, setCreditResetSearch] = useState('')
+  const [creditResetUserOffset, setCreditResetUserOffset] = useState(0)
+  const [creditResetUserPagination, setCreditResetUserPagination] = useState({ offset: 0, limit: 50, total: 0 })
+  const [creditResetUsersLoading, setCreditResetUsersLoading] = useState(false)
+  const creditResetUsersRequestRef = useRef(0)
   const [editor, setEditor] = useState(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState('')
@@ -330,11 +351,18 @@ export function PromotionsPage({ onNotice = () => {} }) {
     setLoading(true)
     setError('')
     try {
-      const [promotionResponse, planResponse] = await Promise.all([api.getAdminPromotions(), api.getAdminPaymentPlans()])
+      const [promotionResponse, planResponse, creditResetResponse] = await Promise.all([
+        api.getAdminPromotions(),
+        api.getAdminPaymentPlans(),
+        api.listCreditResets(),
+      ])
       const nextPromotions = promotionResponse.data?.promotions || promotionResponse.data?.items || []
       const nextPlans = planResponse.data?.plans || []
+      const nextCreditResets = creditResetResponse.data?.jobs || creditResetResponse.data?.items || []
       setPromotions(Array.isArray(nextPromotions) ? nextPromotions : [])
       setPlans(Array.isArray(nextPlans) ? nextPlans.filter((plan) => plan.kind !== 'free' && !plan.archivedAt) : [])
+      setCreditResets(Array.isArray(nextCreditResets) ? nextCreditResets : [])
+      setCreditResetPage(1)
     } catch (requestError) {
       setError(requestError.message || '优惠活动读取失败')
     } finally {
@@ -343,6 +371,33 @@ export function PromotionsPage({ onNotice = () => {} }) {
   }
 
   useEffect(() => { reload() }, [])
+
+  const isCreditResetEditorOpen = Boolean(creditResetEditor)
+  useEffect(() => {
+    if (!isCreditResetEditorOpen) {
+      creditResetUsersRequestRef.current += 1
+      return undefined
+    }
+    const requestId = ++creditResetUsersRequestRef.current
+    const timer = window.setTimeout(async () => {
+      setCreditResetUsersLoading(true)
+      try {
+        const response = await api.getAdminUsers({ query: creditResetSearch, offset: creditResetUserOffset, limit: 50 })
+        if (requestId !== creditResetUsersRequestRef.current) return
+        const data = response.data || {}
+        setCreditResetUsers(Array.isArray(data.items) ? data.items : [])
+        setCreditResetUserPagination({ offset: creditResetUserOffset, limit: 50, total: 0, ...(data.pagination || {}) })
+      } catch (requestError) {
+        if (requestId === creditResetUsersRequestRef.current) {
+          setCreditResetUsers([])
+          setError(requestError.message || '会员列表读取失败')
+        }
+      } finally {
+        if (requestId === creditResetUsersRequestRef.current) setCreditResetUsersLoading(false)
+      }
+    }, creditResetSearch ? 250 : 0)
+    return () => window.clearTimeout(timer)
+  }, [isCreditResetEditorOpen, creditResetSearch, creditResetUserOffset])
 
   function openCreatePromotion() {
     setError('')
@@ -356,6 +411,90 @@ export function PromotionsPage({ onNotice = () => {} }) {
 
   function updatePromotionField(field, value) {
     setEditor((current) => current ? { ...current, form: { ...current.form, [field]: value } } : current)
+  }
+
+  function openCreditReset() {
+    setError('')
+    setCreditResetSearch('')
+    setCreditResetUserOffset(0)
+    setCreditResetUsers([])
+    setCreditResetUserPagination({ offset: 0, limit: 50, total: 0 })
+    setCreditResetUsersLoading(true)
+    setCreditResetEditor({ form: { ...EMPTY_CREDIT_RESET_FORM, userIds: [] } })
+  }
+
+  function updateCreditResetSearch(value) {
+    setCreditResetSearch(value)
+    setCreditResetUserOffset(0)
+  }
+
+  function updateCreditResetField(field, value) {
+    setCreditResetEditor((current) => current ? { ...current, form: { ...current.form, [field]: value } } : current)
+  }
+
+  async function saveCreditReset(event) {
+    event.preventDefault()
+    if (!creditResetEditor) return
+    const form = creditResetEditor.form
+    const credits = Number(form.credits)
+    if (!Number.isSafeInteger(credits) || credits < 0) {
+      setError('重置后的额度必须是大于或等于 0 的整数')
+      return
+    }
+    if (!form.userIds.length) {
+      setError('请至少选择一个需要重置额度的会员')
+      return
+    }
+    if (form.userIds.length > 1_000) {
+      setError('单次额度重置最多选择 1000 个会员')
+      return
+    }
+    let executeAt
+    try {
+      executeAt = form.mode === 'scheduled' ? creditResetDateTimeToIso(form.executeAt) : undefined
+    } catch (formError) {
+      setError(formError.message)
+      return
+    }
+    setBusy('credit-reset-save')
+    setError('')
+    try {
+      const response = await api.createCreditReset({
+        userIds: form.userIds,
+        credits,
+        reason: String(form.reason || '').trim(),
+        ...(executeAt ? { executeAt } : {}),
+        idempotencyKey: `admin-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      })
+      const saved = response.data?.job || response.data?.item || response.data
+      if (saved?.status === 'failed') throw new Error(saved.failureMessage || '额度重置执行失败')
+      if (saved?.id) setCreditResets((current) => [saved, ...current.filter((item) => item.id !== saved.id)])
+      setCreditResetPage(1)
+      setCreditResetEditor(null)
+      onNotice(form.mode === 'scheduled'
+        ? '额度重置任务已安排，将按设定时间自动执行'
+        : saved?.status === 'completed' ? (saved.result?.summary || `已完成 ${Number(saved.result?.updatedCount ?? form.userIds.length)} 个会员的额度重置`) : '额度重置任务已提交执行')
+    } catch (requestError) {
+      setError(requestError.message || '额度重置任务保存失败')
+    } finally {
+      setBusy('')
+    }
+  }
+
+  async function cancelCreditReset(job) {
+    if (!window.confirm(`确认取消“${job.reason}”额度重置任务吗？`)) return
+    setBusy(`credit-reset-cancel-${job.id}`)
+    setError('')
+    try {
+      const response = await api.cancelCreditReset(job.id)
+      const saved = response.data?.job || response.data?.item || response.data
+      setCreditResets((current) => current.map((item) => item.id === job.id ? saved : item))
+      onNotice('额度重置任务已取消')
+    } catch (requestError) {
+      setError(requestError.message || '额度重置任务取消失败')
+    } finally {
+      setBusy('')
+    }
   }
 
   async function savePromotion(event) {
@@ -402,6 +541,9 @@ export function PromotionsPage({ onNotice = () => {} }) {
 
   const enabledCount = promotions.filter((promotion) => promotion.enabled).length
   const activeCount = promotions.filter(isPromotionActive).length
+  const creditResetPageCount = Math.max(1, Math.ceil(creditResets.length / creditResetPageSize))
+  const normalizedCreditResetPage = Math.min(creditResetPage, creditResetPageCount)
+  const visibleCreditResets = creditResets.slice((normalizedCreditResetPage - 1) * creditResetPageSize, normalizedCreditResetPage * creditResetPageSize)
 
   return (
     <div className="admin-payment-page">
@@ -416,6 +558,27 @@ export function PromotionsPage({ onNotice = () => {} }) {
         <SummaryCard icon={<CalendarDays size={20} />} label="当前生效" value={activeCount} hint="此刻正在执行的活动" />
       </div>
 
+      <section className="admin-panel admin-credit-reset-panel">
+        <header className="admin-payment-orders-header">
+          <div><h2>会员额度重置</h2><p>选择指定会员，将剩余额度统一重置为设定值；支持立即执行或定时执行。</p></div>
+          <button className="admin-button admin-button-primary" type="button" onClick={openCreditReset} disabled={Boolean(busy)}><RotateCcw size={16} />一键重置额度</button>
+        </header>
+        <div className="admin-credit-reset-list">
+          {visibleCreditResets.map((job) => <CreditResetSummary key={job.id} job={job} busy={Boolean(busy)} onCancel={() => cancelCreditReset(job)} />)}
+          {!loading && !creditResets.length ? <CommerceEmpty icon={<RotateCcw size={28} />} title="暂无额度重置记录" description="创建任务后，可在这里查看执行时间、目标会员和执行结果。" /> : null}
+        </div>
+        {creditResets.length ? <footer className="admin-credit-reset-history-pagination">
+          <span>共 {creditResets.length} 条，第 {normalizedCreditResetPage} / {creditResetPageCount} 页</span>
+          <div>
+            <button type="button" onClick={() => setCreditResetPage(Math.max(1, normalizedCreditResetPage - 1))} disabled={normalizedCreditResetPage <= 1}><ChevronLeft size={15} />上一页</button>
+            <button type="button" onClick={() => setCreditResetPage(Math.min(creditResetPageCount, normalizedCreditResetPage + 1))} disabled={normalizedCreditResetPage >= creditResetPageCount}>下一页<ChevronRight size={15} /></button>
+            <select aria-label="每页额度重置记录数" value={creditResetPageSize} onChange={(event) => { setCreditResetPageSize(Number(event.target.value)); setCreditResetPage(1) }}>
+              <option value="8">8 条 / 页</option><option value="20">20 条 / 页</option><option value="2000">查看全部</option>
+            </select>
+          </div>
+        </footer> : null}
+      </section>
+
       <section className="admin-panel admin-promotion-panel">
         <header className="admin-payment-orders-header"><div><h2>活动列表</h2><p>折扣在开始与结束时间之间自动生效；目标套餐可以多选。</p></div></header>
         <div className="admin-promotion-grid">
@@ -427,6 +590,9 @@ export function PromotionsPage({ onNotice = () => {} }) {
 
       {editor ? <CommerceEditorModal title={editor.promotion ? '编辑优惠活动' : '新增优惠活动'} description={editor.promotion ? `正在编辑 ${editor.promotion.name || editor.promotion.label}` : '设置折扣、活动时间和参与套餐'} busy={busy === 'promotion-save'} error={error} onClose={() => { setEditor(null); setError('') }} wide>
         <PromotionForm form={editor.form} promotion={editor.promotion} plans={plans} onChange={updatePromotionField} onSubmit={savePromotion} onCancel={() => { setEditor(null); setError('') }} busy={busy === 'promotion-save'} isNew={!editor.promotion} />
+      </CommerceEditorModal> : null}
+      {creditResetEditor ? <CommerceEditorModal title="一键重置会员额度" description="只会修改选中会员的剩余额度，不影响会员套餐、历史教案和账户资料" busy={busy === 'credit-reset-save'} error={error} onClose={() => { setCreditResetEditor(null); setError('') }} wide>
+        <CreditResetForm form={creditResetEditor.form} users={creditResetUsers} search={creditResetSearch} pagination={creditResetUserPagination} usersLoading={creditResetUsersLoading} onSearch={updateCreditResetSearch} onPageChange={setCreditResetUserOffset} onChange={updateCreditResetField} onSubmit={saveCreditReset} onCancel={() => { setCreditResetEditor(null); setError('') }} busy={busy === 'credit-reset-save'} />
       </CommerceEditorModal> : null}
     </div>
   )
@@ -576,6 +742,68 @@ function PromotionForm({ form, promotion, plans, onChange, onSubmit, onCancel, b
     <div className="admin-promotion-targets"><div className="admin-promotion-targets-header"><span>目标套餐 <small>已选 {selectedCount} / {plans.length}</small></span><div><button type="button" onClick={() => onChange('targetPlanIds', allPlanIds)} disabled={!plans.length || selectedCount === plans.length}>全选</button><button type="button" onClick={() => onChange('targetPlanIds', [])} disabled={!selectedCount}>取消全选</button></div></div>{plans.map((plan) => <label key={plan.planId}><input type="checkbox" checked={(form.targetPlanIds || []).includes(plan.planId)} onChange={() => togglePlan(plan.planId)} /><span><b>{plan.name}</b><small>{PERIOD_LABELS[plan.billingPeriod] || plan.billingPeriod} · ¥{formatAmount(plan.regularAmountCents ?? plan.amountCents)}</small></span></label>)}{!plans.length ? <p>暂无可选择的付费套餐，请先在“套餐设置”中添加。</p> : null}</div>
     <div className="admin-commerce-switch-row"><div><b>启用活动</b><span>启用后仍只会在设置的开始与结束时间之间生效。</span></div><button className={`admin-toggle ${form.enabled ? 'admin-toggle-on' : ''}`} type="button" role="switch" aria-checked={Boolean(form.enabled)} onClick={() => onChange('enabled', !form.enabled)} disabled={busy}><span className="admin-toggle-knob" /></button></div>
     <footer><small>{isPromotionActive(promotion || form) ? '活动当前正在生效' : form.enabled ? '活动将按设定时间自动生效' : '活动当前停用'}</small><div className="admin-commerce-form-actions"><button className="admin-button admin-button-secondary" type="button" onClick={onCancel} disabled={busy}><X size={16} />取消</button><button className="admin-button admin-button-primary" type="submit" disabled={busy || !plans.length}>{busy ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />}{isNew ? '创建活动' : '保存活动'}</button></div></footer>
+  </form>
+}
+
+function CreditResetSummary({ job, busy, onCancel }) {
+  const status = String(job.status || 'pending')
+  const resultText = status === 'completed'
+    ? (job.result?.summary || `成功重置 ${Number(job.result?.updatedCount ?? job.targetCount ?? job.userIds?.length ?? 0)} 个会员`)
+    : status === 'failed' ? (job.failureMessage || '执行失败，请检查用户数据后重新创建任务')
+      : `${Number(job.targetCount ?? job.userIds?.length ?? 0)} 个会员 · 重置为 ${Number(job.credits || 0)} 点`
+  return <article className="admin-credit-reset-item">
+    <span className={`admin-credit-reset-icon ${status}`}><RotateCcw size={18} /></span>
+    <div className="admin-credit-reset-main"><b>{job.reason || '会员额度重置'}</b><small>{resultText}</small></div>
+    <div className="admin-credit-reset-time"><b>{status === 'pending' ? '计划执行' : '执行时间'}</b><small>{formatDate(job.completedAt || job.failedAt || job.cancelledAt || job.executeAt)}</small></div>
+    <span className={`admin-credit-reset-status ${status}`}>{CREDIT_RESET_STATUS[status] || status}</span>
+    {status === 'pending' ? <button className="admin-button admin-button-secondary" type="button" onClick={onCancel} disabled={busy}><X size={14} />取消任务</button> : <span className="admin-credit-reset-action-placeholder" />}
+  </article>
+}
+
+function CreditResetForm({ form, users, search, pagination, usersLoading, onSearch, onPageChange, onChange, onSubmit, onCancel, busy }) {
+  const selected = new Set(form.userIds || [])
+  const visibleIds = users.map((user) => user.id)
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((userId) => selected.has(userId))
+  const selectionFull = selected.size >= 1_000
+  const page = Math.floor(Number(pagination.offset || 0) / Number(pagination.limit || 50)) + 1
+  const pageCount = Math.max(1, Math.ceil(Number(pagination.total || 0) / Number(pagination.limit || 50)))
+  const toggleUser = (userId) => {
+    const next = new Set(selected)
+    if (next.has(userId)) next.delete(userId)
+    else if (next.size < 1_000) next.add(userId)
+    onChange('userIds', [...next])
+  }
+  const toggleVisible = () => {
+    const next = new Set(selected)
+    if (allVisibleSelected) visibleIds.forEach((userId) => next.delete(userId))
+    else {
+      for (const userId of visibleIds) {
+        if (next.size >= 1_000) break
+        next.add(userId)
+      }
+    }
+    onChange('userIds', [...next])
+  }
+  return <form className="admin-commerce-editor-form admin-credit-reset-form" onSubmit={onSubmit} aria-busy={busy}>
+    <div className="admin-credit-reset-fields">
+      <TextField label="重置后的额度" value={form.credits} onChange={(value) => onChange('credits', value)} type="number" min="0" max="1000000" step="1" placeholder="例如 30" required autoFocus />
+      <label className="admin-payment-field"><span>执行方式</span><select value={form.mode} onChange={(event) => onChange('mode', event.target.value)}><option value="now">保存后立即执行</option><option value="scheduled">按指定时间执行</option></select></label>
+      {form.mode === 'scheduled' ? <DateTimeField label="准确执行时间" value={form.executeAt} onChange={(value) => onChange('executeAt', value)} min={isoToLocalDateTime(new Date().toISOString())} required /> : <div className="admin-credit-reset-now-note"><Clock3 size={17} /><span><b>立即执行</b><small>点击确认后，系统会马上重置所选会员的额度。</small></span></div>}
+    </div>
+    <label className="admin-membership-feature-field"><span>重置说明</span><textarea value={form.reason} onChange={(event) => onChange('reason', event.target.value)} maxLength="200" placeholder="例如：教师节狂欢额度重置" required /></label>
+    <section className="admin-credit-reset-members">
+      <header>
+        <div><b>选择会员</b><small>已选 {selected.size} 人，共 {Number(pagination.total || 0)} 人；单次最多选择 1000 人</small></div>
+        <label><Search size={15} /><input type="search" value={search} onChange={(event) => onSearch(event.target.value)} placeholder="搜索账号、姓名或学科" /></label>
+      </header>
+      <div className="admin-credit-reset-selectbar"><span>{search ? `搜索结果第 ${page} / ${pageCount} 页` : `会员列表第 ${page} / ${pageCount} 页`}</span><button type="button" onClick={toggleVisible} disabled={!visibleIds.length || (selectionFull && !allVisibleSelected)}>{allVisibleSelected ? '取消选择本页' : '全选本页'}</button></div>
+      <div className="admin-credit-reset-members-list">
+        {usersLoading ? <InlineLoading label="正在读取会员列表…" /> : users.map((user) => <label key={user.id} className={selected.has(user.id) ? 'selected' : ''}><input type="checkbox" checked={selected.has(user.id)} disabled={!selected.has(user.id) && selectionFull} onChange={() => toggleUser(user.id)} /><span className="admin-credit-reset-avatar">{String(user.displayName || user.account || '会').slice(0, 1).toUpperCase()}</span><span><b>{user.displayName || '未设置姓名'}</b><small>{user.account} · {user.subject || '未设置学科'} · 当前 {Number(user.credits || 0)} 点</small></span></label>)}
+        {!usersLoading && !users.length ? <p>{search ? '没有符合搜索条件的会员' : '暂无可选择的注册会员'}</p> : null}
+      </div>
+      <footer className="admin-credit-reset-pagination"><span>第 {page} / {pageCount} 页</span><div><button type="button" aria-label="上一页会员" disabled={usersLoading || page <= 1} onClick={() => onPageChange(Math.max(0, Number(pagination.offset || 0) - Number(pagination.limit || 50)))}><ChevronLeft size={15} />上一页</button><button type="button" aria-label="下一页会员" disabled={usersLoading || page >= pageCount} onClick={() => onPageChange(Number(pagination.offset || 0) + Number(pagination.limit || 50))}>下一页<ChevronRight size={15} /></button></div></footer>
+    </section>
+    <footer><small>额度会被设置为填写的数值，并非在原额度上累加。</small><div className="admin-commerce-form-actions"><button className="admin-button admin-button-secondary" type="button" onClick={onCancel} disabled={busy}><X size={16} />取消</button><button className="admin-button admin-button-primary" type="submit" disabled={busy || usersLoading || !selected.size}>{busy ? <LoaderCircle className="spin" size={16} /> : <RotateCcw size={16} />}{form.mode === 'scheduled' ? '确认定时任务' : '确认立即重置'}</button></div></footer>
   </form>
 }
 
@@ -809,6 +1037,13 @@ function isoToLocalDateTime(value) {
 function localDateTimeToIso(value) {
   const date = new Date(value)
   if (!value || !Number.isFinite(date.getTime())) throw new Error('请填写有效的活动开始和结束时间')
+  return date.toISOString()
+}
+
+function creditResetDateTimeToIso(value) {
+  const date = new Date(value)
+  if (!value || !Number.isFinite(date.getTime())) throw new Error('请填写有效的额度重置执行时间')
+  if (date.getTime() <= Date.now()) throw new Error('定时执行时间必须晚于当前时间')
   return date.toISOString()
 }
 

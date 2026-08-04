@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -169,6 +169,7 @@ test('免费版可编辑但不可购买或删除，付费套餐归档后不会�
   assert.equal(savedFree.amountCents, 0);
   assert.equal(savedFree.credits, 5);
   assert.equal(savedFree.purchasable, false);
+  assert.deepEqual(savedFree.features, ['免费教案生成', 'DOC / 打印-PDF 导出']);
   assert.match(savedFree.subject, /^备课星/);
   siteName = '课堂星';
   assert.match(catalog.getFreeProduct().subject, /^课堂星/);
@@ -187,6 +188,30 @@ test('免费版可编辑但不可购买或删除，付费套餐归档后不会�
   const reloaded = createMembershipCatalog({ dataDir, now: () => FIXED_DATE });
   assert.equal(reloaded.listProducts({ includeInactive: true }).some((plan) => plan.planId === 'pro-monthly'), false);
   assert.equal(reloaded.listProducts({ includeInactive: true, includeArchived: true }).filter((plan) => plan.planId === 'pro-monthly').length, 1);
+});
+
+test('旧套餐中的结构化或 JSON 导出承诺在读取和报价时安全迁移，其他权益保持不变', (context) => {
+  const dataDir = temporaryDataDir();
+  context.after(() => removeTemporaryDataDir(dataDir));
+  const catalog = createMembershipCatalog({ dataDir, now: () => FIXED_DATE });
+  const original = catalog.listProducts({ includeInactive: true }).find((plan) => plan.planId === 'pro-monthly');
+  catalog.saveProduct('pro-monthly', {
+    expectedUpdatedAt: original.updatedAt,
+    features: ['20 次教案生成点数', 'AI 修改与结构化导出', 'DOC / 打印-PDF / JSON 导出', '专属客服'],
+  }, 'catalog-admin');
+
+  const filename = join(dataDir, 'membership-products.json');
+  const persisted = JSON.parse(readFileSync(filename, 'utf8'));
+  const plan = persisted.products.find((item) => item.planId === 'pro-monthly');
+  plan.features = ['20 次教案生成点数', 'AI 修改与结构化导出', 'DOC / 打印-PDF / JSON 导出', '专属客服'];
+  writeFileSync(filename, `${JSON.stringify(persisted, null, 2)}\n`, 'utf8');
+
+  const reloaded = createMembershipCatalog({ dataDir, now: () => FIXED_DATE });
+  const publicPlan = reloaded.listProducts({ includeInactive: true }).find((item) => item.planId === 'pro-monthly');
+  const quote = reloaded.resolveProduct({ planId: 'pro-monthly' });
+  assert.deepEqual(publicPlan.features, ['20 次教案生成点数', 'AI 修改与 DOC / 打印-PDF 导出', 'DOC / 打印-PDF 导出', '专属客服']);
+  assert.deepEqual(quote.features, publicPlan.features);
+  assert.doesNotMatch(JSON.stringify([publicPlan, quote]), /结构化.*导出|JSON.*导出/i);
 });
 
 test('月付、季付、半年付和年付权益都能通过报价校验并幂等落库', (context) => {

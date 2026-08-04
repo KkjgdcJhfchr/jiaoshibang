@@ -52,6 +52,42 @@ function lessonTitle(lesson) {
   return lesson.metadata?.title || `${lesson.metadata?.chapter || '当前章节'}教学设计`;
 }
 
+const QUESTION_TYPE_LABELS = Object.freeze({
+  single_choice: '单选题',
+  multiple_choice: '多选题',
+  true_false: '判断题',
+  fill_blank: '填空题',
+  short_answer: '简答题',
+  essay: '论述题',
+  writing: '写作题',
+  calculation: '计算题',
+  inquiry: '探究题',
+  practice: '实践题',
+  matching: '匹配题',
+  ordering: '排序题',
+  选择: '选择题',
+  填空: '填空题',
+  简答: '简答题',
+  赏析: '赏析题',
+  探究: '探究题',
+  仿写: '仿写题',
+  微写作: '微写作题',
+});
+
+function questionTypeLabel(type) {
+  const raw = String(type || '').trim();
+  if (!raw) return '题目';
+  if (QUESTION_TYPE_LABELS[raw]) return QUESTION_TYPE_LABELS[raw];
+  if (/^[\u3400-\u9fff]/u.test(raw)) return raw;
+  const normalized = raw.toLocaleLowerCase('en-US').replace(/[\s-]+/g, '_');
+  return QUESTION_TYPE_LABELS[normalized] || '其他题型';
+}
+
+function questionSourceLabel(source) {
+  const raw = String(source || '').trim();
+  return !raw || /\bAI\b|人工智能|模型生成|智能生成/iu.test(raw) ? '当前教案' : raw;
+}
+
 function knowledgeList(lesson) {
   const map = new Map();
   const remember = (name, difficulty = 2, questionId = '') => {
@@ -79,24 +115,40 @@ function knowledgeList(lesson) {
   });
 }
 
+const GRAPH_MIN_HEIGHT = 585;
+const GRAPH_TOP_PADDING = 64;
+const GRAPH_BOTTOM_PADDING = 68;
+const GRAPH_POINT_GAP = 72;
+const GRAPH_QUESTION_GAP = 54;
+
+function graphAxis(count, canvasHeight) {
+  if (!count) return [];
+  if (count === 1) return [canvasHeight / 2];
+  const usableHeight = canvasHeight - GRAPH_TOP_PADDING - GRAPH_BOTTOM_PADDING;
+  return Array.from({ length: count }, (_, index) => GRAPH_TOP_PADDING + (usableHeight * index) / (count - 1));
+}
+
 function graphLayout(points, questions) {
-  const shownPoints = points.slice(0, 7);
-  const shownQuestions = questions.slice(0, 8);
-  const pointNodes = shownPoints.map((point, index) => ({ ...point, x: 43, y: 13 + index * (74 / Math.max(shownPoints.length - 1, 1)) }));
-  const questionNodes = shownQuestions.map((question, index) => ({
+  const pointHeight = Math.max(points.length - 1, 0) * GRAPH_POINT_GAP;
+  const questionHeight = Math.max(questions.length - 1, 0) * GRAPH_QUESTION_GAP;
+  const canvasHeight = Math.max(GRAPH_MIN_HEIGHT, GRAPH_TOP_PADDING + GRAPH_BOTTOM_PADDING + Math.max(pointHeight, questionHeight));
+  const pointPositions = graphAxis(points.length, canvasHeight);
+  const questionPositions = graphAxis(questions.length, canvasHeight);
+  const pointNodes = points.map((point, index) => ({ ...point, x: 43, y: pointPositions[index] }));
+  const questionNodes = questions.map((question, index) => ({
     ...question,
     id: question.id || `q${index + 1}`,
-    x: 79,
-    y: 10 + index * (80 / Math.max(shownQuestions.length - 1, 1)),
+    x: 84,
+    y: questionPositions[index],
   }));
-  return { pointNodes, questionNodes };
+  return { canvasHeight, pointNodes, questionNodes };
 }
 
 export function KnowledgeMapPage({ path }) {
   const lesson = useMemo(readCurrentLesson, []);
   const points = useMemo(() => knowledgeList(lesson), [lesson]);
   const questions = lesson.exercises || [];
-  const { pointNodes, questionNodes } = useMemo(() => graphLayout(points, questions), [points, questions]);
+  const { canvasHeight, pointNodes, questionNodes } = useMemo(() => graphLayout(points, questions), [points, questions]);
   const [selected, setSelected] = useState(points[0] || null);
   const [view, setView] = useState('graph');
   const [toast, setToast] = useState('');
@@ -140,21 +192,23 @@ export function KnowledgeMapPage({ path }) {
           </header>
           <div className="knowledge-body">
             {view === 'graph' ? (
-              <div className="knowledge-canvas" role="img" aria-label="当前教案、知识点和题目的关联图">
-                <div className="graph-column-label lesson">教案</div><div className="graph-column-label points">知识点</div><div className="graph-column-label questions">题目</div>
-                <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-                  {pointNodes.map((point) => <line key={`lesson-${point.id}`} x1="17" y1="50" x2={point.x - 5} y2={point.y} />)}
-                  {questionNodes.flatMap((question, index) => {
-                    const names = question.knowledge_points || question.knowledgePoints || [];
-                    const related = pointNodes.filter((point) => names.includes(point.name));
-                    const fallbacks = related.length ? related : [pointNodes[index % Math.max(pointNodes.length, 1)]].filter(Boolean);
-                    return fallbacks.map((point) => <line className="question-edge" key={`${point.id}-${question.id}`} x1={point.x + 5} y1={point.y} x2={question.x - 4} y2={question.y} />);
-                  })}
-                </svg>
-                <button className="graph-node graph-lesson-node" style={{ left: '13%', top: '50%' }} onClick={() => setSelected(null)}><BookOpen size={18} /><span>{lesson.metadata?.chapter || '当前教案'}</span></button>
-                {pointNodes.map((point) => <button className={`graph-node graph-point-node ${selected?.id === point.id ? 'selected' : ''}`} style={{ left: `${point.x}%`, top: `${point.y}%` }} key={point.id} onClick={() => setSelected(point)}><span>{point.name}</span><small>{point.questionIds.length} 题 · {point.cognitive}</small></button>)}
-                {questionNodes.map((question, index) => <button className="graph-node graph-question-node" style={{ left: `${question.x}%`, top: `${question.y}%` }} key={question.id || index} onClick={() => { const point = points.find((item) => (question.knowledge_points || question.knowledgePoints || []).includes(item.name)); if (point) setSelected(point); }}><span>{index + 1}</span><small>{question.type}</small></button>)}
-                <div className="graph-legend"><span><i className="lesson-dot" />教案</span><span><i className="point-dot" />知识点</span><span><i className="question-dot" />题目</span></div>
+              <div className="knowledge-canvas-scroll" role="region" aria-label={`当前教案、${pointNodes.length} 个知识点和 ${questionNodes.length} 道题目的关联图`} tabIndex={0}>
+                <div className="knowledge-canvas" style={{ height: `${canvasHeight}px` }}>
+                  <div className="graph-column-label lesson">教案</div><div className="graph-column-label points">知识点</div><div className="graph-column-label questions">题目</div>
+                  <svg aria-hidden="true">
+                    {pointNodes.map((point) => <line key={`lesson-${point.id}`} x1="17%" y1={canvasHeight / 2} x2={`${point.x - 5}%`} y2={point.y} />)}
+                    {questionNodes.flatMap((question, index) => {
+                      const names = question.knowledge_points || question.knowledgePoints || [];
+                      const related = pointNodes.filter((point) => names.includes(point.name));
+                      const fallbacks = related.length ? related : [pointNodes[index % Math.max(pointNodes.length, 1)]].filter(Boolean);
+                      return fallbacks.map((point) => <line className="question-edge" key={`${point.id}-${question.id}`} x1={`${point.x + 5}%`} y1={point.y} x2={`${question.x - 4}%`} y2={question.y} />);
+                    })}
+                  </svg>
+                  <button className="graph-node graph-lesson-node" style={{ left: '13%', top: `${canvasHeight / 2}px` }} onClick={() => setSelected(null)}><BookOpen size={18} /><span>{lesson.metadata?.chapter || '当前教案'}</span></button>
+                  {pointNodes.map((point) => <button className={`graph-node graph-point-node ${selected?.id === point.id ? 'selected' : ''}`} style={{ left: `${point.x}%`, top: `${point.y}px` }} key={point.id} onClick={() => setSelected(point)}><span>{point.name}</span><small>{point.questionIds.length} 题 · {point.cognitive}</small></button>)}
+                  {questionNodes.map((question, index) => <button className="graph-node graph-question-node" style={{ left: `${question.x}%`, top: `${question.y}px` }} key={question.id || index} title={`${index + 1}. ${questionTypeLabel(question.type)}`} onClick={() => { const point = points.find((item) => (question.knowledge_points || question.knowledgePoints || []).includes(item.name)); if (point) setSelected(point); }}><span>{index + 1}</span><small>{questionTypeLabel(question.type)}</small></button>)}
+                  <div className="graph-legend"><span><i className="lesson-dot" />教案</span><span><i className="point-dot" />知识点</span><span><i className="question-dot" />题目</span></div>
+                </div>
               </div>
             ) : (
               <div className="knowledge-list-view">
@@ -167,7 +221,7 @@ export function KnowledgeMapPage({ path }) {
                 <header><span><Network size={17} /></span><div><small>已选知识点</small><h3>{selected.name}</h3></div></header>
                 <dl><div><dt>认知层级</dt><dd>{selected.cognitive}</dd></div><div><dt>适用环节</dt><dd>{selected.phase}</dd></div><div><dt>关联完整度</dt><dd>{selected.confidence}%</dd></div><div><dt>关联习题</dt><dd>{linkedQuestions.length} 道</dd></div></dl>
                 <div className="knowledge-confidence"><p><span>关联完整度</span><b>{selected.confidence}%</b></p><i><span style={{ width: `${selected.confidence}%` }} /></i><small>依据教案目标、重难点与题目标注综合计算</small></div>
-                <div className="linked-question-list"><h4>关联题目</h4>{linkedQuestions.slice(0, 4).map((question, index) => <button key={question.id || index} onClick={() => navigate('/app/papers')}><span>{question.id?.replace('q', '') || index + 1}</span><p><b>{question.stem}</b><small>{question.type} · 难度 {question.difficulty}/5</small></p><ArrowRight size={14} /></button>)}{!linkedQuestions.length ? <p className="empty-linked">暂无直接关联题目，建议人工确认后补充。</p> : null}</div>
+                <div className="linked-question-list"><h4>关联题目</h4>{linkedQuestions.map((question, index) => <button key={question.id || index} onClick={() => navigate('/app/papers')}><span>{question.id?.replace('q', '') || index + 1}</span><p><b>{question.stem}</b><small>{questionTypeLabel(question.type)} · 难度 {question.difficulty}/5</small></p><ArrowRight size={14} /></button>)}{!linkedQuestions.length ? <p className="empty-linked">暂无直接关联题目，建议人工确认后补充。</p> : null}</div>
                 <Button icon={FileText} onClick={() => navigate('/app/papers')}>基于该知识点组卷</Button>
               </> : <div className="knowledge-detail-empty"><BookOpen size={27} /><h3>{lesson.metadata?.chapter}</h3><p>请选择一个知识点查看详情。</p></div>}
             </aside>
@@ -184,7 +238,7 @@ function paperQuestions(lesson) {
   return (lesson.exercises || []).map((question, index) => ({
     ...question,
     id: question.id || `q${index + 1}`,
-    source: question.source || 'AI 生成题',
+    source: questionSourceLabel(question.source),
     recommendation: Math.min(98, 81 + (question.knowledge_points || question.knowledgePoints || []).length * 3 - Number(question.difficulty || 2)),
   }));
 }
@@ -194,7 +248,7 @@ function htmlEscape(value = '') {
 }
 
 function paperHtml(title, questions, includeAnswers) {
-  const rows = questions.map((question, index) => `<section><h3>${index + 1}. [${htmlEscape(question.type)}] ${htmlEscape(question.stem)} <small>（10分）</small></h3>${question.options?.length ? `<ol type="A">${question.options.map((option) => `<li>${htmlEscape(option)}</li>`).join('')}</ol>` : '<p class="answer-space"></p>'}${includeAnswers ? `<div class="answer"><b>参考答案：</b>${htmlEscape(question.answer)}<br><b>解析：</b>${htmlEscape(question.explanation)}</div>` : ''}</section>`).join('');
+  const rows = questions.map((question, index) => `<section><h3>${index + 1}. [${htmlEscape(questionTypeLabel(question.type))}] ${htmlEscape(question.stem)} <small>（10分）</small></h3>${question.options?.length ? `<ol type="A">${question.options.map((option) => `<li>${htmlEscape(option)}</li>`).join('')}</ol>` : '<p class="answer-space"></p>'}${includeAnswers ? `<div class="answer"><b>参考答案：</b>${htmlEscape(question.answer)}<br><b>解析：</b>${htmlEscape(question.explanation)}</div>` : ''}</section>`).join('');
   return `<!doctype html><html><head><meta charset="utf-8"><title>${htmlEscape(title)}</title><style>body{font-family:'Microsoft YaHei',sans-serif;max-width:850px;margin:40px auto;color:#17231f;font-size:15px;line-height:1.75}h1{text-align:center;font-size:25px}.meta{text-align:center;color:#66736f;border-bottom:2px solid #243d35;padding-bottom:18px}section{page-break-inside:avoid;margin:24px 0}h3{font-size:15px;font-weight:500}h3 small{font-weight:400}.answer-space{height:64px;border-bottom:1px dashed #bbb}.answer{margin-top:12px;padding:12px 14px;background:#f2f7f4;border-left:4px solid #0d806e}@media print{body{margin:0}.answer{background:#fff}}</style></head><body><h1>${htmlEscape(title)}</h1><p class="meta">姓名：________　班级：________　得分：________　考试时间：45分钟　满分：${questions.length * 10}分</p>${rows}</body></html>`;
 }
 
@@ -282,7 +336,7 @@ export function PaperBuilderPage({ path }) {
             <div className="question-filters">
               <label><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索题干或知识点" /></label>
               <select value={difficulty} onChange={(event) => setDifficulty(event.target.value)} aria-label="筛选难度"><option>全部难度</option>{[1, 2, 3, 4, 5].map((item) => <option key={item} value={item}>难度 {item}/5</option>)}</select>
-              <select value={type} onChange={(event) => setType(event.target.value)} aria-label="筛选题型">{types.map((item) => <option key={item}>{item}</option>)}</select>
+              <select value={type} onChange={(event) => setType(event.target.value)} aria-label="筛选题型">{types.map((item) => <option key={item} value={item}>{item === '全部题型' ? item : questionTypeLabel(item)}</option>)}</select>
               <button className="filter-button" onClick={() => { setDifficulty('全部难度'); setType('全部题型'); setQuery(''); setToast('筛选条件已重置'); }} aria-label="重置筛选" title="重置筛选"><Filter size={16} /></button>
             </div>
             <div className="question-card-list">
@@ -290,7 +344,7 @@ export function PaperBuilderPage({ path }) {
                 const selected = selectedIds.has(question.id);
                 return <article className={`question-card ${selected ? 'selected' : ''}`} key={question.id}>
                   <div className="question-card-number">{question.id.replace(/\D/g, '') || questions.indexOf(question) + 1}</div>
-                  <div className="question-card-copy"><div className="question-tags"><span>{question.type}</span><span>难度 {question.difficulty}/5</span><span>{question.source}</span><em>规则匹配 {question.recommendation}%</em></div><h4>{question.stem}</h4><p>{(question.knowledge_points || question.knowledgePoints || []).map((point) => <span key={point}>{point}</span>)}</p><small>匹配依据：当前教案知识点标注、题目难度与答案解析完整性。</small></div>
+                  <div className="question-card-copy"><div className="question-tags"><span>{questionTypeLabel(question.type)}</span><span>难度 {question.difficulty}/5</span><span>{question.source}</span><em>规则匹配 {question.recommendation}%</em></div><h4>{question.stem}</h4><p>{(question.knowledge_points || question.knowledgePoints || []).map((point) => <span key={point}>{point}</span>)}</p><small>匹配依据：当前教案知识点标注、题目难度与答案解析完整性。</small></div>
                   <div className="question-card-actions"><button onClick={() => move(question.id, -1)} aria-label="上移" disabled={questions.findIndex((item) => item.id === question.id) <= 0}><ArrowUp size={15} /></button><button onClick={() => move(question.id, 1)} aria-label="下移" disabled={questions.findIndex((item) => item.id === question.id) >= questions.length - 1}><ArrowDown size={15} /></button><button className={selected ? 'remove' : 'add'} onClick={() => toggleQuestion(question.id)}>{selected ? <><Check size={15} /> 已选</> : <><Plus size={15} /> 加入</>}</button></div>
                 </article>;
               })}
@@ -302,14 +356,14 @@ export function PaperBuilderPage({ path }) {
             <div className="paper-score"><div><strong>{selectedQuestions.length * 10}</strong><span>分</span></div><p><b>{selectedQuestions.length}</b> 道题 · 预计 <b>45</b> 分钟</p></div>
             <div className="difficulty-bars"><p><span>基础题</span><b>{easy} 道</b></p><i><span style={{ width: `${selectedQuestions.length ? easy / selectedQuestions.length * 100 : 0}%` }} /></i><p><span>提升题</span><b>{medium} 道</b></p><i><span style={{ width: `${selectedQuestions.length ? medium / selectedQuestions.length * 100 : 0}%` }} /></i><p><span>挑战题</span><b>{hard} 道</b></p><i><span style={{ width: `${selectedQuestions.length ? hard / selectedQuestions.length * 100 : 0}%` }} /></i></div>
             <dl className="paper-health"><div><dt>知识点覆盖</dt><dd>{knowledgeCoverage} 个</dd></div><div><dt>题干完全重复</dt><dd className={duplicateCount ? '' : 'healthy'}>{duplicateCount} 道</dd></div><div><dt>答案与解析</dt><dd className={answersComplete ? 'healthy' : ''}>{answersComplete ? '完整' : '需补充'}</dd></div><div><dt>人工审核</dt><dd>导出前确认</dd></div></dl>
-            <div className="paper-outline-list"><h4>题目顺序</h4>{selectedQuestions.map((question, index) => <button key={question.id} onClick={() => toggleQuestion(question.id)}><span>{index + 1}</span><p><b>{question.type}</b><small>{question.stem}</small></p><X size={14} /></button>)}</div>
+            <div className="paper-outline-list"><h4>题目顺序</h4>{selectedQuestions.map((question, index) => <button key={question.id} onClick={() => toggleQuestion(question.id)}><span>{index + 1}</span><p><b>{questionTypeLabel(question.type)}</b><small>{question.stem}</small></p><X size={14} /></button>)}</div>
             <div className="paper-actions"><Button variant="secondary" icon={Eye} onClick={() => setPreview(true)}>预览试卷</Button><Button icon={Download} onClick={() => { downloadFile(paperHtml(title, selectedQuestions, true), `${title}-答案版.doc`); setToast('答案版 Word 已开始下载'); }}>导出答案版</Button></div>
             <button className="publish-team" onClick={() => { localStorage.setItem('pending-team-paper', JSON.stringify({ title, questions: selectedQuestions, createdAt: new Date().toISOString() })); navigate('/app/team'); }}><Share2 size={15} /> 保存为评审草稿</button>
           </aside>
         </div>
         <p className="workflow-disclosure"><ShieldCheck size={15} /> 当前题目均来自本教案的结构化习题，请在导出前核对题干、答案与难度是否符合本班学情。</p>
       </div>
-      {preview ? <div className="paper-preview-layer"><button className="paper-preview-backdrop" onClick={() => setPreview(false)} aria-label="关闭预览" /><section className="paper-preview-modal" role="dialog" aria-modal="true" aria-label="试卷预览"><header><div><small>学生卷预览</small><h2>{title}</h2></div><button onClick={() => setPreview(false)} aria-label="关闭"><X size={20} /></button></header><div className="paper-sheet"><h1>{title}</h1><p className="paper-sheet-meta">姓名：________　班级：________　得分：________　时间：45分钟　满分：{selectedQuestions.length * 10}分</p>{selectedQuestions.map((question, index) => <section key={question.id}><h3>{index + 1}. [{question.type}] {question.stem} <small>（10分）</small></h3>{question.options?.length ? <ol type="A">{question.options.map((option) => <li key={option}>{option}</li>)}</ol> : <div className="paper-answer-space" />}</section>)}</div><footer><Button variant="secondary" onClick={() => setPreview(false)}>继续调整</Button><Button icon={Download} onClick={() => { downloadFile(paperHtml(title, selectedQuestions, false), `${title}-学生版.doc`); setToast('学生版 Word 已开始下载'); setPreview(false); }}>导出学生版</Button></footer></section></div> : null}
+      {preview ? <div className="paper-preview-layer"><button className="paper-preview-backdrop" onClick={() => setPreview(false)} aria-label="关闭预览" /><section className="paper-preview-modal" role="dialog" aria-modal="true" aria-label="试卷预览"><header><div><small>学生卷预览</small><h2>{title}</h2></div><button onClick={() => setPreview(false)} aria-label="关闭"><X size={20} /></button></header><div className="paper-sheet"><h1>{title}</h1><p className="paper-sheet-meta">姓名：________　班级：________　得分：________　时间：45分钟　满分：{selectedQuestions.length * 10}分</p>{selectedQuestions.map((question, index) => <section key={question.id}><h3>{index + 1}. [{questionTypeLabel(question.type)}] {question.stem} <small>（10分）</small></h3>{question.options?.length ? <ol type="A">{question.options.map((option) => <li key={option}>{option}</li>)}</ol> : <div className="paper-answer-space" />}</section>)}</div><footer><Button variant="secondary" onClick={() => setPreview(false)}>继续调整</Button><Button icon={Download} onClick={() => { downloadFile(paperHtml(title, selectedQuestions, false), `${title}-学生版.doc`); setToast('学生版 Word 已开始下载'); setPreview(false); }}>导出学生版</Button></footer></section></div> : null}
       {toast ? <Toast message={toast} onClose={() => setToast('')} /> : null}
     </TeacherShell>
   );

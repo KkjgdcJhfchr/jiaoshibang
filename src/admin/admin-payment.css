@@ -247,10 +247,94 @@
 .admin-promotion-targets-header button:hover:not(:disabled) { border-color: var(--admin-jade); }
 .admin-promotion-targets-header button:disabled { opacity: .45; cursor: default; }
 
+.admin-credit-reset-panel { margin-bottom: 16px; overflow: hidden; }
+.admin-credit-reset-list { display: grid; }
+.admin-credit-reset-history-pagination { min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 16px; border-top: 1px solid #e7ece9; background: #f8faf9; color: #6f7d76; font-size: 10px; }
+.admin-credit-reset-history-pagination > div { display: flex; align-items: center; gap: 7px; }
+.admin-credit-reset-history-pagination button,
+.admin-credit-reset-history-pagination select { min-height: 30px; border: 1px solid #d6dfda; border-radius: 7px; background: #fff; color: #34775e; font: inherit; }
+.admin-credit-reset-history-pagination button { display: inline-flex; align-items: center; gap: 4px; padding: 0 9px; cursor: pointer; }
+.admin-credit-reset-history-pagination button:disabled { opacity: .45; cursor: default; }
+.admin-credit-reset-history-pagination select { padding: 0 8px; }
+.admin-credit-reset-item {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 1fr) minmax(130px, auto) auto minmax(92px, auto);
+  align-items: center;
+  gap: 13px;
+  min-width: 0;
+  padding: 13px 18px;
+  border-bottom: 1px solid #edf0ee;
+}
+.admin-credit-reset-item:last-child { border-bottom: 0; }
+.admin-credit-reset-icon { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 10px; background: #eef2f0; color: #68756f; }
+.admin-credit-reset-icon.pending { background: #fff4dd; color: #a06a11; }
+.admin-credit-reset-icon.processing { background: #e9f1ff; color: #3c6ea9; }
+.admin-credit-reset-icon.completed { background: #e2f3e9; color: #17794f; }
+.admin-credit-reset-icon.failed { background: #ffebeb; color: #a94747; }
+.admin-credit-reset-main,
+.admin-credit-reset-time { min-width: 0; }
+.admin-credit-reset-main b,
+.admin-credit-reset-main small,
+.admin-credit-reset-time b,
+.admin-credit-reset-time small { display: block; }
+.admin-credit-reset-main b { overflow: hidden; color: #33423a; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.admin-credit-reset-main small { margin-top: 4px; overflow: hidden; color: #7c8882; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.admin-credit-reset-time { text-align: right; }
+.admin-credit-reset-time b { color: #7d8882; font-size: 9px; font-weight: 600; }
+.admin-credit-reset-time small { margin-top: 3px; color: #4d5b54; font-size: 10px; }
+.admin-credit-reset-status { padding: 5px 8px; border-radius: 999px; background: #eef1ef; color: #6d7872; font-size: 9px; font-weight: 700; white-space: nowrap; }
+.admin-credit-reset-status.pending { background: #fff4dd; color: #98630b; }
+.admin-credit-reset-status.processing { background: #e8f0ff; color: #3469a9; }
+.admin-credit-reset-status.completed { background: #e2f3e9; color: #17794f; }
+.admin-credit-reset-status.failed { background: #ffebeb; color: #a94747; }
+.admin-credit-reset-action-placeholder { width: 92px; }
+.admin-credit-reset-item .admin-button { justify-self: end; min-height: 32px; padding-inline: 10px; font-size: 10px; }
+
+.admin-credit-reset-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; gap: 12px; }
+.admin-credit-reset-now-note { min-height: 40px; display: flex; align-items: center; gap: 10px; padding: 8px 11px; border: 1px solid #d9e7e0; border-radius: 8px; background: #f4faf7; color: #2b7a5c; }
+.admin-credit-reset-now-note > span,
+.admin-credit-reset-now-note b,
+.admin-credit-reset-now-note small { display: block; }
+.admin-credit-reset-now-note b { font-size: 10px; }
+.admin-credit-reset-now-note small { margin-top: 2px; color: #6f7d76; font-size: 9px; }
+.admin-credit-reset-members { overflow: hidden; border: 1px solid #dfe6e2; border-radius: 9px; background: #fff; }
+.admin-credit-reset-members > header { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 12px; border-bottom: 1px solid #e7ece9; background: #f8faf9; }
+.admin-credit-reset-members > header > div b,
+.admin-credit-reset-members > header > div small { display: block; }
+.admin-credit-reset-members > header > div b { color: #34433b; font-size: 11px; }
+.admin-credit-reset-members > header > div small { margin-top: 3px; color: #85908a; font-size: 9px; }
+.admin-credit-reset-members > header label { width: min(320px, 55%); height: 34px; display: flex; align-items: center; gap: 7px; padding: 0 9px; border: 1px solid #d9e1dd; border-radius: 7px; background: #fff; color: #7e8983; }
+.admin-credit-reset-members > header input { width: 100%; min-width: 0; border: 0; outline: 0; color: #33423a; font: inherit; font-size: 10px; }
+.admin-credit-reset-selectbar { min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 12px; border-bottom: 1px solid #edf0ee; color: #77837d; font-size: 9px; }
+.admin-credit-reset-selectbar button { min-height: 25px; padding: 0 8px; border: 1px solid #d4dfda; border-radius: 6px; background: #fff; color: #277859; font-size: 9px; cursor: pointer; }
+.admin-credit-reset-selectbar button:disabled { opacity: .45; cursor: default; }
+.admin-credit-reset-members-list { max-height: 310px; overflow-y: auto; overscroll-behavior: contain; }
+.admin-credit-reset-members-list > label { display: grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: center; gap: 9px; min-width: 0; padding: 9px 12px; border-bottom: 1px solid #f0f2f1; cursor: pointer; }
+.admin-credit-reset-members-list > label:last-of-type { border-bottom: 0; }
+.admin-credit-reset-members-list > label:hover,
+.admin-credit-reset-members-list > label.selected { background: #f3faf6; }
+.admin-credit-reset-members-list input { accent-color: #14825b; }
+.admin-credit-reset-members-list > label > span:last-child { min-width: 0; }
+.admin-credit-reset-members-list b,
+.admin-credit-reset-members-list small { display: block; }
+.admin-credit-reset-members-list b { overflow: hidden; color: #3d4b44; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.admin-credit-reset-members-list small { overflow: hidden; margin-top: 2px; color: #8a948f; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.admin-credit-reset-members-list > p { margin: 0; padding: 34px 14px; color: #8a948f; font-size: 10px; text-align: center; }
+.admin-credit-reset-members-list .admin-commerce-inline-loading { min-height: 120px; }
+.admin-credit-reset-avatar { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; background: #e5f2ec; color: #23785a; font-size: 10px; font-weight: 700; }
+.admin-credit-reset-pagination { min-height: 43px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 12px; border-top: 1px solid #e7ece9; background: #f8faf9; }
+.admin-credit-reset-pagination > span { color: #7c8882; font-size: 9px; }
+.admin-credit-reset-pagination > div { display: flex; gap: 6px; }
+.admin-credit-reset-pagination button { min-height: 28px; display: inline-flex; align-items: center; gap: 4px; padding: 0 8px; border: 1px solid #d6dfda; border-radius: 6px; background: #fff; color: #34775e; font-size: 9px; cursor: pointer; }
+.admin-credit-reset-pagination button:hover:not(:disabled) { border-color: var(--admin-jade); }
+.admin-credit-reset-pagination button:disabled { opacity: .45; cursor: default; }
+
 @media (max-width: 1120px) {
   .admin-payment-config-header { grid-template-columns: 1fr; }
   .admin-membership-catalog-grid { grid-template-columns: 1fr; }
   .admin-promotion-grid { grid-template-columns: 1fr; }
+  .admin-credit-reset-item { grid-template-columns: auto minmax(180px, 1fr) auto auto; }
+  .admin-credit-reset-time { display: none; }
 }
 
 @media (max-width: 820px) {
@@ -264,6 +348,9 @@
   .admin-promotion-form > footer { align-items: stretch; flex-direction: column; }
   .admin-commerce-form-actions { justify-content: flex-start; }
   .admin-membership-catalog-actions { justify-content: flex-start; }
+  .admin-credit-reset-item { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .admin-credit-reset-item .admin-button,
+  .admin-credit-reset-action-placeholder { grid-column: 2 / -1; justify-self: start; width: auto; }
 }
 
 @media (max-width: 620px) {
@@ -296,4 +383,15 @@
   .admin-commerce-summary-card > footer { align-items: stretch; flex-direction: column; }
   .admin-commerce-summary-card > footer .admin-button { width: 100%; }
   .admin-promotion-targets-header { align-items: flex-start; flex-direction: column; }
+  .admin-credit-reset-fields { grid-template-columns: 1fr; }
+  .admin-credit-reset-members > header { align-items: stretch; flex-direction: column; }
+  .admin-credit-reset-members > header label { width: 100%; }
+  .admin-credit-reset-pagination { align-items: flex-start; flex-direction: column; }
+  .admin-credit-reset-history-pagination { align-items: flex-start; flex-direction: column; }
+  .admin-credit-reset-history-pagination > div { width: 100%; flex-wrap: wrap; }
+  .admin-credit-reset-item { grid-template-columns: auto minmax(0, 1fr); padding-inline: 12px; }
+  .admin-credit-reset-status { grid-row: 1; grid-column: 2; justify-self: end; }
+  .admin-credit-reset-main { grid-column: 1 / -1; }
+  .admin-credit-reset-item .admin-button,
+  .admin-credit-reset-action-placeholder { grid-column: 1 / -1; }
 }

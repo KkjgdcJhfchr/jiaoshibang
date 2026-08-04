@@ -1,6 +1,7 @@
 import { PaymentError, PAYMENT_PROVIDERS, PAYMENT_STATES } from './payment-core.mjs';
 import { createPaymentService } from './payment-service.mjs';
 import { createPromotionsStore } from './promotions-store.mjs';
+import { createCreditResetStore } from './credit-reset-store.mjs';
 
 /**
  * `resolveProduct` is deliberately injected by the host application. It must
@@ -27,12 +28,34 @@ export function createPaymentRouter({
   checkoutVerificationRequired = false,
   getSiteName,
   getUserForAdmin,
+  applyCreditReset,
   logger = console,
 }) {
   if (typeof requireAdminSession !== 'function' || typeof requireUserSession !== 'function') {
     throw new TypeError('payment router requires admin and user session guards');
   }
   const promotions = createPromotionsStore({ dataDir, now });
+  const creditResets = createCreditResetStore({ dataDir, now });
+  const executeCreditReset = async (job) => {
+    if (typeof applyCreditReset !== 'function') {
+      throw new PaymentError(503, 'CREDIT_RESET_UNAVAILABLE', '会员额度重置服务暂不可用');
+    }
+    const result = await applyCreditReset({
+      ...job,
+      resetId: job.jobId,
+      executedAt: typeof now === 'function' ? now() : new Date(),
+    });
+    return {
+      updatedCount: Number(result?.updatedCount ?? (Array.isArray(result?.results) ? result.results.length : 0)),
+      skippedCount: Number(result?.skippedCount || 0),
+    };
+  };
+  const runDueCreditResets = () => creditResets.executeDue(executeCreditReset).catch((error) => {
+    logger.error?.('[teacher-helper:credit-reset]', error);
+  });
+  queueMicrotask(runDueCreditResets);
+  const creditResetTimer = setInterval(runDueCreditResets, 15_000);
+  creditResetTimer.unref?.();
   const resolvePromotedProduct = async (selection) => {
     const product = typeof resolveProduct === 'function' ? await resolveProduct(selection) : null;
     return product ? promotions.resolveEffectiveProduct(product) : null;
@@ -56,6 +79,7 @@ export function createPaymentRouter({
       && !url.pathname.startsWith('/api/admin/payments/')
       && !url.pathname.startsWith('/api/promotions/')
       && !url.pathname.startsWith('/api/admin/promotions')
+      && !url.pathname.startsWith('/api/admin/credit-resets')
     ) return false;
     try {
       if (request.method === 'GET' && url.pathname === '/api/payments/plans') {
@@ -107,6 +131,41 @@ export function createPaymentRouter({
       if (request.method === 'GET' && url.pathname === '/api/admin/promotions') {
         requireAdminSession(request);
         sendJson(response, 200, { ok: true, data: { promotions: promotions.listPromotions() } });
+        return true;
+      }
+
+      if (request.method === 'GET' && url.pathname === '/api/admin/credit-resets') {
+        requireAdminSession(request);
+        await creditResets.executeDue(executeCreditReset);
+        const status = String(url.searchParams.get('status') || '').trim();
+        sendJson(response, 200, { ok: true, data: { jobs: creditResets.listJobs({ status }) } });
+        return true;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/admin/credit-resets') {
+        assertSameOriginMutation(request);
+        const session = requireAdminSession(request);
+        const body = await readJsonBody(request, 256 * 1024);
+        if (Array.isArray(body.userIds) && typeof getUserForAdmin === 'function') {
+          const missingUserIds = [...new Set(body.userIds.map((value) => String(value || '').trim()).filter(Boolean))]
+            .filter((userId) => !getUserForAdmin(userId));
+          if (missingUserIds.length) {
+            throw new PaymentError(404, 'CREDIT_RESET_USER_NOT_FOUND', '所选会员中包含已不存在的账号');
+          }
+        }
+        const created = creditResets.createJob(body, session.admin?.username || 'admin');
+        await creditResets.executeDue(executeCreditReset);
+        const job = creditResets.getJob(created.job.id);
+        sendJson(response, created.created ? 201 : 200, { ok: true, data: { job, created: created.created } });
+        return true;
+      }
+
+      const creditResetMatch = url.pathname.match(/^\/api\/admin\/credit-resets\/(cr_[0-9a-f-]{36})$/i);
+      if (request.method === 'DELETE' && creditResetMatch) {
+        assertSameOriginMutation(request);
+        const session = requireAdminSession(request);
+        const result = creditResets.cancelJob(creditResetMatch[1], session.admin?.username || 'admin');
+        sendJson(response, 200, { ok: true, data: result });
         return true;
       }
 
@@ -285,7 +344,7 @@ export function createPaymentRouter({
     }
   }
 
-  return { handle, service };
+  return { handle, service, creditResets };
 }
 
 function applyAutomaticCallbackUrls(provider, input, publicBaseUrl) {

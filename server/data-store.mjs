@@ -345,6 +345,71 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
     return checked;
   }
 
+  function resetUserCredits({ userIds, credits, resetId, reason = '', executedAt = now() }) {
+    if (!Array.isArray(userIds) || userIds.length === 0 || userIds.length > 1_000) {
+      throw new DataStoreError(422, 'CREDIT_RESET_USERS_INVALID', '请选择 1-1000 个需要重置额度的会员');
+    }
+    const ids = [...new Set(userIds.map((value) => String(value || '').trim()).filter(Boolean))];
+    if (ids.length !== userIds.length || ids.some((id) => !/^usr_[0-9a-f-]{36}$/i.test(id))) {
+      throw new DataStoreError(422, 'CREDIT_RESET_USERS_INVALID', '会员选择中包含无效或重复账号');
+    }
+    const targetCredits = Number(credits);
+    if (!Number.isSafeInteger(targetCredits) || targetCredits < 0 || targetCredits > 1_000_000) {
+      throw new DataStoreError(422, 'CREDIT_RESET_AMOUNT_INVALID', '重置后的额度必须是 0-1000000 的整数');
+    }
+    const normalizedResetId = String(resetId || '').trim();
+    if (!/^[A-Za-z0-9_.:-]{2,100}$/.test(normalizedResetId)) {
+      throw new DataStoreError(422, 'CREDIT_RESET_ID_INVALID', '额度重置任务标识无效');
+    }
+    const timestamp = validDate(executedAt);
+    if (!timestamp) throw new DataStoreError(422, 'CREDIT_RESET_TIME_INVALID', '额度重置执行时间无效');
+    const normalizedReason = String(reason || '').trim().slice(0, 300);
+    const nextState = structuredClone(usersState);
+    const usersById = new Map(nextState.users.map((user) => [user.id, user]));
+    const missingIds = ids.filter((id) => !usersById.has(id));
+
+    const results = [];
+    let changed = false;
+    for (const id of ids) {
+      const user = usersById.get(id);
+      if (!user) continue;
+      const ledger = Array.isArray(user.creditLedger) ? user.creditLedger : [];
+      const existing = ledger.find((entry) => entry.type === 'admin_credit_reset' && entry.resetId === normalizedResetId);
+      if (existing) {
+        results.push({ userId: id, previousCredits: existing.previousBalance, credits: existing.balanceAfter, duplicate: true });
+        continue;
+      }
+      const previousCredits = nonNegativeNumber(user.credits);
+      user.credits = targetCredits;
+      user.creditLedger = [...ledger, {
+        id: `credit_${randomUUID()}`,
+        type: 'admin_credit_reset',
+        amount: targetCredits - previousCredits,
+        previousBalance: previousCredits,
+        balanceAfter: targetCredits,
+        resetId: normalizedResetId,
+        reason: normalizedReason,
+        createdAt: timestamp.toISOString(),
+      }];
+      user.updatedAt = timestamp.toISOString();
+      results.push({ userId: id, previousCredits, credits: targetCredits, duplicate: false });
+      changed = true;
+    }
+    if (changed) {
+      writeState(usersFile, nextState);
+      replaceObject(usersState, nextState);
+    }
+    return {
+      resetId: normalizedResetId,
+      credits: targetCredits,
+      results,
+      changed,
+      updatedCount: results.length,
+      skippedCount: missingIds.length,
+      skippedUserIds: missingIds,
+    };
+  }
+
   function grantMembershipPurchase({ orderId, userId, planId, entitlement, paidAt }) {
     const normalizedOrderId = String(orderId || '').trim();
     const normalizedPlanId = String(planId || '').trim();
@@ -627,6 +692,7 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
     recordUserLogin,
     registerUser,
     releaseGeneration,
+    resetUserCredits,
     reserveGeneration,
     revokeTrainingCandidates,
     revokeTrainingCandidatesByOwnerRefs,
