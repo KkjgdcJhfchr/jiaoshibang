@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   Bot,
@@ -27,6 +27,11 @@ import { sampleLesson } from '../data/sampleLesson.js';
 import { api } from '../lib/api.js';
 import { normalizeLesson } from '../lib/lessonAdapter.js';
 import { navigate } from '../lib/navigation.jsx';
+import {
+  pollRevisionJob,
+  revisionJobResult,
+  unwrapRevisionJob,
+} from '../lib/revisionJob.js';
 import { useSiteConfig } from '../lib/site-config.jsx';
 import { toCanonicalLesson } from '../lib/trainingAdapter.js';
 import { Button, Modal, Toast } from './components.jsx';
@@ -62,6 +67,17 @@ const questionTypeLabels = {
   calculation: '计算题', inquiry: '探究题', practice: '实践题',
   选择: '选择题', 填空: '填空题', 简答: '简答题', 赏析: '赏析题', 探究: '探究题', 仿写: '仿写题', 微写作: '微写作题',
 };
+
+const revisionStageLabels = {
+  submitting: '正在提交修改任务',
+  queued: '任务已提交，正在排队',
+  processing: '模型正在处理所选模块',
+  applying: '正在校验并应用修改',
+};
+
+function revisionIdempotencyKey() {
+  return crypto.randomUUID?.() || `revision-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
 
 function hasChineseText(value) {
   return /[\u3400-\u9fff]/.test(String(value || ''));
@@ -224,6 +240,9 @@ export function LessonEditor({ path }) {
   const [feedback, setFeedback] = useState('');
   const [revising, setRevising] = useState(false);
   const [revisionError, setRevisionError] = useState('');
+  const [revisionStage, setRevisionStage] = useState('idle');
+  const [revisionElapsed, setRevisionElapsed] = useState(0);
+  const [retryRevision, setRetryRevision] = useState(null);
   const [chat, setChat] = useState([{ role: 'assistant', text: '请选择要调整的一个或多个模块，再写下具体要求。未开启助教时，可直接在左侧教案正文中编辑。' }]);
   const [versionsOpen, setVersionsOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
@@ -238,6 +257,9 @@ export function LessonEditor({ path }) {
   const candidateSubmitted = useRef(false);
   const historyRef = useRef([]);
   const redoRef = useRef([]);
+  const revisionRunRef = useRef(0);
+  const revisionAbortRef = useRef(null);
+  const activeRevisionRef = useRef(null);
   const title = lesson.metadata?.title || `${lesson.metadata?.chapter || '新教案'}教学设计`;
   const customOutline = (lesson.custom_sections || []).map((item) => [`custom:${item.id}`, item.title]);
   const fullOutline = [...baseOutline, ...customOutline];
@@ -247,6 +269,19 @@ export function LessonEditor({ path }) {
     ? [{ name: '教材《春》原文', detail: '图片 · 6 页', mark: '书' }, { name: '七年级语文课程标准', detail: 'PDF', mark: '纲' }]
     : (lesson.source_files || []).map((file) => ({ name: file.name, detail: `${file.type || '文件'} · 本次使用`, mark: '源' }));
   const totalMinutes = useMemo(() => (lesson.timeline || []).reduce((sum, item) => sum + Number(item.duration_minutes || 0), 0), [lesson.timeline]);
+
+  useEffect(() => {
+    if (!revising) return undefined;
+    const startedAt = Date.now();
+    setRevisionElapsed(0);
+    const timer = setInterval(() => setRevisionElapsed(Math.floor((Date.now() - startedAt) / 1_000)), 1_000);
+    return () => clearInterval(timer);
+  }, [revising]);
+
+  useEffect(() => () => {
+    revisionRunRef.current += 1;
+    revisionAbortRef.current?.abort();
+  }, []);
 
   function updateLesson(updater, { recordHistory = true } = {}) {
     const current = lesson;
@@ -373,45 +408,131 @@ export function LessonEditor({ path }) {
     });
   }
 
-  async function revise() {
-    const instruction = feedback.trim();
-    if (!instruction || revising || !assistantSections.size) return;
+  function buildRevisionRequest(instruction) {
     const standardKeys = [...assistantSections].filter((key) => !key.startsWith('custom:'));
     const customIds = [...assistantSections].filter((key) => key.startsWith('custom:')).map((key) => key.slice(7));
+    return {
+      instruction,
+      standardKeys,
+      customIds,
+      idempotencyKey: revisionIdempotencyKey(),
+      body: {
+        lessonPlan: toCanonicalLesson({ ...lesson, custom_sections: [] }, loadCanonicalLesson()),
+        sectionKeys: standardKeys,
+        customSections: (lesson.custom_sections || []).filter((item) => customIds.includes(item.id)),
+        feedback: instruction,
+      },
+    };
+  }
+
+  async function runRevision(request, { appendUser = true } = {}) {
+    const runId = revisionRunRef.current + 1;
+    revisionRunRef.current = runId;
+    const abortController = new AbortController();
+    revisionAbortRef.current = abortController;
+    activeRevisionRef.current = request;
     setFeedback('');
     setRevisionError('');
+    setRetryRevision(null);
+    setRevisionStage('submitting');
     setRevising(true);
-    setChat((items) => [...items, { role: 'user', text: instruction }, { role: 'loading', text: '正在按所选模块修改' }]);
+    setChat((items) => [
+      ...items.filter((item) => item.role !== 'loading'),
+      ...(appendUser ? [{ role: 'user', text: request.instruction }] : []),
+      { role: 'loading', text: '正在处理修改任务' },
+    ]);
     try {
-      const standardResult = standardKeys.length
-        ? await api.reviseLesson({ lessonPlan: lesson, feedback: `仅修改以下模块：${standardKeys.map((key) => baseOutline.find((item) => item[0] === key)?.[1]).join('、')}。其他模块必须保持不变。具体要求：${instruction}` })
-        : null;
-      const customResult = customIds.length
-        ? await api.reviseCustomSections({ lessonPlan: lesson, sections: (lesson.custom_sections || []).filter((item) => customIds.includes(item.id)), instruction })
-        : null;
+      const createdResponse = await api.createRevisionJob(request.body, request.idempotencyKey);
+      if (revisionRunRef.current !== runId || abortController.signal.aborted) return;
+      const createdJob = unwrapRevisionJob(createdResponse);
+      let firstResponse = { data: { job: createdJob } };
+      const job = await pollRevisionJob({
+        jobId: createdJob.id,
+        signal: abortController.signal,
+        getJob: async (jobId) => {
+          if (firstResponse) {
+            const response = firstResponse;
+            firstResponse = null;
+            return response;
+          }
+          return api.getRevisionJob(jobId);
+        },
+        onStatus: (stage) => {
+          if (revisionRunRef.current !== runId) return;
+          if (stage === 'queued') setRevisionStage('queued');
+          if (stage === 'processing') setRevisionStage('processing');
+          if (stage === 'applying') setRevisionStage('applying');
+          if (stage === 'completed') setRevisionStage('applying');
+        },
+      });
+      if (revisionRunRef.current !== runId || abortController.signal.aborted) return;
+      setRevisionStage('applying');
+      const result = revisionJobResult(job);
       let revisedLesson = structuredClone(lesson);
-      if (standardResult) {
-        const canonical = standardResult.data?.lessonPlan || standardResult.lessonPlan;
-        if (!canonical) throw new Error('服务未返回修改后的教案');
-        revisedLesson = mergeSelectedSections(revisedLesson, normalizeLesson(canonical), standardKeys);
+      if (request.standardKeys.length) {
+        if (!result.lessonPlan) throw new Error('修改任务已完成，但没有返回教案内容。');
+        revisedLesson = mergeSelectedSections(revisedLesson, normalizeLesson(result.lessonPlan), request.standardKeys);
       }
-      if (customResult) {
-        const customUpdates = customResult.data?.sections || customResult.sections;
-        if (!Array.isArray(customUpdates)) throw new Error('服务未返回自定义模块内容');
+      if (request.customIds.length) {
+        if (!Array.isArray(result.customSections)) throw new Error('修改任务已完成，但没有返回自定义模块内容。');
         revisedLesson.custom_sections = (revisedLesson.custom_sections || []).map((item) => {
-          const changed = customUpdates.find((update) => update.id === item.id);
+          const changed = result.customSections.find((update) => update.id === item.id);
           return changed ? { ...item, title: changed.title || item.title, content: changed.content || item.content } : item;
         });
       }
       updateLesson({ ...revisedLesson, id: lesson.id, updated_at: '刚刚' });
       setChat((items) => [...items.filter((item) => item.role !== 'loading'), { role: 'assistant', text: '所选模块已按要求修改，其余模块保持不变。' }]);
       setToast('所选模块已修改并保存');
+      setRevisionError('');
+      setRetryRevision(null);
     } catch (error) {
-      setRevisionError(error.message);
-      setChat((items) => [...items.filter((item) => item.role !== 'loading'), { role: 'error', text: `本次修改未完成：${error.message}` }]);
+      if (revisionRunRef.current !== runId) return;
+      const message = error?.message || '本次修改未完成，请稍后重试。';
+      const shouldUseNewKey = error?.terminal || error?.code === 'REVISION_JOB_STATUS_UNKNOWN';
+      setFeedback(request.instruction);
+      setRetryRevision({
+        ...request,
+        idempotencyKey: shouldUseNewKey ? revisionIdempotencyKey() : request.idempotencyKey,
+      });
+      setRevisionError(message);
+      setChat((items) => [...items.filter((item) => item.role !== 'loading'), { role: 'error', text: `本次修改未完成：${message}` }]);
     } finally {
-      setRevising(false);
+      if (revisionRunRef.current === runId) {
+        setRevising(false);
+        setRevisionStage('idle');
+        revisionAbortRef.current = null;
+        activeRevisionRef.current = null;
+      }
     }
+  }
+
+  function revise() {
+    const instruction = feedback.trim();
+    if (!instruction || revising || !assistantSections.size) return;
+    void runRevision(buildRevisionRequest(instruction));
+  }
+
+  function stopRevisionWait() {
+    if (!revising) return;
+    const request = activeRevisionRef.current;
+    revisionRunRef.current += 1;
+    revisionAbortRef.current?.abort();
+    revisionAbortRef.current = null;
+    activeRevisionRef.current = null;
+    setRevising(false);
+    setRevisionStage('idle');
+    if (request) {
+      setFeedback(request.instruction);
+      setRetryRevision(request);
+    }
+    const message = '已停止在本页面等待，后台任务可能仍在运行。可点击“继续查询”获取结果。';
+    setRevisionError(message);
+    setChat((items) => [...items.filter((item) => item.role !== 'loading'), { role: 'assistant', text: message }]);
+  }
+
+  function retryRevisionRequest() {
+    if (!retryRevision || revising) return;
+    void runRevision(retryRevision, { appendUser: false });
   }
 
   async function submitTrainingCandidate() {
@@ -578,8 +699,8 @@ export function LessonEditor({ path }) {
           <header><div><Bot size={18} /><b>AI 助教</b></div><div className="assistant-panel-actions"><label className="assistant-toggle"><input type="checkbox" checked={assistantEnabled} disabled={revising} onChange={(event) => setAssistantEnabled(event.target.checked)} /><span aria-hidden="true" /><em>{assistantEnabled ? '已开启' : '已关闭'}</em></label><button className="assistant-panel-close" onClick={() => setAssistantDrawerOpen(false)} aria-label="关闭助教面板"><X size={18} /></button></div></header>
           {assistantEnabled ? <>
             <section className="assistant-section-picker"><b>选择要修改的模块</b><div>{fullOutline.map(([key, label]) => <label key={key}><input type="checkbox" checked={assistantSections.has(key)} disabled={revising} onChange={() => toggleAssistantSection(key)} /><span>{label}</span></label>)}</div></section>
-            <div className="chat-thread" aria-live="polite">{chat.map((item, index) => <div key={index} className={`chat-message ${item.role}`}><span>{item.role === 'user' ? '我' : item.role === 'loading' ? <LoaderCircle className="spin" size={16} /> : <Bot size={16} />}</span><div>{item.role === 'loading' ? <p>正在按所选模块修改，请稍候…</p> : <p>{item.text}</p>}</div></div>)}</div>
-            <div className="ai-composer"><textarea value={feedback} onChange={(event) => setFeedback(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') revise(); }} placeholder="写下对所选模块的修改要求…" maxLength={800} /><div><span>{feedback.length}/800</span><Button size="sm" icon={Send} onClick={revise} disabled={!feedback.trim() || revising || !assistantSections.size}>发送</Button></div>{revisionError ? <p>{revisionError}</p> : null}</div>
+            <div className="chat-thread" aria-live="polite">{chat.map((item, index) => <div key={index} className={`chat-message ${item.role}`}><span>{item.role === 'user' ? '我' : item.role === 'loading' ? <LoaderCircle className="spin" size={16} /> : <Bot size={16} />}</span><div>{item.role === 'loading' ? <div className="revision-progress"><b>{revisionStageLabels[revisionStage] || '正在处理修改任务'}</b><p>已等待 {revisionElapsed} 秒，页面会在任务完成后自动应用结果。</p><button type="button" onClick={stopRevisionWait}>停止等待</button></div> : <p>{item.text}</p>}</div></div>)}</div>
+            <div className="ai-composer"><textarea value={feedback} disabled={revising} onChange={(event) => setFeedback(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') revise(); }} placeholder="写下对所选模块的修改要求…" maxLength={800} /><div>{retryRevision && !revising ? <Button variant="ghost" size="sm" icon={RotateCcw} onClick={retryRevisionRequest}>继续查询 / 重试</Button> : null}<span>{feedback.length}/800</span><Button size="sm" icon={Send} onClick={revise} disabled={!feedback.trim() || revising || !assistantSections.size}>发送</Button></div>{revisionError ? <p>{revisionError}</p> : null}</div>
           </> : <div className="manual-edit-hint"><Pencil size={20} /><b>当前为手动编辑模式</b><p>点击教案正文中的文字即可直接修改。需要定向调整内容时，再开启助教并选择对应模块。</p></div>}
         </aside>
         {assistantDrawerOpen ? <button className="assistant-drawer-scrim" aria-label="关闭助教面板" onClick={() => setAssistantDrawerOpen(false)} /> : null}

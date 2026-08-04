@@ -146,6 +146,13 @@ export const api = {
     timeout: 30_000,
   }),
   getGenerationJob: (jobId) => request(`/api/ai/generation-jobs/${encodeURIComponent(jobId)}`, { timeout: 20_000 }),
+  createRevisionJob: (body, idempotencyKey) => request('/api/ai/revision-jobs', {
+    method: 'POST',
+    body,
+    headers: { 'Idempotency-Key': idempotencyKey },
+    timeout: 30_000,
+  }),
+  getRevisionJob: (jobId) => request(`/api/ai/revision-jobs/${encodeURIComponent(jobId)}`, { timeout: 20_000 }),
   generateLesson: (body) => request('/api/ai/generate', { method: 'POST', body, timeout: 660_000 }),
   reviseLesson: (body) => request('/api/ai/revise', { method: 'POST', body, timeout: 660_000 }),
   reviseCustomSections: (body) => request('/api/ai/revise-custom-sections', { method: 'POST', body, timeout: 660_000 }),

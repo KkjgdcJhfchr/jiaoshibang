@@ -135,6 +135,8 @@ const mockUpstream = createServer(async (request, response) => {
     strictSchema: body.text?.format?.strict === true,
     reasoningEffort: body.reasoning?.effort || null,
     hasInstructions: typeof body.instructions === 'string',
+    targetedRevision: inputText.includes('[TARGETED_LESSON_REVISION]'),
+    targetedStandardFields: body.text?.format?.schema?.properties?.standardPatch?.required || null,
   });
 
   if (transientProbeModels.has(body.model)) {
@@ -176,7 +178,32 @@ const mockUpstream = createServer(async (request, response) => {
   const requestedCustomSections = inputText.includes('[CUSTOM_SECTION_REVISION]') && customSectionsMatch
     ? JSON.parse(customSectionsMatch[1])
     : null;
-  const modelOutput = requestedCustomSections
+  const targetedFieldsMatch = inputText.match(/允许返回的标准字段：(\[[^\n]*\])/);
+  const targetedCustomMatch = inputText.match(/选中的自定义模块：(\[[^\n]*\])/);
+  const targetedRevisionFields = inputText.includes('[TARGETED_LESSON_REVISION]') && targetedFieldsMatch
+    ? JSON.parse(targetedFieldsMatch[1])
+    : null;
+  const targetedCustomSections = targetedRevisionFields && targetedCustomMatch
+    ? JSON.parse(targetedCustomMatch[1])
+    : [];
+  const targetedStandardPatch = targetedRevisionFields
+    ? Object.fromEntries(targetedRevisionFields.map((field) => {
+        if (field === 'metadata') return [field, { classProfile: '已按教师要求定向修改班级学情。' }];
+        const value = structuredClone(lessonPlan[field]);
+        if (field === 'sourceSummary') return [field, '已按教师要求定向修改章节概述。'];
+        return [field, value];
+      }))
+    : null;
+  const modelOutput = targetedRevisionFields
+    ? JSON.stringify({
+        standardPatch: targetedStandardPatch,
+        customSections: targetedCustomSections.map((section) => ({
+          id: section.id,
+          title: section.title,
+          content: `已按教师要求定向修改“${section.title}”的中文教学内容。`,
+        })),
+      })
+    : requestedCustomSections
     ? JSON.stringify({
         sections: requestedCustomSections.map((section) => ({
           id: section.id,
@@ -996,6 +1023,148 @@ try {
   assert.match(appLog, /"event":"ai_generation_job_failed"/);
   assert.equal(appLog.includes('DELAY_BODY_AFTER_HEADERS'), false, '任务失败日志不得包含教材或生成要求');
   assert.equal(appLog.includes('integration-environment-key'), false, '任务失败日志不得包含模型密钥');
+
+  const revisionJobRegistration = await client.json('/api/auth/register', {
+    method: 'POST',
+    body: {
+      identifier: 'revision-job@example.com',
+      password: 'RevisionJobPass1',
+      displayName: '修改任务测试教师',
+      subject: '语文',
+      privacyAccepted: true,
+      privacyPolicyUpdatedAt: currentPrivacyPolicyUpdatedAt,
+    },
+  });
+  assert.equal(revisionJobRegistration.status, 201);
+  const revisionJobCookie = cookiePair(revisionJobRegistration.headers.get('set-cookie'));
+  const revisionJobBody = {
+    lessonPlan: structuredClone(baseLessonPlan),
+    sectionKeys: ['objectives'],
+    customSections: [{ id: 'custom_reading', title: '拓展阅读', content: '原有拓展内容。' }],
+    feedback: '把目标写得更可测量，并补充拓展阅读任务。',
+  };
+  const revisionCreated = await client.json('/api/ai/revision-jobs', {
+    method: 'POST',
+    cookie: revisionJobCookie,
+    headers: { 'Idempotency-Key': 'revision-success-request-0001' },
+    body: revisionJobBody,
+  });
+  assert.equal(revisionCreated.status, 202);
+  assert.equal(revisionCreated.body.data.job.status, 'queued');
+  assert.equal(revisionCreated.body.data.job.phase, 'queued');
+  assert.equal(revisionCreated.body.data.job.pollAfterMs, 1_000);
+  assert.match(revisionCreated.body.data.job.id, /^rev_[0-9a-f-]{36}$/);
+  for (const privateField of ['userId', 'idempotencyKey', 'requestHash', 'input']) {
+    assert.equal(Object.hasOwn(revisionCreated.body.data.job, privateField), false, `修改任务不得公开 ${privateField}`);
+  }
+  const revisionJobId = revisionCreated.body.data.job.id;
+
+  const revisionReplay = await client.json('/api/ai/revision-jobs', {
+    method: 'POST',
+    cookie: revisionJobCookie,
+    headers: { 'Idempotency-Key': 'revision-success-request-0001' },
+    body: structuredClone(revisionJobBody),
+  });
+  assert.equal(revisionReplay.status, 202);
+  assert.equal(revisionReplay.body.data.job.id, revisionJobId);
+
+  const revisionConflict = await client.json('/api/ai/revision-jobs', {
+    method: 'POST',
+    cookie: revisionJobCookie,
+    headers: { 'Idempotency-Key': 'revision-success-request-0001' },
+    body: { ...structuredClone(revisionJobBody), feedback: '同一幂等键的不同参数' },
+  });
+  assert.equal(revisionConflict.status, 409);
+  assert.equal(revisionConflict.body.error.code, 'IDEMPOTENCY_CONFLICT');
+
+  const revisionHiddenFromOtherUser = await client.json(`/api/ai/revision-jobs/${revisionJobId}`, {
+    cookie: userCookie,
+  });
+  assert.equal(revisionHiddenFromOtherUser.status, 404);
+  assert.equal(revisionHiddenFromOtherUser.body.error.code, 'REVISION_JOB_NOT_FOUND');
+
+  const completedRevision = await waitForRevisionJob(client, revisionJobCookie, revisionJobId);
+  assert.equal(completedRevision.status, 'completed');
+  assert.equal(completedRevision.phase, 'completed');
+  assert.equal(completedRevision.pollAfterMs, 0);
+  assert.equal(completedRevision.data.providerId, 'environment-fallback');
+  assert.deepEqual(completedRevision.data.changedSections, ['objectives', 'custom:custom_reading']);
+  assert.equal(completedRevision.data.lessonPlan.sourceSummary, '已按教师要求定向修改章节概述。');
+  assert.deepEqual(completedRevision.data.lessonPlan.timeline, baseLessonPlan.timeline, '未选中的标准模块必须保持不变');
+  assert.equal(completedRevision.data.customSections[0].id, 'custom_reading');
+  assert.match(completedRevision.data.customSections[0].content, /已按教师要求定向修改/);
+  const targetedUpstreamRequest = [...upstreamRequests].reverse().find((item) => item.targetedRevision);
+  assert.ok(targetedUpstreamRequest, '异步修改必须真实调用模型上游');
+  assert.deepEqual(
+    targetedUpstreamRequest.targetedStandardFields,
+    ['sourceSummary', 'coreCompetencies', 'learningObjectives'],
+    '模型结构化输出只能包含选中模块对应的标准字段',
+  );
+
+  const failedRevisionCreated = await client.json('/api/ai/revision-jobs', {
+    method: 'POST',
+    cookie: revisionJobCookie,
+    headers: { 'Idempotency-Key': 'revision-failure-request-0001' },
+    body: {
+      lessonPlan: structuredClone(baseLessonPlan),
+      sectionKeys: ['timeline'],
+      customSections: [],
+      feedback: 'FORCE_UPSTREAM_ERROR',
+    },
+  });
+  assert.equal(failedRevisionCreated.status, 202);
+  const failedRevision = await waitForRevisionJob(
+    client,
+    revisionJobCookie,
+    failedRevisionCreated.body.data.job.id,
+  );
+  assert.equal(failedRevision.status, 'failed');
+  assert.equal(failedRevision.phase, 'failed');
+  assert.equal(failedRevision.error.code, 'AI_UPSTREAM_ERROR');
+  assert.equal(failedRevision.error.message.includes('integration-environment-key'), false);
+  assert.match(failedRevision.error.requestId, /^[a-f0-9]{16}$/);
+
+  const slowGenerationCreated = await client.json('/api/ai/generation-jobs', {
+    method: 'POST',
+    cookie: revisionJobCookie,
+    headers: { 'Idempotency-Key': 'unified-queue-generation-0001' },
+    body: generationBody('DELAY_FOR_CONCURRENCY_TEST'),
+  });
+  assert.equal(slowGenerationCreated.status, 202);
+  const queuedBehindGeneration = await client.json('/api/ai/revision-jobs', {
+    method: 'POST',
+    cookie: revisionJobCookie,
+    headers: { 'Idempotency-Key': 'unified-queue-revision-0001' },
+    body: {
+      lessonPlan: structuredClone(baseLessonPlan),
+      sectionKeys: ['keypoints'],
+      customSections: [],
+      feedback: '调整重点难点。',
+    },
+  });
+  assert.equal(queuedBehindGeneration.status, 202);
+  assert.equal(queuedBehindGeneration.body.data.job.status, 'queued');
+  const slowGeneration = await waitForGenerationJob(
+    client,
+    revisionJobCookie,
+    slowGenerationCreated.body.data.job.id,
+    { timeoutMs: 3_000 },
+  );
+  assert.equal(slowGeneration.status, 'completed');
+  const revisionAfterSlotRelease = await waitForRevisionJob(
+    client,
+    revisionJobCookie,
+    queuedBehindGeneration.body.data.job.id,
+    { timeoutMs: 3_000 },
+  );
+  assert.equal(revisionAfterSlotRelease.status, 'completed', '生成任务释放 AI 槽后，排队修改任务必须继续执行');
+  await delay(20);
+  assert.match(appLog, /"event":"ai_revision_upstream_started"/);
+  assert.match(appLog, /"event":"ai_revision_upstream_completed"/);
+  assert.match(appLog, /"event":"ai_revision_upstream_failed"/);
+  assert.equal(appLog.includes('把目标写得更可测量'), false, '修改任务日志不得包含教师反馈');
+  assert.equal(appLog.includes('原有拓展内容'), false, '修改任务日志不得包含教案内容');
+  assert.equal(appLog.includes('integration-environment-key'), false, '修改任务日志不得包含模型密钥');
 
   const adminPlans = await client.json('/api/admin/payments/plans', { cookie: adminCookie });
   assert.equal(adminPlans.status, 200);
@@ -1876,6 +2045,7 @@ try {
       aiRequiresLogin: true,
       successOnlyQuotaDeduction: true,
       asyncGenerationIdempotencyAndPolling: true,
+      asyncTargetedRevisionJobs: true,
       delayedResponseBodyTimeout: true,
       encryptedProviderRouting: true,
       targetedCustomSectionRevision: true,
@@ -1926,6 +2096,18 @@ async function waitForGenerationJob(client, cookie, jobId, { timeoutMs = 3_000 }
     const job = response.body.data.job;
     if (job.status === 'completed' || job.status === 'failed') return job;
     if (Date.now() >= deadline) assert.fail(`生成任务 ${jobId} 在 ${timeoutMs}ms 内没有进入终态`);
+    await delay(Math.min(50, Math.max(10, Number(job.pollAfterMs || 10))));
+  }
+}
+
+async function waitForRevisionJob(client, cookie, jobId, { timeoutMs = 3_000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const response = await client.json(`/api/ai/revision-jobs/${encodeURIComponent(jobId)}`, { cookie });
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    const job = response.body.data.job;
+    if (job.status === 'completed' || job.status === 'failed') return job;
+    if (Date.now() >= deadline) assert.fail(`修改任务 ${jobId} 在 ${timeoutMs}ms 内没有进入终态`);
     await delay(Math.min(50, Math.max(10, Number(job.pollAfterMs || 10))));
   }
 }

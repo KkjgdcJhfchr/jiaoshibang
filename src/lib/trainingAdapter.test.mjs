@@ -113,6 +113,21 @@ assert.equal(canonical.reflectionPrompts.some((item) => item.includes('跨学科
 assert.equal(canonical.reflectionPrompts.some((item) => item.includes('乡土素材') && item.includes('人工新增的乡土教学任务')), true);
 assert.equal(canonical.generationMeta.generatedBy, 'mixed');
 
+const revisionCanonical = toCanonicalLesson({ ...editedLesson, custom_sections: [] }, sourceLesson);
+assert.equal(
+  revisionCanonical.reflectionPrompts.some((item) => item.startsWith('【教师自定义模块】')),
+  false,
+  '定向修改的 canonical 上下文不得把自定义模块混入课后反思',
+);
+assert.deepEqual(
+  editedLesson.custom_sections.map(({ id, title, content }) => ({ id, title, content })),
+  [
+    { id: 'custom-cross', title: '跨学科拓展', content: '人工新增的跨学科完整内容。' },
+    { id: 'custom-local', title: '乡土素材', content: '人工新增的乡土教学任务。' },
+  ],
+  '剥离 revision 上下文标记时不得改动独立保存的自定义模块',
+);
+
 const candidate = buildTrainingCandidate({
   user: { id: 'training-adapter-test-user' },
   lessonPlan: canonical,
