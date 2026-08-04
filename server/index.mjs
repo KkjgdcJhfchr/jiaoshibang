@@ -358,6 +358,7 @@ const REVISION_SECTION_LABELS = Object.freeze({
 });
 const LESSON_PATCH_PROTOCOL = 'lesson_patch.v1';
 const LESSON_PATCH_MAX_OPERATIONS = 256;
+const LESSON_PATCH_MAX_EXPANDED_CHANGES = 2_048;
 const LESSON_PATCH_MAX_VALUE_BYTES = 120_000;
 const LESSON_PATCH_MAX_CANDIDATE_BYTES = 600_000;
 
@@ -3726,7 +3727,7 @@ async function runTargetedRevision({ input, requestId, user, onPhase = () => {} 
       `你正在按教师要求定向修改一份教案。必须输出 ${LESSON_PATCH_PROTOCOL} 增量协议，不得返回整份教案。`,
       `输出顶层结构固定为：{"protocol":"${LESSON_PATCH_PROTOCOL}","operations":[{"op":"add|replace|remove","path":"/JSON/Pointer","valueJson":"JSON字符串"}]}。`,
       '每条 operations 必须使用 JSON Pointer 路径；add/replace 的 valueJson 是将新值 JSON.stringify 后的字符串，remove 的 valueJson 必须是空字符串。',
-      'replace 只能修改已存在的字符串、数字、布尔值或 null 叶子，禁止整体替换对象或数组；add/remove 只能增删数组元素。',
+      'replace 应优先修改现有标量叶子；若返回选中范围内的完整对象或数组，键与类型必须保持一致，服务端会安全分解为叶子差异。add/remove 只能增删数组元素。',
       '只能修改“允许修改的顶层字段”及其子路径；选中的每个标准模块至少返回一条操作。学情模块中 metadata 只能修改 /metadata/classProfile。',
       '如果修改等级、难度或标签，必须同步修改支撑该等级或标签的实质内容，不得只改数字或文字标识。教师要求“全部”“每个”时，必须枚举所有受影响项的增量操作。',
       '自定义模块同样使用 operations 增量修改，只能 replace /customSections/序号/content；每个选中的自定义模块至少返回一条操作，不得修改编号或标题。',
@@ -4275,6 +4276,7 @@ function applyTargetedLessonPatch(lessonPlan, customSections, operations, sectio
   const touchedSections = new Set();
   const touchedCustomSections = new Set();
   const seenPaths = [];
+  let expandedChanges = 0;
   for (const [index, operation] of operations.entries()) {
     if (!operation || typeof operation !== 'object' || Array.isArray(operation)) {
       throw new HttpError(502, 'AI_INVALID_OUTPUT', `AI 返回的第 ${index + 1} 条增量操作无效`);
@@ -4307,7 +4309,8 @@ function applyTargetedLessonPatch(lessonPlan, customSections, operations, sectio
       }
       seenPaths.push(segments);
       const customId = customSections[customIndex].id;
-      applySingleLessonPatchOperation(customSections, operation, segments.slice(1));
+      expandedChanges += applySingleLessonPatchOperation(customSections, operation, segments.slice(1));
+      assertLessonPatchExpandedChangeLimit(expandedChanges);
       touchedCustomSections.add(customId);
       continue;
     }
@@ -4315,15 +4318,12 @@ function applyTargetedLessonPatch(lessonPlan, customSections, operations, sectio
       && (segments.length !== 2 || segments[1] !== 'classProfile')) {
       throw new HttpError(502, 'AI_REVISION_SCOPE_VIOLATION', 'AI 只能修改学情中的班级特征');
     }
-    if (segments.length === 1
-      && inputContainerValueIsStructured(lessonPlan[topLevelField])) {
-      throw new HttpError(502, 'AI_REVISION_SCOPE_VIOLATION', 'AI 必须使用更精确的子路径增量修改对象或数组模块');
-    }
     if (seenPaths.some((previous) => lessonPatchPathsConflict(previous, segments))) {
       throw new HttpError(502, 'AI_REVISION_PATCH_CONFLICT', 'AI 返回了重复或相互冲突的增量操作');
     }
     seenPaths.push(segments);
-    applySingleLessonPatchOperation(lessonPlan, operation, segments);
+    expandedChanges += applySingleLessonPatchOperation(lessonPlan, operation, segments);
+    assertLessonPatchExpandedChangeLimit(expandedChanges);
     touchedSections.add(sectionByField.get(topLevelField));
   }
   if (touchedSections.size !== sectionKeys.length
@@ -4334,10 +4334,6 @@ function applyTargetedLessonPatch(lessonPlan, customSections, operations, sectio
     || customSections.some((section) => !touchedCustomSections.has(section.id))) {
     throw new HttpError(502, 'AI_SECTION_SCOPE_VIOLATION', 'AI 未完整修改每个选中的自定义模块');
   }
-}
-
-function inputContainerValueIsStructured(value) {
-  return Array.isArray(value) || Boolean(value && typeof value === 'object');
 }
 
 function parseSafeLessonPatchPath(path) {
@@ -4401,20 +4397,21 @@ function applySingleLessonPatchOperation(root, operation, segments) {
     const index = parseLessonPatchArrayIndex(finalSegment, parent.length, allowAppend);
     if (operation.op === 'add') {
       parent.splice(index, 0, structuredClone(value));
+      return 1;
     } else if (operation.op === 'replace') {
       if (index >= parent.length) throw new HttpError(502, 'AI_INVALID_OUTPUT', 'replace 增量操作的数组路径不存在');
-      if (inputContainerValueIsStructured(parent[index]) || inputContainerValueIsStructured(value)) {
-        throw new HttpError(502, 'AI_REVISION_SCOPE_VIOLATION', 'replace 只能修改现有的标量叶子，不能整体替换对象或数组');
-      }
-      if (isDeepStrictEqual(parent[index], value)) {
+      const changes = applyLessonPatchValueDiff(parent[index], value, (nextValue) => {
+        parent[index] = nextValue;
+      });
+      if (!changes) {
         throw new HttpError(502, 'AI_REVISION_NO_CHANGE', 'AI 返回了没有产生变化的增量操作');
       }
-      parent[index] = structuredClone(value);
+      return changes;
     } else {
       if (index >= parent.length) throw new HttpError(502, 'AI_INVALID_OUTPUT', 'remove 增量操作的数组路径不存在');
       parent.splice(index, 1);
+      return 1;
     }
-    return;
   }
 
   if (!parent || typeof parent !== 'object') {
@@ -4426,13 +4423,78 @@ function applySingleLessonPatchOperation(root, operation, segments) {
   }
   if (operation.op === 'replace') {
     if (!exists) throw new HttpError(502, 'AI_INVALID_OUTPUT', 'replace 增量操作的对象路径不存在');
-    if (inputContainerValueIsStructured(parent[finalSegment]) || inputContainerValueIsStructured(value)) {
-      throw new HttpError(502, 'AI_REVISION_SCOPE_VIOLATION', 'replace 只能修改现有的标量叶子，不能整体替换对象或数组');
-    }
-    if (isDeepStrictEqual(parent[finalSegment], value)) {
+    const changes = applyLessonPatchValueDiff(parent[finalSegment], value, (nextValue) => {
+      parent[finalSegment] = nextValue;
+    });
+    if (!changes) {
       throw new HttpError(502, 'AI_REVISION_NO_CHANGE', 'AI 返回了没有产生变化的增量操作');
     }
-    parent[finalSegment] = structuredClone(value);
+    return changes;
+  }
+  return 0;
+}
+
+function applyLessonPatchValueDiff(current, next, replaceCurrent) {
+  if (isDeepStrictEqual(current, next)) return 0;
+  const currentKind = lessonPatchValueKind(current);
+  const nextKind = lessonPatchValueKind(next);
+  if (currentKind !== nextKind) {
+    throw new HttpError(502, 'AI_REVISION_SCOPE_VIOLATION', 'AI 不得在整体替换中改变现有值的结构类型');
+  }
+  if (currentKind === 'array') {
+    let changes = 0;
+    const commonLength = Math.min(current.length, next.length);
+    for (let index = 0; index < commonLength; index += 1) {
+      changes += applyLessonPatchValueDiff(current[index], next[index], (nextValue) => {
+        current[index] = nextValue;
+      });
+      assertLessonPatchExpandedChangeLimit(changes);
+    }
+    while (current.length > next.length) {
+      current.pop();
+      changes += 1;
+      assertLessonPatchExpandedChangeLimit(changes);
+    }
+    while (current.length < next.length) {
+      current.push(structuredClone(next[current.length]));
+      changes += 1;
+      assertLessonPatchExpandedChangeLimit(changes);
+    }
+    return changes;
+  }
+  if (currentKind === 'object') {
+    const currentKeys = Object.keys(current).sort();
+    const nextKeys = Object.keys(next).sort();
+    if (!isDeepStrictEqual(currentKeys, nextKeys)) {
+      throw new HttpError(502, 'AI_REVISION_SCOPE_VIOLATION', 'AI 整体替换对象的字段集合必须与当前对象完全一致');
+    }
+    let changes = 0;
+    for (const key of currentKeys) {
+      changes += applyLessonPatchValueDiff(current[key], next[key], (nextValue) => {
+        current[key] = nextValue;
+      });
+      assertLessonPatchExpandedChangeLimit(changes);
+    }
+    return changes;
+  }
+  replaceCurrent(structuredClone(next));
+  return 1;
+}
+
+function lessonPatchValueKind(value) {
+  if (Array.isArray(value)) return 'array';
+  if (value === null) return 'null';
+  if (typeof value === 'object') return 'object';
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new HttpError(502, 'AI_INVALID_OUTPUT', 'AI 增量修改包含无效数值');
+    return 'number';
+  }
+  return typeof value;
+}
+
+function assertLessonPatchExpandedChangeLimit(changes) {
+  if (changes > LESSON_PATCH_MAX_EXPANDED_CHANGES) {
+    throw new HttpError(502, 'AI_INVALID_OUTPUT', 'AI 整体替换展开后的增量修改过多');
   }
 }
 

@@ -226,6 +226,7 @@ const mockUpstream = createServer(async (request, response) => {
     targetedScope = {
       fields: JSON.parse(targetedFieldsMatch[1]),
       customSections: context.selectedCustomSections || [],
+      context,
     };
   } else if (inputText.includes('[TARGETED_LESSON_REVISION_REPAIR]')) {
     if (repairScopeMatch) {
@@ -233,11 +234,14 @@ const mockUpstream = createServer(async (request, response) => {
       targetedScope = {
         fields: repairScope.allowedTopLevelFields || [],
         customSections: repairScope.currentSelectedContext?.selectedCustomSections || [],
+        context: repairScope.currentSelectedContext || {},
       };
     }
   }
   const targetedRevisionFields = targetedScope?.fields || null;
   const targetedCustomSections = targetedScope?.customSections || [];
+  const targetedExercises = targetedScope?.context?.selectedStandard?.exercises || lessonPlan.exercises;
+  const targetedPreparation = targetedScope?.context?.selectedStandard?.preparation || lessonPlan.preparation;
   if (isTargetedRevision) upstreamRequests.at(-1).targetedStandardFields = targetedRevisionFields;
   let targetedOperations = targetedRevisionFields
     ? buildMockTargetedPatchOperations(lessonPlan, targetedRevisionFields, targetedCustomSections)
@@ -271,11 +275,46 @@ const mockUpstream = createServer(async (request, response) => {
   } else if (inputText.includes('FORCE_PATCH_INVALID_LESSON')) {
     targetedOperations = [{ op: 'remove', path: '/exercises/0', valueJson: '' }];
   } else if (inputText.includes('FORCE_PATCH_ROOT_CONTAINER')) {
-    targetedOperations = [{ op: 'replace', path: '/exercises', valueJson: JSON.stringify(lessonPlan.exercises) }];
+    const exercises = structuredClone(targetedExercises);
+    exercises[0].stem = `${exercises[0].stem}（整块兼容修改）`;
+    targetedOperations = [{ op: 'replace', path: '/exercises', valueJson: JSON.stringify(exercises) }];
   } else if (inputText.includes('FORCE_PATCH_OBJECT_ADD')) {
     targetedOperations = [{ op: 'add', path: '/learnerAnalysis/unexpected', valueJson: JSON.stringify('越界字段') }];
   } else if (inputText.includes('FORCE_PATCH_STRUCTURED_REPLACE')) {
-    targetedOperations = [{ op: 'replace', path: '/exercises/0', valueJson: JSON.stringify(lessonPlan.exercises[0]) }];
+    const preparation = structuredClone(targetedPreparation);
+    if (preparation.teacher.length) preparation.teacher[0] = `${preparation.teacher[0]}（整块兼容修改）`;
+    else preparation.teacher.push('整块兼容新增的教师准备');
+    targetedOperations = [{ op: 'replace', path: '/preparation', valueJson: JSON.stringify(preparation) }];
+  } else if (inputText.includes('FORCE_PATCH_STRUCTURED_UNKNOWN')) {
+    targetedOperations = [{
+      op: 'replace',
+      path: '/preparation',
+      valueJson: JSON.stringify({ ...targetedPreparation, unexpected: '越界字段' }),
+    }];
+  } else if (inputText.includes('FORCE_PATCH_STRUCTURED_TYPE')) {
+    targetedOperations = [{
+      op: 'replace',
+      path: '/preparation',
+      valueJson: JSON.stringify({ ...targetedPreparation, teacher: { invalid: true } }),
+    }];
+  } else if (inputText.includes('FORCE_PATCH_EXPANDED_LIMIT')) {
+    targetedOperations = [{
+      op: 'replace',
+      path: '/keyPoints',
+      valueJson: JSON.stringify(Array.from({ length: 2_050 }, (_, index) => `展开限制-${index}`)),
+    }];
+  } else if (inputText.includes('FORCE_PATCH_EXERCISES_CONTAINER_100')) {
+    const exercises = structuredClone(targetedExercises).map((exercise, index) => ({
+      ...exercise,
+      difficulty: 5,
+      stem: `${exercise.stem}（百题整块修改 ${index + 1}）`,
+      answer: `${exercise.answer}（百题答案 ${index + 1}）`,
+      explanation: `${exercise.explanation}（百题解析 ${index + 1}）`,
+      scoringRubric: `${exercise.scoringRubric}（百题评分 ${index + 1}）`,
+      estimatedMinutes: Math.min(180, Math.max(1, exercise.estimatedMinutes + 1)),
+      knowledgePoints: exercise.knowledgePoints.map((point) => `${point}（百题知识点）`),
+    }));
+    targetedOperations = [{ op: 'replace', path: '/exercises', valueJson: JSON.stringify(exercises) }];
   } else if (inputText.includes('FORCE_PATCH_INSERT_EXTRA_FIELD')) {
     targetedOperations = [{
       op: 'add',
@@ -1469,6 +1508,121 @@ try {
   assert.equal(repairFailedJob.status, 'failed');
   assert.equal(repairFailedJob.error.code, 'AI_REVISION_SCOPE_VIOLATION');
 
+  const structuredReplacementCookie = await registerRevisionTestUser(
+    client,
+    'revision-structured-replacement@example.com',
+    currentPrivacyPolicyUpdatedAt,
+  );
+  const structuredPreparationCreated = await client.json('/api/ai/revision-jobs', {
+    method: 'POST',
+    cookie: structuredReplacementCookie,
+    headers: { 'Idempotency-Key': 'revision-structured-preparation-0001' },
+    body: {
+      lessonPlan: structuredClone(baseLessonPlan),
+      sectionKeys: ['preparation'],
+      customSections: [],
+      feedback: 'FORCE_PATCH_STRUCTURED_REPLACE',
+    },
+  });
+  assert.equal(structuredPreparationCreated.status, 202);
+  const structuredPreparationJob = await waitForRevisionJob(
+    client,
+    structuredReplacementCookie,
+    structuredPreparationCreated.body.data.job.id,
+  );
+  assert.equal(
+    structuredPreparationJob.status,
+    'completed',
+    `准备模块整体替换必须兼容：${JSON.stringify(structuredPreparationJob.error || null)}`,
+  );
+  assert.notDeepEqual(structuredPreparationJob.data.lessonPlan.preparation, baseLessonPlan.preparation);
+  for (const field of Object.keys(baseLessonPlan)) {
+    if (field !== 'preparation') {
+      assert.deepEqual(
+        structuredPreparationJob.data.lessonPlan[field],
+        baseLessonPlan[field],
+        `准备模块整体替换不得改写 ${field}`,
+      );
+    }
+  }
+
+  const structuredExercisesCreated = await client.json('/api/ai/revision-jobs', {
+    method: 'POST',
+    cookie: structuredReplacementCookie,
+    headers: { 'Idempotency-Key': 'revision-structured-exercises-0001' },
+    body: {
+      lessonPlan: structuredClone(baseLessonPlan),
+      sectionKeys: ['exercises'],
+      customSections: [],
+      feedback: 'FORCE_PATCH_ROOT_CONTAINER',
+    },
+  });
+  assert.equal(structuredExercisesCreated.status, 202);
+  const structuredExercisesJob = await waitForRevisionJob(
+    client,
+    structuredReplacementCookie,
+    structuredExercisesCreated.body.data.job.id,
+  );
+  assert.equal(
+    structuredExercisesJob.status,
+    'completed',
+    `习题模块整体替换必须兼容：${JSON.stringify(structuredExercisesJob.error || null)}`,
+  );
+  assert.notEqual(
+    structuredExercisesJob.data.lessonPlan.exercises[0].stem,
+    baseLessonPlan.exercises[0].stem,
+  );
+  for (const field of Object.keys(baseLessonPlan)) {
+    if (field !== 'exercises') {
+      assert.deepEqual(
+        structuredExercisesJob.data.lessonPlan[field],
+        baseLessonPlan[field],
+        `习题模块整体替换不得改写 ${field}`,
+      );
+    }
+  }
+
+  const hundredExercisePlan = structuredClone(baseLessonPlan);
+  hundredExercisePlan.exercises = Array.from({ length: 100 }, (_, index) => ({
+    ...structuredClone(baseLessonPlan.exercises[index % baseLessonPlan.exercises.length]),
+    id: `exercise-${index + 1}`,
+  }));
+  const hundredExerciseCookie = await registerRevisionTestUser(
+    client,
+    'revision-structured-hundred-exercises@example.com',
+    currentPrivacyPolicyUpdatedAt,
+  );
+  const hundredExerciseCreated = await client.json('/api/ai/revision-jobs', {
+    method: 'POST',
+    cookie: hundredExerciseCookie,
+    headers: { 'Idempotency-Key': 'revision-structured-hundred-exercises-0001' },
+    body: {
+      lessonPlan: hundredExercisePlan,
+      sectionKeys: ['exercises'],
+      customSections: [],
+      feedback: 'FORCE_PATCH_EXERCISES_CONTAINER_100',
+    },
+  });
+  assert.equal(hundredExerciseCreated.status, 202);
+  const hundredExerciseJob = await waitForRevisionJob(
+    client,
+    hundredExerciseCookie,
+    hundredExerciseCreated.body.data.job.id,
+  );
+  assert.equal(
+    hundredExerciseJob.status,
+    'completed',
+    `100 道习题整体替换必须在安全展开上限内完成：${JSON.stringify(hundredExerciseJob.error || null)}`,
+  );
+  assert.equal(hundredExerciseJob.data.lessonPlan.exercises.length, 100);
+  hundredExerciseJob.data.lessonPlan.exercises.forEach((exercise, index) => {
+    assert.equal(exercise.id, hundredExercisePlan.exercises[index].id);
+    assert.equal(exercise.difficulty, 5);
+    assert.notEqual(exercise.stem, hundredExercisePlan.exercises[index].stem);
+    assert.notEqual(exercise.answer, hundredExercisePlan.exercises[index].answer);
+    assert.notEqual(exercise.explanation, hundredExercisePlan.exercises[index].explanation);
+  });
+
   const patchValidationCookies = [
     await registerRevisionTestUser(client, 'revision-patch-validation-a@example.com', currentPrivacyPolicyUpdatedAt),
     await registerRevisionTestUser(client, 'revision-patch-validation-b@example.com', currentPrivacyPolicyUpdatedAt),
@@ -1482,9 +1636,10 @@ try {
     ['no-change', 'keypoints', 'FORCE_PATCH_NO_CHANGE', 'AI_REVISION_NO_CHANGE', []],
     ['conflict', 'keypoints', 'FORCE_PATCH_CONFLICT', 'AI_REVISION_PATCH_CONFLICT', []],
     ['invalid-lesson', 'exercises', 'FORCE_PATCH_INVALID_LESSON', 'AI_INVALID_OUTPUT', []],
-    ['root-container', 'exercises', 'FORCE_PATCH_ROOT_CONTAINER', 'AI_REVISION_SCOPE_VIOLATION', []],
     ['object-add', 'learner', 'FORCE_PATCH_OBJECT_ADD', 'AI_REVISION_SCOPE_VIOLATION', []],
-    ['structured-replace', 'exercises', 'FORCE_PATCH_STRUCTURED_REPLACE', 'AI_REVISION_SCOPE_VIOLATION', []],
+    ['structured-unknown', 'preparation', 'FORCE_PATCH_STRUCTURED_UNKNOWN', 'AI_REVISION_SCOPE_VIOLATION', []],
+    ['structured-type', 'preparation', 'FORCE_PATCH_STRUCTURED_TYPE', 'AI_REVISION_SCOPE_VIOLATION', []],
+    ['expanded-limit', 'keypoints', 'FORCE_PATCH_EXPANDED_LIMIT', 'AI_INVALID_OUTPUT', []],
     ['insert-extra-field', 'homework', 'FORCE_PATCH_INSERT_EXTRA_FIELD', 'AI_INVALID_OUTPUT', []],
     ['custom-unchanged', null, 'FORCE_CUSTOM_UNCHANGED', 'AI_REVISION_NO_CHANGE', [{ id: 'custom_guard', title: '安全扩展', content: '原有中文内容。' }]],
     ['custom-missing', null, 'FORCE_CUSTOM_MISSING', 'AI_SECTION_SCOPE_VIOLATION', [{ id: 'custom_complete', title: '完整性扩展', content: '原有中文内容。' }]],
