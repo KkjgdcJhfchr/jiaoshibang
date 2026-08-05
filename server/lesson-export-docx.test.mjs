@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { inflateRawSync } from 'node:zlib';
-import { sampleLesson } from '../src/data/sampleLesson.js';
+import { lessonExportFixture } from './fixtures/lesson-export-fixture.mjs';
 import { generateLessonDocx } from './lesson-export-docx.mjs';
 import { buildLessonExportModel, collectLessonExportTexts } from './lesson-export-model.mjs';
 
-const lesson = structuredClone(sampleLesson);
+const lesson = structuredClone(lessonExportFixture);
 lesson.metadata.title = `${lesson.metadata.title} & <完整导出>`;
 const model = buildLessonExportModel(lesson);
 const buffer = await generateLessonDocx(model);
@@ -94,11 +94,11 @@ assert.ok(documentXml.includes('&amp;'), '特殊字符 & 应由 OOXML 转义');
 assert.ok(documentXml.includes('&lt;完整导出&gt;'), '特殊字符 < > 应由 OOXML 转义');
 
 const invalidXmlCharacters = `\u0000\u000B\uFFFE\uFFFF\uD800高\uDC00低`;
-const boundaryLesson = structuredClone(sampleLesson);
+const boundaryLesson = structuredClone(lessonExportFixture);
 boundaryLesson.metadata.title = `边界标题${invalidXmlCharacters}保留🙂`;
-boundaryLesson.timeline = [structuredClone(sampleLesson.timeline[0])];
+boundaryLesson.timeline = [structuredClone(lessonExportFixture.timeline[0])];
 boundaryLesson.exercises = [{
-  ...structuredClone(sampleLesson.exercises[0]),
+  ...structuredClone(lessonExportFixture.exercises[0]),
   options: [
     { label: 'A', content: `甲${invalidXmlCharacters}保留🚀` },
     { label: 'B.', content: '乙' },

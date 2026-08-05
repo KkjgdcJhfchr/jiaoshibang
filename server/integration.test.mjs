@@ -562,6 +562,35 @@ try {
   });
   assert.equal(reservedAdminRegistration.status, 409, '管理员标识必须在教师端注册系统中预留');
   assert.equal(reservedAdminRegistration.body.error.code, 'ACCOUNT_EXISTS');
+  const phoneRegistration = await client.json('/api/auth/register', {
+    method: 'POST',
+    body: {
+      identifier: '13800138000',
+      password: 'PhoneAccount1',
+      privacyAccepted: true,
+      privacyPolicyUpdatedAt: currentPrivacyPolicyUpdatedAt,
+    },
+  });
+  assert.equal(phoneRegistration.status, 400, '普通用户注册必须只接受邮箱');
+  assert.equal(phoneRegistration.body.error.code, 'INVALID_ACCOUNT');
+  const phoneVerificationLogin = await client.json('/api/auth/verification-codes', {
+    method: 'POST',
+    body: { identifier: '13800138000', purpose: 'login' },
+  });
+  assert.equal(phoneVerificationLogin.status, 400, '验证码登录必须只接受邮箱');
+  assert.equal(phoneVerificationLogin.body.error.code, 'IDENTIFIER_INVALID');
+  const phonePasswordReset = await client.json('/api/auth/password-reset/request', {
+    method: 'POST',
+    body: { identifier: '13800138000' },
+  });
+  assert.equal(phonePasswordReset.status, 400, '找回密码必须只接受邮箱');
+  assert.equal(phonePasswordReset.body.error.code, 'IDENTIFIER_INVALID');
+  const phonePasswordLogin = await client.json('/api/auth/login', {
+    method: 'POST',
+    body: { identifier: '13800138000', password: 'PhoneAccount1' },
+  });
+  assert.equal(phonePasswordLogin.status, 401, '普通用户密码登录必须只接受邮箱');
+  assert.equal(phonePasswordLogin.body.error.code, 'INVALID_CREDENTIALS');
   const publicPaymentPlans = await client.json('/api/payments/plans');
   assert.equal(publicPaymentPlans.status, 200);
   assert.equal(publicPaymentPlans.body.data.plans.length, 9);
@@ -1122,6 +1151,106 @@ try {
   assert.equal(successfulJob.data.creditsRemaining, 2);
   assert.equal(successfulJob.data.providerId, 'environment-fallback');
   assert.equal(successfulJob.data.lessonPlan.schemaVersion, 'lesson-plan.v1');
+  assert.match(successfulJob.data.lessonId, /^lesson-[A-Za-z0-9._~-]+$/);
+  assert.equal(successfulJob.data.lesson.id, successfulJob.data.lessonId);
+  assert.equal(successfulJob.data.lesson.sourceFiles[0].name, 'async-material.png');
+  const persistedGeneratedLesson = await client.json(
+    `/api/app/lessons/${encodeURIComponent(successfulJob.data.lessonId)}`,
+    { cookie: asyncJobCookie },
+  );
+  assert.equal(persistedGeneratedLesson.status, 200);
+  assert.equal(
+    persistedGeneratedLesson.body.data.lesson.lessonPlan.schemaVersion,
+    'lesson-plan.v1',
+    'completed generation jobs must persist the canonical lesson on the server',
+  );
+  const generatedLessonHiddenFromOtherUser = await client.json(
+    `/api/app/lessons/${encodeURIComponent(successfulJob.data.lessonId)}`,
+    { cookie: userCookie },
+  );
+  assert.equal(generatedLessonHiddenFromOtherUser.status, 404);
+  const generatedLessonList = await client.json('/api/app/lessons', { cookie: asyncJobCookie });
+  assert.equal(generatedLessonList.status, 200);
+  const generatedLessonSummary = generatedLessonList.body.data.lessons.find(
+    (item) => item.id === successfulJob.data.lessonId,
+  );
+  assert.equal(generatedLessonSummary.exerciseCount, successfulJob.data.lessonPlan.exercises.length);
+  assert.equal(
+    generatedLessonSummary.durationMinutes,
+    successfulJob.data.lessonPlan.metadata.durationMinutes,
+  );
+
+  const sharedLegacyLessonId = 'lesson-shared-legacy-id';
+  const asyncLegacyLesson = await client.json('/api/app/lessons', {
+    method: 'POST',
+    cookie: asyncJobCookie,
+    body: {
+      id: sharedLegacyLessonId,
+      lessonPlan: structuredClone(baseLessonPlan),
+      title: 'Async user lesson',
+      customSections: [{ id: 'reflection', title: 'Reflection', content: 'Initial content' }],
+      sectionOrder: ['objectives', 'custom:reflection'],
+      sectionTitles: { objectives: 'Objectives', 'custom:reflection': 'Reflection' },
+      sourceFiles: [{ name: 'chapter.png', type: 'image/png', size: 123 }],
+    },
+  });
+  assert.equal(asyncLegacyLesson.status, 201, JSON.stringify(asyncLegacyLesson.body));
+  const otherLegacyLesson = await client.json('/api/app/lessons', {
+    method: 'POST',
+    cookie: userCookie,
+    body: {
+      id: sharedLegacyLessonId,
+      lessonPlan: structuredClone(baseLessonPlan),
+      title: 'Other user lesson',
+    },
+  });
+  assert.equal(
+    otherLegacyLesson.status,
+    201,
+    'legacy ids only need to be unique inside one user account',
+  );
+  const duplicateLegacyLesson = await client.json('/api/app/lessons', {
+    method: 'POST',
+    cookie: asyncJobCookie,
+    body: { id: sharedLegacyLessonId, lessonPlan: structuredClone(baseLessonPlan) },
+  });
+  assert.equal(duplicateLegacyLesson.status, 409);
+  assert.equal(duplicateLegacyLesson.body.error.code, 'LESSON_ID_CONFLICT');
+  const updatedLegacyLesson = await client.json(
+    `/api/app/lessons/${encodeURIComponent(sharedLegacyLessonId)}`,
+    {
+      method: 'PUT',
+      cookie: asyncJobCookie,
+      body: {
+        title: 'Async user lesson updated',
+        customSections: [{ id: 'reflection', title: 'Reflection', content: 'Updated content' }],
+      },
+    },
+  );
+  assert.equal(updatedLegacyLesson.status, 200);
+  assert.equal(updatedLegacyLesson.body.data.lesson.title, 'Async user lesson updated');
+  assert.equal(updatedLegacyLesson.body.data.lesson.customSections[0].content, 'Updated content');
+  const otherUsersSameLegacyLesson = await client.json(
+    `/api/app/lessons/${encodeURIComponent(sharedLegacyLessonId)}`,
+    { cookie: userCookie },
+  );
+  assert.equal(otherUsersSameLegacyLesson.status, 200);
+  assert.equal(otherUsersSameLegacyLesson.body.data.lesson.title, 'Other user lesson');
+  const deletedLegacyLesson = await client.json(
+    `/api/app/lessons/${encodeURIComponent(sharedLegacyLessonId)}`,
+    { method: 'DELETE', cookie: asyncJobCookie, body: {} },
+  );
+  assert.equal(deletedLegacyLesson.status, 200);
+  const deletedLegacyLessonMissing = await client.json(
+    `/api/app/lessons/${encodeURIComponent(sharedLegacyLessonId)}`,
+    { cookie: asyncJobCookie },
+  );
+  assert.equal(deletedLegacyLessonMissing.status, 404);
+  const otherUsersLegacyLessonStillExists = await client.json(
+    `/api/app/lessons/${encodeURIComponent(sharedLegacyLessonId)}`,
+    { cookie: userCookie },
+  );
+  assert.equal(otherUsersLegacyLessonStillExists.status, 200);
   const removedAsyncMaterial = await client.json(`/api/app/material-uploads/${encodeURIComponent(asyncAttachmentId)}`, {
     cookie: asyncJobCookie,
   });
@@ -2260,7 +2389,7 @@ try {
     },
   });
   assert.equal(providerModelProbe.status, 200);
-  assert.equal(providerModelProbe.body.data.result.recommendedAdapter, 'openai_responses');
+  assert.equal(providerModelProbe.body.data.result.recommendedAdapter, 'openai_chat_completions');
   assert.deepEqual(providerModelProbe.body.data.result.selectedModel.capabilities, {
     text: true,
     vision: true,
@@ -2408,7 +2537,7 @@ try {
     body: {},
   });
   assert.equal(multimodalProviderTest.status, 200);
-  assert.equal(multimodalProviderTest.body.data.result.recommendedAdapter, 'openai_responses');
+  assert.equal(multimodalProviderTest.body.data.result.recommendedAdapter, 'openai_chat_completions');
   assert.equal(multimodalProviderTest.body.data.result.selectedModel.capabilities.image, true);
   assert.equal(multimodalProviderTest.body.data.result.selectedModel.capabilities.pdf, true);
 
@@ -2438,8 +2567,8 @@ try {
   });
   assert.equal(multimodalGeneration.status, 200, JSON.stringify(multimodalGeneration.body));
   assert.equal(multimodalGeneration.body.data.providerId, multimodalProviderId, '图片请求必须跳过仅文字的更高优先级通道');
-  assert.equal(upstreamRequests.at(-1).endpoint, 'responses');
-  assert.equal(upstreamRequests.at(-1).inputKinds.includes('input_image'), true);
+  assert.equal(upstreamRequests.at(-1).endpoint, 'chat/completions');
+  assert.equal(upstreamRequests.at(-1).inputKinds.includes('image_url'), true);
 
   const providersAfterUsage = await client.json('/api/admin/providers', { cookie: adminCookie });
   const usedProvider = providersAfterUsage.body.data.providers.find((item) => item.id === multimodalProviderId);
@@ -2833,6 +2962,38 @@ try {
   assert.equal(credentialsAfterChange.status, 200);
   assert.equal(credentialsAfterChange.body.data.credentials.username, 'admin-renamed');
 
+  const processBeforeRestart = appProcess;
+  const processExited = new Promise((resolveExit) => processBeforeRestart.once('exit', resolveExit));
+  processBeforeRestart.kill();
+  await Promise.race([processExited, delay(3_000)]);
+  assert.equal(
+    processBeforeRestart.exitCode !== null || processBeforeRestart.signalCode !== null,
+    true,
+    'application process must stop before restart',
+  );
+  appProcess = spawn(process.execPath, ['server/index.mjs'], {
+    cwd: root,
+    env: commonEnv,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  appLog = '';
+  appProcess.stdout.on('data', (chunk) => { appLog += chunk; });
+  appProcess.stderr.on('data', (chunk) => { appLog += chunk; });
+  await waitForHealth(appPort, () => appLog);
+  const lessonAfterProcessRestart = await client.json(
+    `/api/app/lessons/${encodeURIComponent(successfulJob.data.lessonId)}`,
+    { cookie: asyncJobCookie },
+  );
+  assert.equal(lessonAfterProcessRestart.status, 200);
+  assert.equal(lessonAfterProcessRestart.body.data.lesson.id, successfulJob.data.lessonId);
+  const generationJobAfterProcessRestart = await client.json(
+    `/api/ai/generation-jobs/${encodeURIComponent(successfulJobId)}`,
+    { cookie: asyncJobCookie },
+  );
+  assert.equal(generationJobAfterProcessRestart.status, 200);
+  assert.equal(generationJobAfterProcessRestart.body.data.job.status, 'completed');
+  assert.equal(generationJobAfterProcessRestart.body.data.job.data.lessonId, successfulJob.data.lessonId);
+
   const logout = await client.json('/api/auth/logout', { method: 'POST', cookie: userCookie, body: {} });
   assert.equal(logout.status, 200);
   assert.match(logout.headers.get('set-cookie'), /Max-Age=0/);
@@ -2864,6 +3025,8 @@ try {
       systemSettingsRegistrationAndPrivacyVersioning: true,
       verificationEmailSubject: true,
       explicitAdminCredentialManagement: true,
+      serverLessonPersistenceAndIsolation: true,
+      compatibleProviderChatRouting: true,
     },
   }));
 } finally {

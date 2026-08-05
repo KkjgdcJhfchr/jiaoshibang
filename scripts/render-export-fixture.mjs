@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
-import { sampleLesson } from '../src/data/sampleLesson.js';
+import { lessonExportFixture } from '../server/fixtures/lesson-export-fixture.mjs';
 import { exportLessonDocument } from '../server/lesson-export-service.mjs';
 
 const outputArgument = process.argv[2];
@@ -12,7 +12,7 @@ if (!outputArgument) {
   const outputDirectory = path.resolve(outputArgument);
   await mkdir(outputDirectory, { recursive: true });
 
-  const lesson = structuredClone(sampleLesson);
+  const lesson = structuredClone(lessonExportFixture);
   const docx = await exportLessonDocument(lesson, 'docx');
   const docxPath = path.join(outputDirectory, docx.filename);
   await writeFile(docxPath, docx.buffer);

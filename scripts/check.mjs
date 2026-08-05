@@ -9,7 +9,6 @@ const required = [
   'src/main.jsx',
   'src/admin-main.jsx',
   'src/App.jsx',
-  'src/data/sampleLesson.js',
   'src/teacher/WorkflowPages.jsx',
   'src/admin/DomainManagementPages.jsx',
   'server/index.mjs',
@@ -20,6 +19,7 @@ const required = [
   'server/lesson-export-docx.mjs',
   'server/lesson-export-pdf.mjs',
   'server/lesson-export-service.mjs',
+  'server/fixtures/lesson-export-fixture.mjs',
   'server/teaching-workflow.mjs',
   'scripts/bootstrap.sh',
   'shared/lesson-plan.schema.json',
@@ -112,6 +112,12 @@ if (!authSubmitLine?.includes('(register && siteConfig.registrationOpen === fals
 }
 if (authSubmitLine.includes('|| siteConfig.registrationOpen === false ||') || authSubmitLine.includes(': siteConfig.registrationOpen === false ?')) {
   throw new Error('登录按钮不得直接受 registrationOpen 开关控制');
+}
+for (const forbiddenCopy of ['手机号或邮箱', '手机号、邮箱或管理员账号', '通过注册手机号或邮箱']) {
+  if (publicPages.includes(forbiddenCopy)) throw new Error(`用户注册、登录和找回密码不得再显示手机入口: ${forbiddenCopy}`);
+}
+if (!publicPages.includes("if (!EMAIL_PATTERN.test(value)) return '请输入有效的邮箱地址。';")) {
+  throw new Error('普通用户账号表单必须只接受邮箱地址');
 }
 if (!publicPages.includes('!endsAt || !Number.isFinite(endsAt) || endsAt >= now')) {
   throw new Error('未设置结束时间的广告必须持续展示，不能被当作已过期内容过滤');

@@ -22,11 +22,11 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { sampleLesson } from '../data/sampleLesson.js';
 import { formatStructuredBoard, isAnnotationPathAllowed, mergeAnnotationTargets, synchronizeAnnotationDerivedFields } from '../lib/annotationPatch.js';
 import { api } from '../lib/api.js';
 import { normalizeLesson } from '../lib/lessonAdapter.js';
 import { completeRevisionTransition, confirmVersionRestore, exitAnnotationSession, selectVersionPreview } from '../lib/lessonEditorSession.js';
+import { lessonRecordFromResponse, serializeLessonRecord } from '../lib/lessonRecords.js';
 import { navigate } from '../lib/navigation.jsx';
 import {
   filterRevisionSelection,
@@ -40,6 +40,7 @@ import {
 import { useSiteConfig } from '../lib/site-config.jsx';
 import { toCanonicalLesson } from '../lib/trainingAdapter.js';
 import { Button, Modal, Toast } from './components.jsx';
+import { useLessonRecord } from './useLessonRecords.js';
 
 const baseOutline = [
   ['objectives', '教学目标'], ['learner', '学情分析'], ['keypoints', '重点难点'], ['preparation', '教学准备'],
@@ -115,27 +116,32 @@ function sourceReferenceLabel(reference) {
   return excerpt ? `${location}：${excerpt}` : location;
 }
 
-function loadLesson(isDemo) {
-  if (isDemo) return { ...normalizeLesson(sampleLesson), custom_sections: [], section_order: [] };
-  try {
-    const raw = JSON.parse(localStorage.getItem('current-lesson')) || sampleLesson;
-    return {
-      ...normalizeLesson(raw),
-      source_files: raw.source_files || [],
-      custom_sections: Array.isArray(raw.custom_sections) ? raw.custom_sections : [],
-      section_order: Array.isArray(raw.section_order) ? raw.section_order : [],
-    };
-  } catch {
-    return { ...normalizeLesson(sampleLesson), custom_sections: [], section_order: [] };
-  }
-}
-
-function saveLesson(lesson, isDemo) {
-  if (!isDemo) localStorage.setItem('current-lesson', JSON.stringify(lesson));
-}
-
-function loadCanonicalLesson() {
-  try { return JSON.parse(localStorage.getItem('current-lesson-canonical')); } catch { return null; }
+function emptyEditorLesson() {
+  return {
+    id: '',
+    metadata: { title: '', subject: '', grade: '', chapter: '', duration_minutes: 45, class_profile: '' },
+    source_summary: '',
+    core_competencies: [],
+    learning_objectives: [],
+    learner_analysis: { known: '', challenge: '', strategy: '', class_characteristics: '' },
+    key_points: [],
+    difficult_points: [],
+    preparation: { teacher: [], students: [], materials: [] },
+    timeline: [],
+    differentiation: { support: [], standard: [], challenge: [] },
+    assessment_plan: { diagnostic: [], formative: [], summative: [], success_criteria: [] },
+    exercises: [],
+    homework: [],
+    board_design: '',
+    board_design_structured: { layout_description: '', sections: [] },
+    safety_and_inclusion: [],
+    reflection_prompts: [],
+    source_files: [],
+    custom_sections: [],
+    section_order: [],
+    section_titles: {},
+    updated_at: '',
+  };
 }
 
 function downloadBlob(blob, name) {
@@ -191,9 +197,13 @@ function SectionHeading({ number, title, editable = false, onCommit, annotationP
 
 export function LessonEditor({ path }) {
   const { siteName } = useSiteConfig();
-  const isDemo = path === '/app/lesson/lesson-spring-001';
-  const [lesson, setLesson] = useState(() => loadLesson(isDemo));
+  const loadedRecord = useLessonRecord(path, { latestWhenMissing: false });
+  const lessonId = loadedRecord.lessonId;
+  const [lesson, setLesson] = useState(emptyEditorLesson);
   const lessonRef = useRef(lesson);
+  const canonicalLessonRef = useRef(null);
+  const saveChainRef = useRef(Promise.resolve());
+  const loadedLessonIdRef = useRef('');
   const lessonVersionRef = useRef(0);
   const [selected, setSelected] = useState('timeline');
   const [manualEditing, setManualEditing] = useState(false);
@@ -253,10 +263,20 @@ export function LessonEditor({ path }) {
   const revisionScopeSignature = currentCustomIds.join('\u0000');
   const exerciseCount = lesson.exercises?.length || 0;
   const currentVersion = lessonVersionRef.current + 1;
-  const sourceItems = isDemo
-    ? [{ name: '教材《春》原文', detail: '图片 · 6 页', mark: '书' }, { name: '七年级语文课程标准', detail: 'PDF', mark: '纲' }]
-    : (lesson.source_files || []).map((file) => ({ name: file.name, detail: `${file.type || '文件'} · 本次使用`, mark: '源' }));
+  const sourceItems = (lesson.source_files || []).map((file) => ({ name: file.name, detail: `${file.type || '文件'} · 本次使用`, mark: '源' }));
   const totalMinutes = useMemo(() => (lesson.timeline || []).reduce((sum, item) => sum + Number(item.duration_minutes || 0), 0), [lesson.timeline]);
+
+  useEffect(() => {
+    if (!loadedRecord.lesson || loadedLessonIdRef.current === loadedRecord.lessonId) return;
+    loadedLessonIdRef.current = loadedRecord.lessonId;
+    canonicalLessonRef.current = loadedRecord.canonical;
+    lessonRef.current = loadedRecord.lesson;
+    lessonVersionRef.current = 0;
+    historyRef.current = [];
+    redoRef.current = [];
+    setLesson(loadedRecord.lesson);
+    setHistoryVersion((value) => value + 1);
+  }, [loadedRecord.lesson, loadedRecord.lessonId, loadedRecord.canonical]);
 
   function replaceAnnotations(updater) {
     const current = annotationsRef.current;
@@ -310,9 +330,10 @@ export function LessonEditor({ path }) {
   }, [revisionScopeSignature]);
 
   useEffect(() => {
+    if (!loadedRecord.lesson) return;
     if (storedOutlineSignature === normalizedOutlineSignature) return;
     updateLesson((current) => ({ ...current, section_order: normalizedOutlineKeys }), { recordHistory: false });
-  }, [storedOutlineSignature, normalizedOutlineSignature]);
+  }, [loadedRecord.lesson, storedOutlineSignature, normalizedOutlineSignature]);
 
   useEffect(() => {
     if (!manualEditing) return undefined;
@@ -328,6 +349,24 @@ export function LessonEditor({ path }) {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [manualEditing, revising]);
 
+  function persistLesson(snapshot, { reportError = true } = {}) {
+    if (!lessonId || !loadedRecord.lesson) return Promise.reject(new Error('教案尚未加载完成。'));
+    const payload = serializeLessonRecord(snapshot, canonicalLessonRef.current);
+    const request = saveChainRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        const response = await api.updateLesson(lessonId, payload);
+        const record = lessonRecordFromResponse(response);
+        canonicalLessonRef.current = record.lessonPlan || record.lesson_plan || payload.lessonPlan;
+        return response;
+      });
+    saveChainRef.current = request;
+    if (reportError) {
+      request.catch((error) => setToast(error.message || '教案保存失败，请稍后重试。'));
+    }
+    return request;
+  }
+
   function updateLesson(updater, { recordHistory = true } = {}) {
     const current = lessonRef.current;
     const next = typeof updater === 'function' ? updater(current) : updater;
@@ -337,7 +376,7 @@ export function LessonEditor({ path }) {
     lessonVersionRef.current += 1;
     setLesson(next);
     setHistoryVersion((value) => value + 1);
-    saveLesson(next, isDemo);
+    void persistLesson(next).catch(() => undefined);
   }
 
   function mutateLesson(mutator) {
@@ -373,7 +412,7 @@ export function LessonEditor({ path }) {
     lessonRef.current = restored;
     lessonVersionRef.current += 1;
     setLesson(restored);
-    saveLesson(restored, isDemo);
+    void persistLesson(restored).catch(() => undefined);
     setHistoryVersion((value) => value + 1);
     setToast('已撤销上一步编辑');
   }
@@ -386,7 +425,7 @@ export function LessonEditor({ path }) {
     lessonRef.current = restored;
     lessonVersionRef.current += 1;
     setLesson(restored);
-    saveLesson(restored, isDemo);
+    void persistLesson(restored).catch(() => undefined);
     setHistoryVersion((value) => value + 1);
     setToast('已重做上一步编辑');
   }
@@ -713,7 +752,7 @@ export function LessonEditor({ path }) {
       clientVersion: lessonVersionRef.current,
       idempotencyKey: revisionIdempotencyKey(),
       body: {
-        lessonPlan: toCanonicalLesson({ ...currentLesson, custom_sections: [] }, loadCanonicalLesson()),
+        lessonPlan: toCanonicalLesson({ ...currentLesson, custom_sections: [] }, canonicalLessonRef.current),
         sectionKeys: standardKeys,
         customSections: (currentLesson.custom_sections || []).filter((item) => customIds.includes(item.id)),
         feedback: instruction,
@@ -926,27 +965,30 @@ export function LessonEditor({ path }) {
   }
 
   async function submitTrainingCandidate() {
-    if (isDemo || candidateSubmitted.current) return;
+    if (candidateSubmitted.current) return;
     try {
-      await api.submitTrainingCandidate({ lessonPlan: toCanonicalLesson(lessonRef.current, loadCanonicalLesson()), rightsConfirmed: localStorage.getItem('current-lesson-rights-confirmed') === 'true' });
+      await api.submitTrainingCandidate({ lessonPlan: toCanonicalLesson(lessonRef.current, canonicalLessonRef.current), rightsConfirmed: true });
       candidateSubmitted.current = true;
     } catch {
       // 归档失败不影响教师保存与导出。
     }
   }
 
-  function saveCurrent() {
-    saveLesson(lessonRef.current, isDemo);
-    setToast('教案已保存');
-    void submitTrainingCandidate();
+  async function saveCurrent() {
+    try {
+      await persistLesson(lessonRef.current, { reportError: false });
+      setToast('教案已保存到当前账户');
+      void submitTrainingCandidate();
+    } catch (error) {
+      setToast(error.message || '教案保存失败，请稍后重试。');
+    }
   }
 
   function toggleManualEditing() {
     if (revising) return;
     if (manualEditing) {
       setManualEditing(false);
-      saveCurrent();
-      setToast('手动编辑已完成并保存');
+      void saveCurrent();
       return;
     }
     clearAnnotationSession();
@@ -978,6 +1020,18 @@ export function LessonEditor({ path }) {
   const pendingAnnotationItems = pendingAnnotations();
   const allPendingAnnotationsReady = pendingAnnotationItems.length > 0 && pendingAnnotationItems.every((item) => item.instruction.trim() && outlineLabelMap.has(item.sectionKey) && isAnnotationPathAllowed(item.sectionKey, item.targetPath, lesson));
 
+  if (!loadedRecord.lesson) {
+    return (
+      <main className="auth-session-check" role={loadedRecord.error ? 'alert' : 'status'} aria-live="polite">
+        <BookOpen size={31} />
+        {loadedRecord.loading ? <LoaderCircle className="spin" size={28} /> : null}
+        <h2>{loadedRecord.loading ? '正在读取教案' : '无法打开这份教案'}</h2>
+        <p>{loadedRecord.loading ? '正在从你的账户同步完整内容，请稍候。' : loadedRecord.error || '这份教案不存在，或不属于当前账户。'}</p>
+        {!loadedRecord.loading ? <div><Button variant="secondary" onClick={() => void loadedRecord.reload()}>重新加载</Button><Button onClick={() => navigate('/app/plans')}>返回我的教案</Button></div> : null}
+      </main>
+    );
+  }
+
   return (
     <div className="editor-shell">
       <header className="editor-topbar">
@@ -989,7 +1043,7 @@ export function LessonEditor({ path }) {
       <div className="editor-layout">
         <aside className={`editor-leftbar ${outlineDrawerOpen ? 'is-open' : ''}`}>
           <header><button onClick={() => navigate('/app')} aria-label="返回工作台"><ArrowLeft size={17} /></button><b>教案大纲</b><button aria-label="新增教案模块" title="新增教案模块" onClick={() => { setOutlineDrawerOpen(false); setNewSectionOpen(true); }} disabled={revising}><Plus size={18} /></button><button className="outline-drawer-close" onClick={() => setOutlineDrawerOpen(false)} aria-label="关闭教案大纲"><X size={18} /></button></header>
-          <div className="mobile-editor-tools"><button type="button" onClick={() => { setOutlineDrawerOpen(false); setRegenerateOpen(true); }} disabled={revising}><RotateCcw size={16} />重新生成</button><button type="button" className={`annotation-mode-button${assistantEnabled ? ' is-active' : ''}`} onClick={toggleAnnotationMode} disabled={revising} aria-pressed={assistantEnabled}><MessageSquarePlus size={16} />{assistantEnabled ? '正在注释' : '注释教案'}</button><button type="button" className={`editor-mode-button${manualEditing ? ' is-active' : ''}`} onClick={toggleManualEditing} disabled={revising} aria-pressed={manualEditing}><Pencil size={16} />{manualEditing ? '完成编辑' : '编辑教案'}</button><button type="button" onClick={() => { setOutlineDrawerOpen(false); setVersionsOpen(true); setHistorySelection(null); }} disabled={revising}><History size={16} />版本历史</button><button type="button" onClick={() => { saveCurrent(); setOutlineDrawerOpen(false); }} disabled={revising}><CheckCircle2 size={16} />保存教案</button></div>
+          <div className="mobile-editor-tools"><button type="button" onClick={() => { setOutlineDrawerOpen(false); setRegenerateOpen(true); }} disabled={revising}><RotateCcw size={16} />重新生成</button><button type="button" className={`annotation-mode-button${assistantEnabled ? ' is-active' : ''}`} onClick={toggleAnnotationMode} disabled={revising} aria-pressed={assistantEnabled}><MessageSquarePlus size={16} />{assistantEnabled ? '正在注释' : '注释教案'}</button><button type="button" className={`editor-mode-button${manualEditing ? ' is-active' : ''}`} onClick={toggleManualEditing} disabled={revising} aria-pressed={manualEditing}><Pencil size={16} />{manualEditing ? '完成编辑' : '编辑教案'}</button><button type="button" onClick={() => { setOutlineDrawerOpen(false); setVersionsOpen(true); setHistorySelection(null); }} disabled={revising}><History size={16} />版本历史</button><button type="button" onClick={() => { void saveCurrent(); setOutlineDrawerOpen(false); }} disabled={revising}><CheckCircle2 size={16} />保存教案</button></div>
           <nav aria-label="教案章节">{fullOutline.map(([key, label], index) => <div className="outline-sort-row" key={key}><div data-outline-key={key} draggable={!revising && editingOutlineKey !== key} role="button" tabIndex={0} aria-current={selected === key ? 'location' : undefined} className={`outline-sort-item${selected === key ? ' active' : ''}${draggedOutlineKey === key ? ' is-dragging' : ''}${dragOverOutlineKey === key && draggedOutlineKey !== key ? ' is-drag-over' : ''}`} onDragStart={(event) => { setDraggedOutlineKey(key); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', key); }} onDragOver={(event) => { event.preventDefault(); setDragOverOutlineKey(key); event.dataTransfer.dropEffect = 'move'; }} onDrop={(event) => { event.preventDefault(); reorderOutline(key); }} onDragEnd={() => { setDraggedOutlineKey(null); setDragOverOutlineKey(null); }} onClick={() => { if (editingOutlineKey !== key) scrollTo(key); }} onDoubleClick={(event) => beginOutlineTitleEdit(event, key, label)} onKeyDown={(event) => { if (editingOutlineKey === key) return; if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); scrollTo(key); } }} title="拖动排序；双击标题可修改"><GripVertical className="outline-drag-handle" size={15} aria-hidden="true" onPointerDown={(event) => beginOutlinePointerDrag(event, key)} onPointerMove={moveOutlinePointerDrag} onPointerUp={(event) => finishOutlinePointerDrag(event)} onPointerCancel={(event) => finishOutlinePointerDrag(event, true)} /><span className="outline-index">{index + 1}</span>{editingOutlineKey === key ? <input className="outline-title-input" autoFocus value={editingOutlineValue} maxLength={30} aria-label={`修改${label}标题`} onClick={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()} onChange={(event) => setEditingOutlineValue(event.target.value)} onBlur={() => commitOutlineTitleEdit(key)} onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Enter') event.currentTarget.blur(); if (event.key === 'Escape') cancelOutlineTitleEdit(); }} /> : <span className="outline-title" onDoubleClick={(event) => beginOutlineTitleEdit(event, key, label)}>{label}</span>}<Check size={14} /></div></div>)}</nav>
           <div className="source-materials"><button onClick={() => setSourcesOpen((value) => !value)} aria-expanded={sourcesOpen}><b>素材来源（{sourceItems.length}）</b><ChevronDown size={16} className={sourcesOpen ? 'open' : ''} /></button>{sourcesOpen ? <div className="source-material-list">{sourceItems.map((file, index) => <article key={`${file.name}-${index}`}><span className="source-thumb guide">{file.mark}</span><p><b title={file.name}>{file.name}</b><small>{file.detail}</small></p></article>)}{!sourceItems.length ? <p className="source-empty">当前教案没有素材记录。</p> : null}</div> : null}</div>
         </aside>
@@ -1000,7 +1054,7 @@ export function LessonEditor({ path }) {
             {assistantEnabled ? <header className="comparison-pane-header"><span>原版教案</span><small>点击左侧教案正文添加注释</small></header> : null}
           <article className="lesson-document">
             <header className="document-header"><div><div className="document-title-line"><EditableText as="h1" value={title} editable={editable} multiline={false} aria-label="教案标题" onCommit={(value) => mutateLesson((next) => { next.metadata.title = value; })} />{editable ? <Pencil size={16} /> : null}</div><p><span>年级：<EditableText value={lesson.metadata?.grade} editable={editable} multiline={false} aria-label="年级" onCommit={(value) => mutateLesson((next) => { next.metadata.grade = value; })} /></span><span>学科：<EditableText value={lesson.metadata?.subject} editable={editable} multiline={false} aria-label="学科" onCommit={(value) => mutateLesson((next) => { next.metadata.subject = value; })} /></span><span>课时：<EditableText value={String(lesson.metadata?.duration_minutes || 45)} editable={editable} multiline={false} aria-label="课时分钟数" onCommit={(value) => mutateLesson((next) => { next.metadata.duration_minutes = Math.max(1, Number.parseInt(value, 10) || 45); })} /> 分钟</span></p><p className="document-meta-extra"><span>教材版本：<EditableText value={lesson.metadata?.textbook_edition || ''} editable={editable} multiline={false} aria-label="教材版本" onCommit={(value) => mutateLesson((next) => { next.metadata.textbook_edition = value; })} /></span><span>章节：<EditableText value={lesson.metadata?.chapter || ''} editable={editable} multiline={false} aria-label="章节名称" onCommit={(value) => mutateLesson((next) => { next.metadata.chapter = value; })} /></span></p></div></header>
-            <nav className="lesson-workflow-nav" aria-label="教案知识点组卷工作流"><span className="active"><FileText size={16} /><b>1. 教案设计</b><small>当前步骤</small></span><button onClick={() => navigate(`/app/lesson/${lesson.id || 'current'}/knowledge`)}><Network size={16} /><b>2. 知识点图谱</b><small>提取与校验</small></button><button onClick={() => navigate('/app/papers')}><ScrollText size={16} /><b>3. 智能组卷</b><small>选题与导出</small></button></nav>
+            <nav className="lesson-workflow-nav" aria-label="教案知识点组卷工作流"><span className="active"><FileText size={16} /><b>1. 教案设计</b><small>当前步骤</small></span><button onClick={() => navigate(`/app/lesson/${lessonId}/knowledge`)}><Network size={16} /><b>2. 知识点图谱</b><small>提取与校验</small></button><button onClick={() => navigate(`/app/papers/${lessonId}`)}><ScrollText size={16} /><b>3. 智能组卷</b><small>选题与导出</small></button></nav>
 
             <div className={`lesson-section-order${assistantEnabled ? ' is-annotating' : ''}`} style={{ display: 'flex', flexDirection: 'column' }} onMouseMove={moveAnnotationPointer} onMouseLeave={() => setAnnotationPointer(null)} onClick={startAnnotation}>
             <section id="lesson-objectives" data-section-key="objectives" className="document-section" style={{ order: outlineOrderMap.get('objectives') }}>

@@ -105,15 +105,31 @@ try {
   );
 
   currentTime += 60_001;
-  await verification.issue({
-    identifier: '13800138000',
-    purpose: 'login',
-    deliver: async ({ code }) => { deliveredCode = code; },
-  });
-  assert.throws(
-    () => verification.verify({ identifier: '13800138000', purpose: 'login', code: '000000' }),
-    (error) => error.code === 'VERIFICATION_CODE_INVALID',
+  await assert.rejects(
+    verification.issue({
+      identifier: '13800138000',
+      purpose: 'login',
+      deliver: async ({ code }) => { deliveredCode = code; },
+    }),
+    (error) => error.code === 'IDENTIFIER_INVALID',
   );
+  let checkoutChannel = '';
+  const checkoutCode = await verification.issue({
+    identifier: '13800138000',
+    purpose: 'checkout',
+    deliver: async ({ channel, code }) => {
+      checkoutChannel = channel;
+      deliveredCode = code;
+    },
+  });
+  assert.equal(checkoutCode.channel, 'sms');
+  assert.equal(checkoutChannel, 'sms');
+  assert.equal(verification.verify({
+    identifier: '13800138000',
+    purpose: 'checkout',
+    verificationId: checkoutCode.verificationId,
+    code: deliveredCode,
+  }).verified, true);
 
   const smtpConfig = buildStoredSmtpConfig({
     host: 'smtp.example.com',

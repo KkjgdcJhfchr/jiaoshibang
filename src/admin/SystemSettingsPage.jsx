@@ -131,8 +131,8 @@ export function SystemSettingsPage({ onNotice = () => {} }) {
             onChange={(value) => update('registrationOpen', value)}
           />
           <SettingSwitch
-            label="注册必须验证手机号或邮箱"
-            description="开启后必须输入一次性验证码；请先在“安全与通信”配置至少一个可用发信通道。"
+            label="注册必须验证邮箱"
+            description="开启后必须输入邮箱收到的一次性验证码；请先在“安全与通信”配置邮件发送服务。"
             checked={settings.registrationVerificationRequired}
             disabled={loading || saving}
             onChange={(value) => update('registrationVerificationRequired', value)}

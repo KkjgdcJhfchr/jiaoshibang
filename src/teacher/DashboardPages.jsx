@@ -31,11 +31,12 @@ import {
   X,
 } from 'lucide-react';
 import { api } from '../lib/api.js';
+import { lessonRecordFromResponse } from '../lib/lessonRecords.js';
 import { navigate } from '../lib/navigation.jsx';
 import { useSiteConfig } from '../lib/site-config.jsx';
 import { accountDisplayName, Button, EmptyState, Field, Modal, Status, TeacherShell, Toast, useAccount } from './components.jsx';
+import { useLessonList } from './useLessonRecords.js';
 
-const LESSON_LIBRARY_KEY = 'teacher-helper.lesson-library.v2';
 const LESSON_DRAFT_VERSION = 2;
 const GENERATION_JOB_STORAGE_KEY = 'teacher-helper.generation-job.v1';
 const GENERATION_JOB_STORAGE_VERSION = 1;
@@ -51,19 +52,21 @@ let pendingGeneration = null;
 let generationJobMemoryState = null;
 const MATERIAL_UPLOAD_CONCURRENCY = 3;
 
-function safeRead(key, fallback) {
-  try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
+function saveDraft(draft, ownerRef) {
+  if (!ownerRef) return;
+  sessionStorage.setItem('lesson-draft', JSON.stringify({
+    ...draft,
+    ownerRef,
+    draftVersion: LESSON_DRAFT_VERSION,
+  }));
 }
 
-function saveDraft(draft) {
-  sessionStorage.setItem('lesson-draft', JSON.stringify({ ...draft, draftVersion: LESSON_DRAFT_VERSION }));
-}
-
-function readDraft() {
+function readDraft(ownerRef) {
   try {
     const stored = JSON.parse(sessionStorage.getItem('lesson-draft'));
     if (!stored) return draftDefaults;
-    const { draftVersion, ...draft } = stored;
+    if (!ownerRef || String(stored.ownerRef || '') !== String(ownerRef)) return draftDefaults;
+    const { draftVersion, ownerRef: _storedOwnerRef, ...draft } = stored;
     return {
       ...draft,
       chapterTitle: draftVersion !== LESSON_DRAFT_VERSION && draft.chapterTitle === '《春》' ? '' : (draft.chapterTitle || ''),
@@ -71,14 +74,28 @@ function readDraft() {
   } catch { return draftDefaults; }
 }
 
-function readGenerationJobState() {
-  if (generationJobMemoryState) return generationJobMemoryState;
+function readGenerationJobState(ownerRef) {
+  if (generationJobMemoryState) {
+    return String(generationJobMemoryState.ownerRef || '') === String(ownerRef || '')
+      ? generationJobMemoryState
+      : null;
+  }
   try {
     const stored = JSON.parse(sessionStorage.getItem(GENERATION_JOB_STORAGE_KEY));
-    if (stored?.version !== GENERATION_JOB_STORAGE_VERSION || !stored.idempotencyKey || !stored.requestBody) return null;
+    if (stored?.version !== GENERATION_JOB_STORAGE_VERSION
+      || !ownerRef
+      || String(stored.ownerRef || '') !== String(ownerRef)
+      || !stored.idempotencyKey
+      || !stored.requestBody) return null;
     generationJobMemoryState = stored;
     return stored;
   } catch { return null; }
+}
+
+function pendingGenerationForOwner(ownerRef) {
+  if (!pendingGeneration) return null;
+  if (!ownerRef || String(pendingGeneration.ownerRef || '') !== String(ownerRef)) return null;
+  return pendingGeneration;
 }
 
 function saveGenerationJobState(state) {
@@ -117,30 +134,6 @@ function chapterPlaceholder(subject) {
   if (subject === '语文') return '例如：《春》';
   if (subject === '数学') return '例如：勾股定理';
   return '例如：填写本章节名称';
-}
-
-function loadLessonLibrary() {
-  const stored = safeRead(LESSON_LIBRARY_KEY, []);
-  return Array.isArray(stored) ? stored : [];
-}
-
-function persistCurrentLessonSummary(lesson) {
-  const metadata = lesson.metadata || {};
-  const chapter = metadata.chapter || metadata.chapterTitle || lesson.title || '新教案';
-  const title = metadata.title || `${chapter}教学设计`;
-  const subject = metadata.subject || '学科待确认';
-  const grade = metadata.grade || '年级待确认';
-  const duration = Number(metadata.duration_minutes || metadata.durationMinutes || 45);
-  const exerciseCount = Array.isArray(lesson.exercises) ? lesson.exercises.length : 0;
-  localStorage.setItem(LESSON_LIBRARY_KEY, JSON.stringify([{
-    id: lesson.id,
-    title,
-    meta: `${subject} · ${grade}`,
-    duration,
-    exerciseCount,
-    updated: '刚刚',
-    status: '已完成',
-  }]));
 }
 
 function maskAccount(value = '') {
@@ -241,7 +234,8 @@ export function DashboardPage({ path }) {
   const account = useAccount();
   const displayName = accountDisplayName(account);
   const credits = Number(account?.credits || 0);
-  const lessons = loadLessonLibrary().slice(0, 5);
+  const { lessons: lessonItems, loading: lessonsLoading, error: lessonsError, reload: reloadLessons } = useLessonList();
+  const lessons = lessonItems.slice(0, 5);
 
   return (
     <TeacherShell path={path} title={`你好，${displayName}`} subtitle="今天也一起备好一堂课。">
@@ -255,7 +249,9 @@ export function DashboardPage({ path }) {
                 <span className="lesson-name"><FileText size={17} /><b>{lesson.title}</b></span><span>{lesson.meta}</span><span>{lesson.updated}</span><span><Status>{lesson.status}</Status></span><span><MoreHorizontal size={17} /></span>
               </button>
             ))}
-            {!lessons.length ? <p className="dashboard-empty-lessons">当前浏览器还没有生成过教案，完成一次生成后会显示在这里。</p> : null}
+            {lessonsLoading ? <p className="dashboard-empty-lessons"><LoaderCircle className="spin" size={17} /> 正在读取你的教案…</p> : null}
+            {!lessonsLoading && lessonsError ? <p className="dashboard-empty-lessons">{lessonsError} <button type="button" onClick={() => void reloadLessons()}>重新加载</button></p> : null}
+            {!lessonsLoading && !lessonsError && !lessons.length ? <p className="dashboard-empty-lessons">还没有教案。创建并完成第一份教案后会显示在这里。</p> : null}
           </section>
         </div>
 
@@ -365,8 +361,10 @@ export function ReferralPage({ path }) {
 const wizardSteps = ['课程信息', '上传教材', '生成偏好', '确认生成'];
 
 export function CreateLessonPage({ path }) {
+  const account = useAccount();
+  const ownerRef = String(account?.id || account?.account || '');
   const [step, setStep] = useState(0);
-  const [draft, setDraft] = useState(() => ({ ...draftDefaults, ...readDraft() }));
+  const [draft, setDraft] = useState(() => ({ ...draftDefaults, ...readDraft(ownerRef) }));
   const [materials, setMaterials] = useState([]);
   const [activeUploads, setActiveUploads] = useState(0);
   const [dragging, setDragging] = useState(false);
@@ -544,8 +542,8 @@ export function CreateLessonPage({ path }) {
       type: item.type,
       size: item.size,
     }));
-    pendingGeneration = { ...draft, attachments, createdAt: Date.now() };
-    saveDraft({ ...draft, createdAt: Date.now() });
+    pendingGeneration = { ...draft, ownerRef, attachments, createdAt: Date.now() };
+    saveDraft({ ...draft, createdAt: Date.now() }, ownerRef);
     preserveAttachmentsRef.current = true;
     navigate('/app/generating');
   }
@@ -701,37 +699,20 @@ export function GeneratingPage({ path }) {
   function deliverCompletedJob(job, stored, token) {
     completedDelivery.current = { job, stored };
     setActive(2);
-    const lesson = job.data?.lessonPlan || job.data?.result?.lessonPlan;
-    if (!lesson) {
-      const protocolError = new Error(`后台任务已经完成，但返回结果缺少教案内容。请联系管理员并提供任务编号 ${job.id || stored.jobId}。`);
+    const record = lessonRecordFromResponse({ data: { lesson: job.data?.lesson || job.data?.result?.lesson } });
+    const lessonId = String(job.data?.lessonId || job.data?.result?.lessonId || record.id || '');
+    if (!lessonId) {
+      const protocolError = new Error(`后台任务已经完成，但服务器没有返回已保存的教案编号。请联系管理员并提供任务编号 ${job.id || stored.jobId}。`);
       protocolError.delivery = true;
       protocolError.retryable = false;
       throw protocolError;
     }
-    const generatedId = `lesson-${Date.now()}`;
-    const storedLesson = {
-      ...lesson,
-      id: generatedId,
-      source_files: stored.sourceFiles,
-      updated_at: '刚刚',
-    };
-    try {
-      localStorage.setItem('current-lesson', JSON.stringify(storedLesson));
-      localStorage.setItem('current-lesson-canonical', JSON.stringify(lesson));
-      localStorage.setItem('current-lesson-rights-confirmed', 'true');
-      persistCurrentLessonSummary(storedLesson);
-    } catch {
-      const storageError = new Error('教案已经生成且不会再次扣费，但浏览器无法保存结果。请清理浏览器存储空间后点击“重新保存并打开”。');
-      storageError.delivery = true;
-      storageError.retryable = true;
-      throw storageError;
-    }
-    saveGenerationJobState({ ...stored, deliveredLessonId: generatedId });
+    saveGenerationJobState({ ...stored, deliveredLessonId: lessonId });
     completedDelivery.current = null;
     pendingGeneration = null;
     setActive(processingSteps.length); setState('done');
     setTimeout(() => {
-      if (runToken.current === token) navigate(`/app/lesson/${generatedId}`);
+      if (runToken.current === token) navigate(`/app/lesson/${lessonId}`);
     }, 650);
   }
 
@@ -749,7 +730,7 @@ export function GeneratingPage({ path }) {
     } catch (deliveryError) {
       deliveryRetryable.current = deliveryError.retryable === true;
       setState('delivery_failed');
-      setError(deliveryError.message || '教案已经生成，但暂时无法在浏览器中保存。');
+      setError(deliveryError.message || '教案已经生成，但服务器暂时无法返回保存结果。');
     }
   }
 
@@ -761,7 +742,7 @@ export function GeneratingPage({ path }) {
     setState('running'); setError(''); setActive(0);
     let stored = null;
     try {
-      stored = readGenerationJobState();
+      stored = readGenerationJobState(ownerRef);
       if (stored?.ownerRef && ownerRef && stored.ownerRef !== ownerRef) {
         clearGenerationJobState();
         stored = null;
@@ -772,7 +753,7 @@ export function GeneratingPage({ path }) {
         return;
       }
       if (!stored) {
-        const prepared = generationRequestFromDraft(pendingGeneration || readDraft());
+        const prepared = generationRequestFromDraft(pendingGenerationForOwner(ownerRef) || readDraft(ownerRef));
         stored = {
           version: GENERATION_JOB_STORAGE_VERSION,
           ownerRef,
@@ -864,33 +845,40 @@ export function PlansPage({ path }) {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('全部');
   const [toast, setToast] = useState(null);
-  const [lessonItems, setLessonItems] = useState(loadLessonLibrary);
+  const { lessons: lessonItems, loading, error, reload } = useLessonList();
   const [pendingDelete, setPendingDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
   const lessons = useMemo(() => lessonItems.filter((lesson) => (
     (filter === '全部' || lesson.status === filter)
     && `${lesson.title} ${lesson.meta}`.toLowerCase().includes(query.toLowerCase())
   )), [lessonItems, query, filter]);
 
-  useEffect(() => {
-    localStorage.setItem(LESSON_LIBRARY_KEY, JSON.stringify(lessonItems));
-  }, [lessonItems]);
-
-  function deleteLesson() {
-    if (!pendingDelete) return;
-    setLessonItems((items) => items.filter((lesson) => lesson.id !== pendingDelete.id));
-    setPendingDelete(null);
-    setToast('已从当前浏览器的教案列表移除');
+  async function deleteLesson() {
+    if (!pendingDelete || deleting) return;
+    setDeleting(true);
+    try {
+      await api.deleteLesson(pendingDelete.id);
+      setPendingDelete(null);
+      setToast('教案已从当前账户删除');
+      await reload();
+    } catch (requestError) {
+      setToast(requestError.message || '删除失败，请稍后重试。');
+    } finally {
+      setDeleting(false);
+    }
   }
 
   return (
-    <TeacherShell path={path} title="我的教案" subtitle="查看和管理保存在当前设备上的教案。">
+    <TeacherShell path={path} title="我的教案" subtitle="查看和管理保存在当前账户中的教案，换设备登录后仍可继续使用。">
       <>
         <div className="page-toolbar"><div className="search-box"><Search size={17} /><input aria-label="搜索教案" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索教案名称、学科或章节" /></div><div className="filter-tabs" aria-label="教案状态筛选">{['全部', '已完成', '生成中', '草稿'].map((item) => <button key={item} aria-pressed={filter === item} className={filter === item ? 'active' : ''} onClick={() => setFilter(item)}>{item}</button>)}</div><Button icon={Plus} onClick={() => navigate('/app/create')}>创建教案</Button></div>
-        <p className="plans-local-note"><ShieldCheck size={15} /> 教案当前保存在这台设备上。更换设备或清理浏览器数据前，请先导出需要保留的教案。</p>
+        <p className="plans-local-note"><ShieldCheck size={15} /> 教案已安全保存在当前账户中；更换设备登录后仍会显示。</p>
         <section className="plans-table"><div className="plans-row plans-head"><span>教案</span><span>课程</span><span>更新时间</span><span>状态</span><span>操作</span></div>{lessons.map((lesson) => <div className="plans-row" key={lesson.id}><button className="plan-title" onClick={() => navigate(`/app/lesson/${lesson.id}`)}><span><FileText size={18} /></span><div><b>{lesson.title}</b><small>{lesson.duration || 45} 分钟 · {lesson.exerciseCount || 0} 道习题</small></div></button><span>{lesson.meta}</span><span>{lesson.updated}</span><span><Status>{lesson.status}</Status></span><div className="row-actions"><button title="删除教案" aria-label={`删除${lesson.title}`} onClick={() => setPendingDelete(lesson)}><Trash2 size={16} /></button></div></div>)}</section>
-        {!lessons.length ? <EmptyState title="没有找到教案" text="换一个关键词或筛选条件试试。" /> : null}
+        {loading ? <EmptyState icon={LoaderCircle} title="正在读取教案" text="正在从你的账户同步教案，请稍候。" /> : null}
+        {!loading && error ? <EmptyState title="教案暂时无法读取" text={error} action={<Button variant="secondary" onClick={() => void reload()}>重新加载</Button>} /> : null}
+        {!loading && !error && !lessons.length ? <EmptyState title="还没有教案" text="创建并完成第一份教案后会显示在这里。" /> : null}
       </>
-      <Modal open={Boolean(pendingDelete)} onClose={() => setPendingDelete(null)} title="删除教案" description="删除后，这台设备上的教案记录将无法恢复。" footer={<><Button variant="ghost" onClick={() => setPendingDelete(null)}>取消</Button><Button variant="danger" onClick={deleteLesson}>确认删除</Button></>}>
+      <Modal open={Boolean(pendingDelete)} onClose={() => { if (!deleting) setPendingDelete(null); }} title="删除教案" description="删除后，这份教案会从当前账户永久移除且无法恢复。" footer={<><Button variant="ghost" onClick={() => setPendingDelete(null)} disabled={deleting}>取消</Button><Button variant="danger" onClick={() => void deleteLesson()} disabled={deleting}>{deleting ? '正在删除…' : '确认删除'}</Button></>}>
         <p>确定删除“{pendingDelete?.title}”吗？</p>
       </Modal>
       {toast ? <Toast message={toast} onClose={() => setToast(null)} /> : null}
@@ -1121,7 +1109,7 @@ export function SettingsPage({ path }) {
     <TeacherShell path={path} title="账号设置" subtitle="查看个人资料、账号安全和订单信息。">
       <div className="settings-layout"><nav aria-label="账号设置分类">{[['profile', UserRound, '个人资料'], ['security', LockKeyhole, '账号安全'], ['orders', ReceiptText, '订单与账单']].map(([key, Icon, label]) => <button aria-current={tab === key ? 'page' : undefined} className={tab === key ? 'active' : ''} onClick={() => setTab(key)} key={key}><Icon size={17} />{label}</button>)}</nav><section className="settings-panel">
         {tab === 'profile' ? <><header><h2>个人资料</h2><p>你的账号基本信息。</p></header><div className="profile-avatar"><span className="avatar avatar-teacher">{avatarText}</span><div><b>{displayName}</b><p>{maskAccount(account?.account || account?.identifier)}</p></div></div><div className="form-grid"><Field label="显示名称"><input value={displayName} readOnly /></Field><Field label="登录账号"><input value={account?.account || account?.identifier || ''} readOnly /></Field><Field label="主要学科"><input value={account?.subject || '尚未填写'} readOnly /></Field></div></> : null}
-        {tab === 'security' ? <><header><h2>账号安全</h2><p>管理登录密码和当前会话。</p></header><div className="settings-list"><div><span><b>登录账号</b><small>{maskAccount(account?.account || account?.identifier)}</small></span></div><div><span><b>登录密码</b><small>通过注册手机号或邮箱验证身份后重设密码</small></span><Button size="sm" variant="secondary" onClick={() => navigate('/forgot-password')}>重设密码</Button></div><div><span><b>退出当前账号</b><small>退出后需要重新登录才能继续备课</small></span><Button size="sm" variant="danger" icon={LogOut} disabled={loggingOut} onClick={logout}>{loggingOut ? '正在退出…' : '退出登录'}</Button></div></div></> : null}
+        {tab === 'security' ? <><header><h2>账号安全</h2><p>管理登录密码和当前会话。</p></header><div className="settings-list"><div><span><b>登录账号</b><small>{maskAccount(account?.account || account?.identifier)}</small></span></div><div><span><b>登录密码</b><small>通过注册邮箱验证身份后重设密码</small></span><Button size="sm" variant="secondary" onClick={() => navigate('/forgot-password')}>重设密码</Button></div><div><span><b>退出当前账号</b><small>退出后需要重新登录才能继续备课</small></span><Button size="sm" variant="danger" icon={LogOut} disabled={loggingOut} onClick={logout}>{loggingOut ? '正在退出…' : '退出登录'}</Button></div></div></> : null}
         {tab === 'orders' ? <><header><h2>订单与账单</h2><p>查看会员购买记录。</p></header><EmptyState icon={ReceiptText} title="暂无订单记录" text="完成会员购买后，订单信息会显示在这里。" /></> : null}
       </section></div>
       {toast ? <Toast message={toast} onClose={() => setToast(null)} /> : null}

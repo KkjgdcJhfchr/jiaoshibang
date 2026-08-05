@@ -29,13 +29,12 @@ import { Button, Field, Logo } from './components.jsx';
 const VERIFICATION_AUTH_AVAILABLE = import.meta.env.VITE_VERIFICATION_CODE_ENABLED !== 'false';
 const PASSWORD_RECOVERY_AVAILABLE = import.meta.env.VITE_PASSWORD_RECOVERY_ENABLED !== 'false';
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const MOBILE_PATTERN = /^1[3-9]\d{9}$/;
 
 function accountError(identifier, { allowUsername = false } = {}) {
   const value = identifier.trim();
-  if (!value) return '请输入手机号或邮箱。';
+  if (!value) return allowUsername ? '请输入邮箱或管理员账号。' : '请输入邮箱。';
   if (allowUsername && /^\S{3,100}$/u.test(value)) return '';
-  if (!EMAIL_PATTERN.test(value) && !MOBILE_PATTERN.test(value)) return '请输入有效的中国大陆手机号或邮箱地址。';
+  if (!EMAIL_PATTERN.test(value)) return '请输入有效的邮箱地址。';
   return '';
 }
 
@@ -304,7 +303,7 @@ export function LandingPage() {
             <p>上传本章节的课本图片，生成真正能拿去上课的详细教案；再把教学意图沉淀为知识点，一键完成同步组卷与备课组评审。</p>
             <div className="hero-actions">
               <Button size="lg" icon={Sparkles} onClick={() => navigate('/register')}>免费生成教案</Button>
-              <button className="demo-link" onClick={() => navigate('/app/lesson/lesson-spring-001')}>查看完整教案示例 <ArrowRight size={17} /></button>
+              <button className="demo-link" onClick={() => navigate('/#workflow')}>了解生成流程 <ArrowRight size={17} /></button>
             </div>
             <div className="hero-assurances">
               <span><Check size={15} /> 首次注册送 3 次</span>
@@ -355,8 +354,8 @@ export function LandingPage() {
             <aside>{['教学目标', '教材分析', '学情分析', '重点难点', '教学过程', '课堂互动', '板书设计', '习题与答案'].map((item, i) => <span className={i === 4 ? 'active' : ''} key={item}>{String(i + 1).padStart(2, '0')} {item}</span>)}</aside>
             <article>
               <p className="document-overline">教学过程</p>
-              <h3>合作品读：把春天读出画面</h3>
-              <div className="anatomy-row"><b>教师话术</b><p>四人小组选择最喜欢的一幅“春景图”，用“感官—特点—情感”完成汇报。</p></div>
+              <h3>合作探究：把知识讲清楚</h3>
+              <div className="anatomy-row"><b>教师话术</b><p>四人小组选择一个关键知识点，用“依据—过程—结论”完成汇报。</p></div>
               <div className="anatomy-row"><b>参与目标</b><p>让每位学生都能贡献一个关键词，在合作中获得表达的安全感。</p></div>
               <div className="anatomy-row"><b>应急方案</b><p>如果学生只报修辞名称，使用“原句—改句”对照卡，从差异进入表达效果。</p></div>
             </article>
@@ -379,7 +378,7 @@ function PublicFooter() {
   return (
     <footer className="public-footer">
       <div><Logo /><p>让每一位教师，都有一位懂课堂的备课伙伴。</p></div>
-      <div><b>产品</b><Link to="/#features">功能介绍</Link><Link to="/pricing">会员方案</Link><Link to="/app/lesson/lesson-spring-001">教案示例</Link></div>
+      <div><b>产品</b><Link to="/#features">功能介绍</Link><Link to="/pricing">会员方案</Link><Link to="/app/create">开始创建教案</Link></div>
       <div><b>支持</b><Link to="/#workflow">使用帮助</Link>{supportEmail ? <a href={`mailto:${supportEmail}`}>联系我们</a> : null}</div>
       <div><b>规则</b><PrivacyPolicyLink>用户协议与隐私规则</PrivacyPolicyLink></div>
       <p className="footer-record">© 2026 {siteName}</p>
@@ -523,13 +522,13 @@ export function AuthPage({ mode = 'login' }) {
           <h2>{register ? '创建教师账号' : '欢迎回来'}</h2>
           <p>{register ? '注册即送 3 次完整教案生成额度' : '登录后继续你的备课工作'}</p>
           {register && referralCode ? <p className="referral-applied"><Gift size={15} /> 已应用好友邀请码 <b>{referralCode}</b></p> : null}
-          {register ? <div className="auth-capability-note subtle"><CircleAlert size={17} /><p><b>{codeMode ? '手机号或邮箱验证注册' : '手机号或邮箱注册'}</b><span>{codeMode ? '先获取验证码，再设置登录密码；验证码只在短时间内有效且只能使用一次。' : '设置登录密码后即可创建账号。'}</span></p></div> : <div className="auth-method-tabs" role="tablist" aria-label="登录方式">
+          {register ? <div className="auth-capability-note subtle"><CircleAlert size={17} /><p><b>{codeMode ? '邮箱验证注册' : '邮箱注册'}</b><span>{codeMode ? '验证码将发送到注册邮箱；验证通过后设置登录密码。' : '使用邮箱设置登录密码后即可创建账号。'}</span></p></div> : <div className="auth-method-tabs" role="tablist" aria-label="登录方式">
             <button type="button" role="tab" aria-selected={!codeMode} className={!codeMode ? 'active' : ''} onClick={() => { setMethod('password'); setError(''); setStatus(''); }}>密码登录</button>
             {VERIFICATION_AUTH_AVAILABLE ? <button type="button" role="tab" aria-selected={codeMode} className={codeMode ? 'active' : ''} onClick={() => { setMethod('code'); setError(''); setStatus(''); }}>验证码登录</button> : null}
           </div>}
           {codeMode && !VERIFICATION_AUTH_AVAILABLE ? <div className="auth-capability-note"><CircleAlert size={17} /><p><b>验证码登录暂不可用</b><span>请使用密码方式登录。</span></p></div> : null}
           <form onSubmit={submit} aria-busy={loading}>
-            <Field label={register || codeMode ? '手机号或邮箱' : '手机号、邮箱或管理员账号'}><input type="text" value={form.identifier} onChange={update('identifier')} autoComplete="username" placeholder={register || codeMode ? '请输入手机号或邮箱' : '请输入登录账号'} required disabled={loading} /></Field>
+            <Field label={register || codeMode ? '邮箱' : '邮箱或管理员账号'}><input type={register || codeMode ? 'email' : 'text'} value={form.identifier} onChange={update('identifier')} autoComplete="username" placeholder={register || codeMode ? '请输入邮箱' : '请输入邮箱或管理员账号'} required disabled={loading} /></Field>
             {codeMode ? <Field label="验证码"><div className="code-input"><input type="text" value={form.verificationCode} onChange={update('verificationCode')} inputMode="numeric" autoComplete="one-time-code" placeholder="6 位验证码" required disabled={loading || !VERIFICATION_AUTH_AVAILABLE || (register && !siteConfigReady)} /><button type="button" onClick={sendCode} disabled={loading || sendingCode || !VERIFICATION_AUTH_AVAILABLE || (register && !siteConfigReady)}>{!VERIFICATION_AUTH_AVAILABLE ? '暂不可用' : register && !siteConfigReady ? '读取中…' : sendingCode ? '发送中…' : '获取验证码'}</button></div></Field> : null}
             {(!codeMode || register) ? <Field label="密码"><input type="password" value={form.password} onChange={update('password')} autoComplete={register ? 'new-password' : 'current-password'} placeholder={register ? '至少 8 位，包含字母和数字' : '请输入密码'} required minLength={8} disabled={loading} /></Field> : null}
             {register ? <Field label="任教学科（可选）"><select value={form.subject} onChange={update('subject')} disabled={loading}><option>语文</option><option>数学</option><option>英语</option><option>物理</option><option>化学</option><option>其他</option></select></Field> : null}
@@ -594,10 +593,10 @@ export function PasswordRecoveryPage() {
           <div className="auth-mobile-logo"><Logo /></div>
           <Link to="/login" className="auth-back"><ArrowLeft size={16} /> 返回登录</Link>
           <h2>找回密码</h2>
-          <p>通过注册手机号或邮箱接收验证码并设置新密码。</p>
+          <p>通过注册邮箱接收验证码并设置新密码。</p>
           {!PASSWORD_RECOVERY_AVAILABLE ? <div className="auth-capability-note"><CircleAlert size={17} /><p><b>在线找回暂不可用</b><span>请联系客服协助核验账号。</span></p></div> : null}
           <form onSubmit={submit} aria-busy={loading}>
-            <Field label="手机号或邮箱"><input value={identifier} onChange={(event) => setIdentifier(event.target.value)} placeholder="请输入注册账号" disabled={loading || !PASSWORD_RECOVERY_AVAILABLE || step !== 'request'} /></Field>
+            <Field label="注册邮箱"><input type="email" value={identifier} onChange={(event) => setIdentifier(event.target.value)} autoComplete="email" placeholder="请输入注册邮箱" disabled={loading || !PASSWORD_RECOVERY_AVAILABLE || step !== 'request'} /></Field>
             {step === 'confirm' ? <><Field label="验证码"><input value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" placeholder="6 位验证码" required /></Field><Field label="新密码"><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" placeholder="至少 8 位，包含字母和数字" required minLength={8} /></Field></> : null}
             {status ? <p className="form-status" role="status">{status}</p> : null}
             {error ? <p className="form-error" role="alert">{error}</p> : null}

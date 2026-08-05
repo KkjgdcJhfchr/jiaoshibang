@@ -24,12 +24,20 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
   const usersFile = join(dataDir, 'users.json');
   const channelsFile = join(dataDir, 'model-channels.json');
   const candidatesFile = join(dataDir, 'training-candidates.json');
+  const lessonsFile = join(dataDir, 'lessons.json');
+  const generationJobsFile = join(dataDir, 'generation-jobs.json');
   const adminFile = join(dataDir, 'admin.json');
   const smtpConfigFile = join(dataDir, 'smtp-config.json');
 
   const usersState = readState(usersFile, { version: 1, users: [] }, '用户数据');
   const channelsState = readState(channelsFile, { version: 1, channels: [] }, '模型通道数据');
   const candidatesState = readState(candidatesFile, { version: 1, candidates: [] }, '训练候选数据');
+  const lessonsState = readState(lessonsFile, { version: 1, lessons: [] }, '教案数据');
+  const generationJobsState = readState(
+    generationJobsFile,
+    { version: 1, jobs: [] },
+    '教案生成任务数据',
+  );
   const quotaReservations = new Map();
 
   assertArray(usersState.users, 'users.json');
@@ -37,6 +45,148 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
   assertArray(usersState.referrals, 'users.json referrals');
   assertArray(channelsState.channels, 'model-channels.json');
   assertArray(candidatesState.candidates, 'training-candidates.json');
+  assertArray(lessonsState.lessons, 'lessons.json');
+  assertArray(generationJobsState.jobs, 'generation-jobs.json');
+
+  function listGenerationJobs() {
+    return structuredClone(generationJobsState.jobs);
+  }
+
+  function saveGenerationJob(job) {
+    const stored = structuredClone({ ...job, reservation: null });
+    const index = generationJobsState.jobs.findIndex((item) => item.id === stored.id);
+    const previous = index >= 0 ? generationJobsState.jobs[index] : null;
+    if (index >= 0) generationJobsState.jobs[index] = stored;
+    else generationJobsState.jobs.push(stored);
+    try {
+      writeState(generationJobsFile, generationJobsState);
+      return structuredClone(stored);
+    } catch (error) {
+      if (index >= 0) generationJobsState.jobs[index] = previous;
+      else generationJobsState.jobs.pop();
+      throw error;
+    }
+  }
+
+  function deleteGenerationJob(jobId) {
+    const index = generationJobsState.jobs.findIndex((job) => job.id === jobId);
+    if (index < 0) return false;
+    const [removed] = generationJobsState.jobs.splice(index, 1);
+    try {
+      writeState(generationJobsFile, generationJobsState);
+      return true;
+    } catch (error) {
+      generationJobsState.jobs.splice(index, 0, removed);
+      throw error;
+    }
+  }
+
+  function listLessons(userId) {
+    return lessonsState.lessons
+      .filter((lesson) => lesson.userId === userId)
+      .sort((left, right) => (
+        String(right.updatedAt || '').localeCompare(String(left.updatedAt || ''))
+        || String(right.createdAt || '').localeCompare(String(left.createdAt || ''))
+      ))
+      .map(toLessonSummary);
+  }
+
+  function findLesson(userId, lessonId) {
+    const lesson = lessonsState.lessons.find((item) => (
+      item.userId === userId && item.id === lessonId
+    ));
+    return lesson ? structuredClone(lesson) : null;
+  }
+
+  function createLesson(userId, value) {
+    if (!findUserById(userId)) {
+      throw new DataStoreError(404, 'LESSON_OWNER_NOT_FOUND', '教案所属用户不存在');
+    }
+    const requestedId = String(value?.id || '').trim();
+    const id = requestedId || `lesson-${randomUUID()}`;
+    if (lessonsState.lessons.some((lesson) => lesson.userId === userId && lesson.id === id)) {
+      throw new DataStoreError(409, 'LESSON_ID_CONFLICT', '教案编号已存在');
+    }
+    const timestamp = activityTimestamp(now).toISOString();
+    const lesson = {
+      id,
+      userId,
+      lessonPlan: structuredClone(value.lessonPlan),
+      customSections: structuredClone(value.customSections || []),
+      sectionOrder: structuredClone(value.sectionOrder || []),
+      sectionTitles: structuredClone(value.sectionTitles || {}),
+      sourceFiles: structuredClone(value.sourceFiles || []),
+      generationJobId: String(value.generationJobId || ''),
+      title: String(value.title || ''),
+      subject: String(value.subject || ''),
+      grade: String(value.grade || ''),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    lessonsState.lessons.push(lesson);
+    try {
+      writeState(lessonsFile, lessonsState);
+      return structuredClone(lesson);
+    } catch (error) {
+      const index = lessonsState.lessons.indexOf(lesson);
+      if (index >= 0) lessonsState.lessons.splice(index, 1);
+      throw error;
+    }
+  }
+
+  function updateLesson(userId, lessonId, value) {
+    const lesson = lessonsState.lessons.find((item) => (
+      item.userId === userId && item.id === lessonId
+    ));
+    if (!lesson) return null;
+    const previous = structuredClone(lesson);
+    try {
+      for (const field of ['lessonPlan', 'customSections', 'sectionOrder', 'sectionTitles', 'sourceFiles']) {
+        if (value[field] !== undefined) lesson[field] = structuredClone(value[field]);
+      }
+      for (const field of ['title', 'subject', 'grade']) {
+        if (value[field] !== undefined) lesson[field] = String(value[field] || '');
+      }
+      lesson.updatedAt = activityTimestamp(now).toISOString();
+      writeState(lessonsFile, lessonsState);
+      return structuredClone(lesson);
+    } catch (error) {
+      replaceObject(lesson, previous);
+      throw error;
+    }
+  }
+
+  function deleteLesson(userId, lessonId) {
+    const index = lessonsState.lessons.findIndex((item) => (
+      item.userId === userId && item.id === lessonId
+    ));
+    if (index < 0) return null;
+    const [removed] = lessonsState.lessons.splice(index, 1);
+    try {
+      writeState(lessonsFile, lessonsState);
+      return structuredClone(removed);
+    } catch (error) {
+      lessonsState.lessons.splice(index, 0, removed);
+      throw error;
+    }
+  }
+
+  function deleteUserLessons(userIds) {
+    const ids = new Set(Array.isArray(userIds) ? userIds : []);
+    if (!ids.size) return 0;
+    const previous = structuredClone(lessonsState);
+    const before = lessonsState.lessons.length;
+    lessonsState.lessons = lessonsState.lessons.filter((lesson) => !ids.has(lesson.userId));
+    const removed = before - lessonsState.lessons.length;
+    if (!removed) return 0;
+    try {
+      writeState(lessonsFile, lessonsState);
+      return removed;
+    } catch (error) {
+      replaceObject(lessonsState, previous);
+      throw error;
+    }
+  }
 
   function findUserByAccountKey(accountKey) {
     return usersState.users.find((user) => user.accountKey === accountKey) || null;
@@ -492,8 +642,16 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
     return { ok: true, id: randomUUID(), userId };
   }
 
-  function commitGeneration(reservation) {
+  function commitGeneration(reservation, commitId = '') {
     const user = findUserById(reservation.userId);
+    const normalizedCommitId = String(commitId || '').trim();
+    const committedIds = Array.isArray(user?.generationCommitIds)
+      ? user.generationCommitIds
+      : [];
+    if (user && normalizedCommitId && committedIds.includes(normalizedCommitId)) {
+      releaseReservation(reservation);
+      return user;
+    }
     if (!user || Number(user.credits || 0) < 1) {
       releaseReservation(reservation);
       return null;
@@ -502,11 +660,15 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
     const previous = {
       credits: user.credits,
       generationCount: user.generationCount,
+      generationCommitIds: structuredClone(user.generationCommitIds),
       updatedAt: user.updatedAt,
     };
     try {
       user.credits = Number(user.credits) - 1;
       user.generationCount = Number(user.generationCount || 0) + 1;
+      if (normalizedCommitId) {
+        user.generationCommitIds = [...committedIds, normalizedCommitId].slice(-200);
+      }
       user.updatedAt = new Date().toISOString();
       writeState(usersFile, usersState);
       return user;
@@ -673,9 +835,14 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
     addTrainingCandidate,
     canMigrateAdminTeacherUser,
     commitGeneration,
+    createLesson,
     deleteChannel,
+    deleteGenerationJob,
+    deleteLesson,
+    deleteUserLessons,
     deleteUsers,
     findChannel,
+    findLesson,
     findUserByAccountKey,
     findUserById,
     ensureAdminTeacherUser,
@@ -683,6 +850,8 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
     getReferralOverview,
     initializeAdmin,
     listChannels,
+    listGenerationJobs,
+    listLessons,
     listUsersForAdmin,
     listTrainingCandidates,
     markUserVerified,
@@ -697,12 +866,32 @@ export function createDataStore(dataDir, { now = () => new Date() } = {}) {
     revokeTrainingCandidates,
     revokeTrainingCandidatesByOwnerRefs,
     saveSmtpConfig,
+    saveGenerationJob,
     trainingSummary,
     touchUserActivity,
     updateChannel,
+    updateLesson,
     updateAdmin,
     updateUserPassword,
     validateUsersForDeletion,
+  };
+}
+
+function toLessonSummary(lesson) {
+  const lessonPlan = lesson?.lessonPlan && typeof lesson.lessonPlan === 'object'
+    ? lesson.lessonPlan
+    : {};
+  const exercises = Array.isArray(lessonPlan.exercises) ? lessonPlan.exercises : [];
+  return {
+    id: String(lesson?.id || ''),
+    title: String(lesson?.title || lessonPlan.metadata?.lessonTitle || lessonPlan.metadata?.title || ''),
+    subject: String(lesson?.subject || lessonPlan.metadata?.subject || ''),
+    grade: String(lesson?.grade || lessonPlan.metadata?.grade || ''),
+    chapterTitle: String(lessonPlan.metadata?.chapterTitle || ''),
+    durationMinutes: nonNegativeNumber(lessonPlan.metadata?.durationMinutes),
+    exerciseCount: exercises.length,
+    createdAt: lesson?.createdAt || null,
+    updatedAt: lesson?.updatedAt || null,
   };
 }
 

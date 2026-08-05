@@ -253,7 +253,7 @@ export function SecuritySettingsPage({ onNotice }) {
   return (
     <>
       <div className="admin-page-heading admin-security-heading">
-        <div><h1>安全与通信</h1><p>管理全站邮件发送与用户手机验证码服务；管理员账号和登录保护已归入“系统设置”。</p></div>
+        <div><h1>安全与通信</h1><p>管理全站邮件发送与支付确认短信通道；用户注册、登录和找回密码只使用邮箱。</p></div>
         <button className="admin-button admin-button-secondary" type="button" onClick={reload} disabled={loading || Boolean(busy)}><RefreshCw size={17} className={loading ? 'spin' : ''} />刷新状态</button>
       </div>
       {error ? <div className="admin-security-error" role="alert"><AlertTriangle size={18} /><span>{error}</span><button type="button" onClick={() => setError('')} aria-label="关闭"><X size={16} /></button></div> : null}
@@ -276,7 +276,7 @@ export function SecuritySettingsPage({ onNotice }) {
         </form>
 
         <form className="admin-panel admin-communication-card" onSubmit={saveSms}>
-          <header><span><MessageSquareText size={21} /></span><div><h2>手机验证码</h2><p>保存完整配置后自动启用，无需再次操作开关；密钥只在服务端加密保存。</p></div><i className={!smsDirty && sms.configured ? 'ready' : ''}>{smsDirty ? '有未保存更改' : sms.configured ? '已启用' : '未配置'}</i></header>
+          <header><span><MessageSquareText size={21} /></span><div><h2>支付短信验证码</h2><p>仅用于手机号账户确认支付，不参与注册、登录或找回密码；密钥只在服务端加密保存。</p></div><i className={!smsDirty && sms.configured ? 'ready' : ''}>{smsDirty ? '有未保存更改' : sms.configured ? '已启用' : '未配置'}</i></header>
           <fieldset className="admin-form-grid" disabled={loading || Boolean(busy)}>
             <label className="wide"><span>短信服务商</span><select value={sms.provider} onChange={(event) => updateSmsProvider(event.target.value)}><option value="aliyun">阿里云短信</option><option value="tencent">腾讯云短信</option></select></label>
             <label className="wide"><span>AccessKey ID / SecretId</span><input value={sms.accessKeyId} onChange={(event) => updateSmsField('accessKeyId', event.target.value)} placeholder={sms.accessKeyIdMasked || '使用仅短信发送权限的子账号密钥'} required={!sms.configured} /></label>
@@ -290,7 +290,7 @@ export function SecuritySettingsPage({ onNotice }) {
         </form>
       </div>
 
-      <div className="admin-compliance-note"><ShieldCheck size={20} /><div><b>正式通道安全要求</b><p>验证码仅保存哈希且 5 分钟失效，单次使用、限制重发和尝试次数；短信和邮件凭据加密保存，浏览器永远不会读取已保存的完整密钥。</p></div></div>
+      <div className="admin-compliance-note"><ShieldCheck size={20} /><div><b>正式通道安全要求</b><p>账号注册、登录和找回密码只向邮箱发送验证码；短信仅用于支付确认。验证码仅保存哈希且 5 分钟失效，通道凭据均加密保存。</p></div></div>
     </>
   );
 }

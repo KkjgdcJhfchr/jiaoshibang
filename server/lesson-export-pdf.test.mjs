@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { sampleLesson } from '../src/data/sampleLesson.js';
+import { lessonExportFixture } from './fixtures/lesson-export-fixture.mjs';
 import { buildLessonExportModel, collectLessonExportTexts } from './lesson-export-model.mjs';
 import { generateLessonPdf, renderLessonPdfHtml } from './lesson-export-pdf.mjs';
 
-const lesson = structuredClone(sampleLesson);
-lesson.metadata.title = '完整导出 <春> & 特殊字符';
+const lesson = structuredClone(lessonExportFixture);
+lesson.metadata.title = '完整导出 <勾股定理> & 特殊字符';
 lesson.section_titles = { timeline: '课堂完整流程' };
 lesson.custom_sections = [{ id: 'sentinel', title: '跨学科拓展', content: '自定义模块哨兵：观察、记录与表达。' }];
 lesson.section_order = ['objectives', 'timeline', 'custom:sentinel', 'learner'];
@@ -19,7 +19,7 @@ lesson.timeline[0].source_refs = [{
 const model = buildLessonExportModel(lesson);
 const html = renderLessonPdfHtml(model);
 assert.match(html, /^<!doctype html>/);
-assert.ok(html.includes('完整导出 &lt;春&gt; &amp; 特殊字符'));
+assert.ok(html.includes('完整导出 &lt;勾股定理&gt; &amp; 特殊字符'));
 assert.ok(html.includes('课堂完整流程'));
 assert.ok(html.includes('自定义模块哨兵：观察、记录与表达。'));
 assert.ok(html.includes('第二段完整课堂话术。'));

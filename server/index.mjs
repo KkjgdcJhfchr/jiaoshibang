@@ -48,6 +48,7 @@ import { createContentManagementStore } from './content-management.mjs';
 import { createSiteSettingsStore } from './site-settings.mjs';
 import { createMarketingStore } from './marketing-store.mjs';
 import { createMaterialUploadStore } from './material-upload-store.mjs';
+import { createReviewStore } from './review-store.mjs';
 import { createSmsService, SmsServiceError } from './sms-service.mjs';
 import {
   createVerificationCodeService,
@@ -69,7 +70,12 @@ const MAX_PDF_BYTES = parsePositiveInteger(process.env.MAX_PDF_BYTES, 16 * 1024 
 const GENERATION_MAX_SOURCE_BYTES = parsePositiveInteger(process.env.GENERATION_MAX_SOURCE_BYTES, 64 * 1024 * 1024);
 const MATERIAL_UPLOAD_TTL_MS = parsePositiveInteger(process.env.MATERIAL_UPLOAD_TTL_SECONDS, 24 * 60 * 60) * 1000;
 const MATERIAL_UPLOAD_MAX_ACTIVE_BYTES = parsePositiveInteger(process.env.MATERIAL_UPLOAD_MAX_ACTIVE_BYTES, 256 * 1024 * 1024);
+const REVIEW_BODY_MAX_BYTES = 768 * 1024;
 const AI_TIMEOUT_MS = parsePositiveInteger(process.env.AI_REQUEST_TIMEOUT_MS, 600_000);
+const AI_COMPATIBLE_REQUEST_TIMEOUT_MS = Math.min(
+  AI_TIMEOUT_MS,
+  parsePositiveInteger(process.env.AI_COMPATIBLE_REQUEST_TIMEOUT_MS, 300_000),
+);
 const AI_REVISION_TIMEOUT_MS = Math.min(
   AI_TIMEOUT_MS,
   parsePositiveInteger(process.env.AI_REVISION_TIMEOUT_MS, AI_TIMEOUT_MS),
@@ -189,6 +195,7 @@ const membershipCatalog = createMembershipCatalog({
 });
 const contentManagement = createContentManagementStore({ dataDir: DATA_DIR });
 const marketing = createMarketingStore({ dataDir: DATA_DIR });
+const reviewStore = createReviewStore({ dataDir: DATA_DIR });
 const materialUploads = createMaterialUploadStore({
   dataDir: DATA_DIR,
   ttlMs: MATERIAL_UPLOAD_TTL_MS,
@@ -215,6 +222,7 @@ const revisionJobs = new Map();
 const revisionJobIdsByIdempotencyKey = new Map();
 const aiJobQueue = [];
 let aiJobDrainScheduled = false;
+restorePersistedGenerationJobs();
 const adminMfaCoordinator = createAdminMfaCoordinator({
   pepper: stablePrivateHash('admin-mfa-challenges', SESSION_SECRET),
   loginTtlMs: ADMIN_MFA_LOGIN_TTL_MS,
@@ -531,6 +539,88 @@ async function handleRequest(request, response) {
           settings,
         },
       });
+      return;
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/app/reviews') {
+      const session = requireUserSession(request);
+      sendJson(response, 200, { ok: true, data: { reviews: reviewStore.listReviews(session.user.id) } });
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/app/reviews') {
+      assertSameOriginMutation(request);
+      const session = requireUserSession(request);
+      const body = await readJsonBody(request, REVIEW_BODY_MAX_BYTES);
+      const review = reviewStore.createReview(session.user, body);
+      sendJson(response, 201, { ok: true, data: { review } });
+      return;
+    }
+
+    const reviewRecordMatch = url.pathname.match(/^\/api\/app\/reviews\/(review-[0-9a-f-]{36})$/i);
+    if (request.method === 'PUT' && reviewRecordMatch) {
+      assertSameOriginMutation(request);
+      const session = requireUserSession(request);
+      const body = await readJsonBody(request, REVIEW_BODY_MAX_BYTES);
+      const review = reviewStore.updateReview(session.user.id, reviewRecordMatch[1], body);
+      if (!review) throw new HttpError(404, 'REVIEW_NOT_FOUND', '评审任务不存在');
+      sendJson(response, 200, { ok: true, data: { review } });
+      return;
+    }
+
+    if (request.method === 'DELETE' && reviewRecordMatch) {
+      assertSameOriginMutation(request);
+      const session = requireUserSession(request);
+      await readOptionalJsonBody(request, 16 * 1024);
+      const review = reviewStore.deleteReview(session.user.id, reviewRecordMatch[1]);
+      if (!review) throw new HttpError(404, 'REVIEW_NOT_FOUND', '评审任务不存在');
+      sendJson(response, 200, { ok: true, data: { review, deletedId: review.id } });
+      return;
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/app/lessons') {
+      const session = requireUserSession(request);
+      sendJson(response, 200, { ok: true, data: { lessons: store.listLessons(session.user.id) } });
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/app/lessons') {
+      assertSameOriginMutation(request);
+      const session = requireUserSession(request);
+      const body = await readJsonBody(request, 4 * 1024 * 1024);
+      const input = normalizeLessonRecordInput(body, { requireLessonPlan: true, allowId: true });
+      const lesson = store.createLesson(session.user.id, input);
+      sendJson(response, 201, { ok: true, data: { lesson } });
+      return;
+    }
+
+    const lessonRecordMatch = url.pathname.match(/^\/api\/app\/lessons\/(lesson-[A-Za-z0-9._~-]{1,200})$/);
+    if (request.method === 'GET' && lessonRecordMatch) {
+      const session = requireUserSession(request);
+      const lesson = store.findLesson(session.user.id, lessonRecordMatch[1]);
+      if (!lesson) throw new HttpError(404, 'LESSON_NOT_FOUND', '教案不存在');
+      sendJson(response, 200, { ok: true, data: { lesson } });
+      return;
+    }
+
+    if (request.method === 'PUT' && lessonRecordMatch) {
+      assertSameOriginMutation(request);
+      const session = requireUserSession(request);
+      const body = await readJsonBody(request, 4 * 1024 * 1024);
+      const input = normalizeLessonRecordInput(body, { requireLessonPlan: false, allowId: false });
+      const lesson = store.updateLesson(session.user.id, lessonRecordMatch[1], input);
+      if (!lesson) throw new HttpError(404, 'LESSON_NOT_FOUND', '教案不存在');
+      sendJson(response, 200, { ok: true, data: { lesson } });
+      return;
+    }
+
+    if (request.method === 'DELETE' && lessonRecordMatch) {
+      assertSameOriginMutation(request);
+      const session = requireUserSession(request);
+      await readOptionalJsonBody(request, 16 * 1024);
+      const lesson = store.deleteLesson(session.user.id, lessonRecordMatch[1]);
+      if (!lesson) throw new HttpError(404, 'LESSON_NOT_FOUND', '教案不存在');
+      sendJson(response, 200, { ok: true, data: { deletedId: lesson.id } });
       return;
     }
 
@@ -1103,10 +1193,19 @@ async function handleRequest(request, response) {
         requestId,
         input,
         attachmentIds,
+        sourceFiles: storedSources.map(({ name, type, size }) => ({ name, type, size })),
         reservation,
       });
       generationJobs.set(job.id, job);
       generationJobIdsByIdempotencyKey.set(idempotencyMapKey, job.id);
+      try {
+        store.saveGenerationJob(job);
+      } catch (error) {
+        generationJobs.delete(job.id);
+        generationJobIdsByIdempotencyKey.delete(idempotencyMapKey);
+        store.releaseGeneration(reservation);
+        throw error;
+      }
       sendJson(response, 202, { ok: true, data: { job: publicGenerationJob(job) } });
       enqueueAiJob('generation', job.id);
       return;
@@ -1140,15 +1239,34 @@ async function handleRequest(request, response) {
       }
       try {
         const result = await withAiSlot(() => generateLesson(normalized, requestId, session.user));
-        const updatedUser = store.commitGeneration(reservation);
-        if (!updatedUser) throw new HttpError(500, 'QUOTA_COMMIT_FAILED', '教案已生成，但额度状态保存失败，请联系管理员并提供请求编号');
+        const sourceFiles = storedSources.map(({ name, type, size }) => ({ name, type, size }));
+        const lesson = store.createLesson(
+          session.user.id,
+          generatedLessonRecordInput(result.lessonPlan, sourceFiles),
+        );
+        let updatedUser;
+        try {
+          updatedUser = store.commitGeneration(reservation);
+        } catch (error) {
+          store.deleteLesson(session.user.id, lesson.id);
+          throw error;
+        }
+        if (!updatedUser) {
+          store.deleteLesson(session.user.id, lesson.id);
+          throw new HttpError(500, 'QUOTA_COMMIT_FAILED', '教案已生成，但额度状态保存失败，请联系管理员并提供请求编号');
+        }
         if (attachmentIds.length) {
           try { materialUploads.deleteAttachments(session.user.id, attachmentIds); }
           catch (cleanupError) { console.warn(`[teacher-helper] generated attachment cleanup failed: ${cleanupError.code || cleanupError.message}`); }
         }
         sendJson(response, 200, {
           ok: true,
-          data: { ...result, creditsRemaining: updatedUser.credits },
+          data: {
+            ...result,
+            lessonId: lesson.id,
+            lesson,
+            creditsRemaining: updatedUser.credits,
+          },
         });
       } catch (error) {
         store.releaseGeneration(reservation);
@@ -1207,6 +1325,15 @@ function deleteUserAccounts(userIds, actor) {
   const revokedTrainingCandidates = store.revokeTrainingCandidatesByOwnerRefs(ids.map((id) => (
     `usr_hash_${stablePrivateHash(id, SAFETY_ID_SALT).slice(0, 32)}`
   )));
+  let removedGenerationJobs = 0;
+  for (const job of [...generationJobs.values()]) {
+    if (!ids.includes(job.userId)) continue;
+    if (job.reservation) store.releaseGeneration(job.reservation);
+    removeGenerationJob(job);
+    removedGenerationJobs += 1;
+  }
+  const removedLessons = store.deleteUserLessons(ids);
+  const removedReviews = reviewStore.deleteUserReviews(ids);
   const removedAttachments = materialUploads.deleteUserAttachments(ids);
   const deletedUsers = store.deleteUsers(ids);
   for (const id of ids) aiUserRateBuckets.delete(`user:${id}`);
@@ -1214,7 +1341,14 @@ function deleteUserAccounts(userIds, actor) {
   return {
     deletedIds: ids,
     deletedUsers,
-    cleanup: { removedProgress, revokedTrainingCandidates, removedAttachments },
+    cleanup: {
+      removedProgress,
+      revokedTrainingCandidates,
+      removedAttachments,
+      removedLessons,
+      removedReviews,
+      removedGenerationJobs,
+    },
     deletedBy: actor,
   };
 }
@@ -1264,8 +1398,17 @@ async function handleUserRegister(request, response) {
     body.identifier ?? body.account ?? body.email ?? body.phone,
     200,
   );
-  if (!account || !/^[^\s]{3,200}$/u.test(account)) {
-    throw new HttpError(400, 'INVALID_ACCOUNT', '请输入有效的手机号或邮箱账号');
+  const admin = store.readAdmin();
+  if (admin && normalizeAccount(admin.username) === normalizeAccount(account)) {
+    throw new HttpError(409, 'ACCOUNT_EXISTS', '该账号已注册，请直接登录');
+  }
+  try {
+    normalizeVerificationTarget(account);
+  } catch (error) {
+    if (error instanceof VerificationCodeError && error.code === 'IDENTIFIER_INVALID') {
+      throw new HttpError(400, 'INVALID_ACCOUNT', '请输入有效的邮箱地址');
+    }
+    throw error;
   }
   const password = validateUserPassword(body.password);
   if (body.privacyAccepted !== true) {
@@ -1276,10 +1419,6 @@ async function handleUserRegister(request, response) {
     throw new HttpError(409, 'PRIVACY_POLICY_CHANGED', '数据与隐私说明已更新，请刷新页面并重新阅读后再注册');
   }
   const accountKey = normalizeAccount(account);
-  const admin = store.readAdmin();
-  if (admin && normalizeAccount(admin.username) === accountKey) {
-    throw new HttpError(409, 'ACCOUNT_EXISTS', '该账号已注册，请直接登录');
-  }
   const verificationCode = cleanText(body.verificationCode ?? body.code, 20);
   const verificationId = cleanText(body.verificationId, 200);
   let verifiedAt = null;
@@ -1325,7 +1464,7 @@ async function handleUserVerificationCodeRequest(request, response) {
   const body = await readJsonBody(request, 32 * 1024);
   const identifier = cleanText(body.identifier ?? body.account ?? body.email ?? body.phone, 254);
   const purpose = cleanText(body.purpose, 32);
-  const target = normalizeVerificationTarget(identifier);
+  const target = normalizeVerificationTarget(identifier, { allowPhone: purpose === 'checkout' });
   let shouldDeliver = true;
   const existing = store.findUserByAccountKey(normalizeAccount(identifier));
   const admin = store.readAdmin();
@@ -1341,7 +1480,7 @@ async function handleUserVerificationCodeRequest(request, response) {
   else if (purpose === 'checkout') {
     const session = requireUserSession(request);
     if (session.user.accountKey !== normalizeAccount(identifier)) {
-      throw new HttpError(403, 'VERIFICATION_TARGET_MISMATCH', '验证码只能发送到当前账号绑定的手机号或邮箱');
+      throw new HttpError(403, 'VERIFICATION_TARGET_MISMATCH', '支付验证码只能发送到当前账号绑定的邮箱或手机号');
     }
   }
 
@@ -1429,7 +1568,12 @@ async function handlePasswordResetConfirm(request, response) {
 }
 
 async function sendUserVerificationCode({ channel, destination, code, purpose, expiresInMinutes }) {
+  // 手机短信仅保留给支付确认。注册、登录和找回密码均由
+  // normalizeVerificationTarget 强制限定为邮箱。
   if (channel === 'sms') {
+    if (purpose !== 'checkout') {
+      throw new VerificationCodeError('IDENTIFIER_INVALID', '注册、登录和找回密码仅支持邮箱验证');
+    }
     return smsService.sendVerificationCode({ phone: destination, code, purpose });
   }
   return messageService.sendVerificationCode({
@@ -1474,6 +1618,12 @@ async function handleUserLogin(request, response) {
       passwordValid = Boolean(user);
     }
   } else {
+    try {
+      normalizeVerificationTarget(account);
+    } catch {
+      verifyPassword(password, DUMMY_PASSWORD);
+      throw new HttpError(401, 'INVALID_CREDENTIALS', '邮箱或密码错误');
+    }
     user = accountKey ? store.findUserByAccountKey(accountKey) : null;
     passwordValid = user ? verifyPassword(password, user.password) : false;
   }
@@ -2503,7 +2653,9 @@ async function probeSelectedProviderModel({ baseUrl, apiKey, model, providerType
       inconclusive,
     });
   }
-  usable.sort((left, right) => providerAdapterScore(right) - providerAdapterScore(left));
+  usable.sort((left, right) => (
+    providerAdapterScore(right, providerType) - providerAdapterScore(left, providerType)
+  ));
   const selected = usable[0];
   return {
     ...selected,
@@ -2511,11 +2663,13 @@ async function probeSelectedProviderModel({ baseUrl, apiKey, model, providerType
   };
 }
 
-function providerAdapterScore(result) {
+function providerAdapterScore(result, providerType) {
   return 100
     + (result.capabilities.image === true ? 10 : 0)
     + (result.capabilities.pdf === true ? 10 : 0)
-    + (result.adapter === 'openai_responses' ? 1 : 0);
+    + (providerType === 'custom_openai_compatible'
+      ? result.adapter === 'openai_chat_completions' ? 2 : 0
+      : result.adapter === 'openai_responses' ? 1 : 0);
 }
 
 async function probeProviderAdapter({ baseUrl, apiKey, model, providerType, adapter }) {
@@ -3151,6 +3305,14 @@ function resolveProviderRoute(taskType, { sourceKinds = [] } = {}) {
     && (taskType === 'revision' ? item.models?.revision : item.models?.generation)
   ));
   if (channel) {
+    const providerType = normalizeStoredProviderType(channel.provider);
+    const configuredAdapter = normalizeStoredProviderAdapter(channel.adapter, channel.provider);
+    // Third-party OpenAI-compatible relays generally implement Chat Completions
+    // more reliably for long multimodal requests. Their Responses endpoint may
+    // pass a tiny probe yet leave a real generation request pending forever.
+    const adapter = providerType === 'custom_openai_compatible'
+      ? 'openai_chat_completions'
+      : configuredAdapter;
     let apiKey;
     try {
       apiKey = decryptSecret(channel.encryptedApiKey, SESSION_SECRET, `model-channel:${channel.id}`);
@@ -3163,8 +3325,13 @@ function resolveProviderRoute(taskType, { sourceKinds = [] } = {}) {
     }
     return {
       providerId: channel.id,
-      providerType: normalizeStoredProviderType(channel.provider),
-      adapter: normalizeStoredProviderAdapter(channel.adapter, channel.provider),
+      providerType,
+      adapter,
+      fallbackAdapter: providerType === 'custom_openai_compatible'
+        ? adapter === 'openai_chat_completions'
+          ? 'openai_responses'
+          : 'openai_chat_completions'
+        : null,
       baseUrl: channel.baseUrl,
       model: taskType === 'revision' ? channel.models.revision : channel.models.generation,
       apiKey,
@@ -3286,6 +3453,7 @@ function createGenerationJob({
   requestId,
   input,
   attachmentIds,
+  sourceFiles,
   reservation,
 }) {
   return {
@@ -3303,6 +3471,7 @@ function createGenerationJob({
     error: null,
     input,
     attachmentIds,
+    sourceFiles,
     reservation,
   };
 }
@@ -3322,11 +3491,70 @@ function publicGenerationJob(job) {
   };
 }
 
+function restorePersistedGenerationJobs() {
+  const queued = [];
+  for (const stored of store.listGenerationJobs()) {
+    if (!stored || typeof stored !== 'object'
+      || !/^gen_[0-9a-f-]{36}$/i.test(String(stored.id || ''))
+      || !stored.userId
+      || !stored.idempotencyKey
+      || !stored.requestHash) {
+      if (stored?.id) store.deleteGenerationJob(stored.id);
+      continue;
+    }
+    const job = {
+      ...stored,
+      sourceFiles: Array.isArray(stored.sourceFiles) ? stored.sourceFiles : [],
+      reservation: null,
+    };
+    const terminal = job.status === 'completed' || job.status === 'failed';
+    if (!terminal) {
+      const reservation = store.reserveGeneration(job.userId);
+      if (!reservation.ok || !job.input || !Array.isArray(job.attachmentIds)) {
+        job.status = 'failed';
+        job.phase = 'failed';
+        job.finishedAt = new Date().toISOString();
+        job.error = {
+          code: reservation.ok ? 'GENERATION_RECOVERY_INVALID' : 'QUOTA_EXHAUSTED',
+          message: reservation.ok
+            ? '生成任务恢复失败，请重新创建教案'
+            : '生成任务恢复时可用额度不足，请重新创建教案',
+          details: null,
+          requestId: job.requestId || null,
+        };
+        if (reservation.ok) store.releaseGeneration(reservation);
+        job.input = null;
+        job.attachmentIds = [];
+        store.saveGenerationJob(job);
+      } else {
+        job.status = 'queued';
+        job.phase = 'queued';
+        job.startedAt = null;
+        job.finishedAt = null;
+        job.error = null;
+        job.reservation = reservation;
+        store.saveGenerationJob(job);
+        queued.push(job.id);
+      }
+    }
+    generationJobs.set(job.id, job);
+    generationJobIdsByIdempotencyKey.set(
+      generationJobIdempotencyMapKey(job.userId, job.idempotencyKey),
+      job.id,
+    );
+  }
+  pruneGenerationJobs();
+  for (const jobId of queued) {
+    if (generationJobs.get(jobId)?.status === 'queued') enqueueAiJob('generation', jobId);
+  }
+}
+
 function removeGenerationJob(job) {
   generationJobs.delete(job.id);
   generationJobIdsByIdempotencyKey.delete(
     generationJobIdempotencyMapKey(job.userId, job.idempotencyKey),
   );
+  store.deleteGenerationJob(job.id);
 }
 
 function pruneGenerationJobs() {
@@ -3393,18 +3621,59 @@ async function runGenerationJob(job) {
   job.phase = 'calling_model';
   job.startedAt = new Date().toISOString();
   try {
+    store.saveGenerationJob(job);
+    const lessonId = generationJobLessonId(job.id);
+    const recoveredLesson = store.findLesson(job.userId, lessonId);
+    if (recoveredLesson?.generationJobId === job.id) {
+      let recoveredUser;
+      try {
+        recoveredUser = store.commitGeneration(job.reservation, job.id);
+      } finally {
+        job.reservation = null;
+      }
+      if (!recoveredUser) {
+        store.deleteLesson(job.userId, recoveredLesson.id);
+        throw new HttpError(500, 'QUOTA_COMMIT_FAILED', '教案已生成，但额度状态保存失败，请联系管理员并提供请求编号');
+      }
+      job.status = 'completed';
+      job.phase = 'completed';
+      job.data = {
+        lessonPlan: recoveredLesson.lessonPlan,
+        model: recoveredLesson.lessonPlan?.generationMeta?.modelRouteId || null,
+        providerId: 'recovered-persisted-lesson',
+        responseId: null,
+        usage: null,
+        lessonId: recoveredLesson.id,
+        lesson: recoveredLesson,
+        creditsRemaining: recoveredUser.credits,
+        recovered: true,
+      };
+      return;
+    }
     const result = await withAiSlot(() => {
       const storedSources = materialUploads.resolveAttachments(job.userId, job.attachmentIds);
       const normalized = normalizeGenerateRequest(job.input, storedSources);
       return generateLesson(normalized, job.requestId, { id: job.userId });
     });
+    const lesson = store.createLesson(
+      job.userId,
+      {
+        ...generatedLessonRecordInput(result.lessonPlan, job.sourceFiles),
+        id: lessonId,
+        generationJobId: job.id,
+      },
+    );
     let updatedUser;
     try {
-      updatedUser = store.commitGeneration(job.reservation);
+      updatedUser = store.commitGeneration(job.reservation, job.id);
+    } catch (error) {
+      store.deleteLesson(job.userId, lesson.id);
+      throw error;
     } finally {
       job.reservation = null;
     }
     if (!updatedUser) {
+      store.deleteLesson(job.userId, lesson.id);
       throw new HttpError(500, 'QUOTA_COMMIT_FAILED', '教案已生成，但额度状态保存失败，请联系管理员并提供请求编号');
     }
     if (job.attachmentIds.length) {
@@ -3416,7 +3685,12 @@ async function runGenerationJob(job) {
     }
     job.status = 'completed';
     job.phase = 'completed';
-    job.data = { ...result, creditsRemaining: updatedUser.credits };
+    job.data = {
+      ...result,
+      lessonId: lesson.id,
+      lesson,
+      creditsRemaining: updatedUser.credits,
+    };
   } catch (error) {
     if (job.reservation) {
       store.releaseGeneration(job.reservation);
@@ -3438,9 +3712,20 @@ async function runGenerationJob(job) {
     job.finishedAt = new Date().toISOString();
     job.input = null;
     job.attachmentIds = [];
+    job.sourceFiles = [];
+    try {
+      store.saveGenerationJob(job);
+    } catch (persistError) {
+      console.error(`[teacher-helper] failed to persist generation job ${job.id}: ${persistError.message}`);
+    }
     pruneGenerationJobs();
     scheduleAiJobDrain();
   }
+}
+
+function generationJobLessonId(jobId) {
+  const suffix = String(jobId || '').replace(/^gen_/, '');
+  return `lesson-${suffix}`;
 }
 
 function createRevisionJob({ userId, idempotencyKey, requestHash, requestId, input }) {
@@ -3695,10 +3980,13 @@ function shouldUseSecureCookie(request) {
 }
 
 function normalizeAccount(value) {
+  const original = String(value || '').trim();
+  const legacyPhone = original.replace(/^(?:\+?86|0086)/, '').replace(/[\s-]/g, '');
+  if (/^1[3-9]\d{9}$/.test(legacyPhone)) return legacyPhone;
   try {
-    return normalizeVerificationTarget(value).value;
+    return normalizeVerificationTarget(original).value;
   } catch {
-    return String(value || '').trim().toLocaleLowerCase('en-US');
+    return original.toLocaleLowerCase('en-US');
   }
 }
 
@@ -4752,7 +5040,8 @@ async function callCustomSectionModel({ provider, inputText, requestId, user }) 
 
   const endpoint = isChatCompletions ? 'chat/completions' : 'responses';
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+  const requestTimeoutMs = providerRequestTimeoutMs(provider);
+  const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
   let upstream;
   let rawText;
   try {
@@ -4769,8 +5058,8 @@ async function callCustomSectionModel({ provider, inputText, requestId, user }) 
     });
     rawText = await upstream.text();
   } catch (error) {
-    if (error?.name === 'AbortError') {
-      throw new HttpError(504, 'AI_TIMEOUT', `AI 服务在 ${AI_TIMEOUT_MS}ms 内没有响应`);
+    if (isAiTimeoutError(error)) {
+      throw new HttpError(504, 'AI_TIMEOUT', `AI 服务在 ${requestTimeoutMs}ms 内没有响应`);
     }
     throw new HttpError(
       502,
@@ -4888,18 +5177,103 @@ function validateCustomSectionModelOutput(output, expectedSections) {
   }));
 }
 
+function providerRequestTimeoutMs(provider) {
+  return provider?.providerType === 'custom_openai_compatible'
+    ? AI_COMPATIBLE_REQUEST_TIMEOUT_MS
+    : AI_TIMEOUT_MS;
+}
+
+function isAiTimeoutError(error) {
+  if (error?.name === 'AbortError' || error?.name === 'TimeoutError') return true;
+  const code = String(error?.code || error?.cause?.code || '').toUpperCase();
+  return new Set([
+    'UND_ERR_CONNECT_TIMEOUT',
+    'UND_ERR_HEADERS_TIMEOUT',
+    'UND_ERR_BODY_TIMEOUT',
+    'ETIMEDOUT',
+  ]).has(code);
+}
+
 async function callOpenAI({ inputText, sources, requestId, taskType, user, expectedDuration }) {
   const provider = resolveProviderRoute(taskType, { sourceKinds: sources.map((source) => source.kind) });
-  if (provider.adapter === 'openai_chat_completions') {
-    return callOpenAIChatCompletions({
-      provider,
-      inputText,
-      sources,
+  const adapters = [...new Set([provider.adapter, provider.fallbackAdapter].filter(Boolean))];
+  let firstError = null;
+  for (const [index, adapter] of adapters.entries()) {
+    const routedProvider = { ...provider, adapter };
+    const startedAt = Date.now();
+    console.log(`[teacher-helper] ${JSON.stringify({
+      event: 'ai_generation_upstream_started',
       requestId,
-      taskType,
-      expectedDuration,
-    });
+      providerId: provider.providerId,
+      adapter,
+      model: provider.model,
+      sourceCount: sources.length,
+    })}`);
+    try {
+      const result = adapter === 'openai_chat_completions'
+        ? await callOpenAIChatCompletions({
+            provider: routedProvider,
+            inputText,
+            sources,
+            requestId,
+            taskType,
+            expectedDuration,
+          })
+        : await callOpenAIResponses({
+            provider: routedProvider,
+            inputText,
+            sources,
+            requestId,
+            taskType,
+            user,
+            expectedDuration,
+          });
+      console.log(`[teacher-helper] ${JSON.stringify({
+        event: 'ai_generation_upstream_completed',
+        requestId,
+        providerId: provider.providerId,
+        adapter,
+        model: result.model,
+        durationMs: Date.now() - startedAt,
+      })}`);
+      return result;
+    } catch (error) {
+      if (!firstError) firstError = error;
+      console.warn(`[teacher-helper] ${JSON.stringify({
+        event: 'ai_generation_upstream_failed',
+        requestId,
+        providerId: provider.providerId,
+        adapter,
+        code: error?.code || 'INTERNAL_ERROR',
+        status: Number.isInteger(error?.status) ? error.status : 500,
+        durationMs: Date.now() - startedAt,
+      })}`);
+      const hasFallback = index + 1 < adapters.length;
+      if (!hasFallback || !shouldFallbackCompatibleAdapter(error)) throw error;
+      console.warn(`[teacher-helper] ${JSON.stringify({
+        event: 'ai_generation_adapter_fallback',
+        requestId,
+        providerId: provider.providerId,
+        fromAdapter: adapter,
+        toAdapter: adapters[index + 1],
+        code: error?.code || 'INTERNAL_ERROR',
+      })}`);
+    }
   }
+  throw firstError || new HttpError(502, 'AI_UNREACHABLE', '模型通道没有可用的调用协议');
+}
+
+function shouldFallbackCompatibleAdapter(error) {
+  if (!error || ['AI_TIMEOUT', 'AI_AUTHENTICATION_FAILED', 'AI_BILLING_REQUIRED', 'AI_RATE_LIMITED'].includes(error.code)) {
+    return false;
+  }
+  if (['AI_UNREACHABLE', 'AI_INVALID_RESPONSE'].includes(error.code)) return true;
+  if (error.code !== 'AI_UPSTREAM_ERROR') return false;
+  const upstreamStatus = Number(error.details?.upstreamStatus || 0);
+  return [400, 404, 405, 415, 422].includes(upstreamStatus);
+}
+
+async function callOpenAIResponses({ provider, inputText, sources, requestId, taskType, user, expectedDuration }) {
   const content = [{ type: 'input_text', text: inputText }];
   for (const source of sources) {
     if (source.kind === 'image') {
@@ -4933,7 +5307,8 @@ async function callOpenAI({ inputText, sources, requestId, taskType, user, expec
   };
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+  const requestTimeoutMs = providerRequestTimeoutMs(provider);
+  const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
   let upstream;
   let rawText;
   try {
@@ -4950,8 +5325,8 @@ async function callOpenAI({ inputText, sources, requestId, taskType, user, expec
     });
     rawText = await upstream.text();
   } catch (error) {
-    if (error?.name === 'AbortError') {
-      throw new HttpError(504, 'AI_TIMEOUT', `AI 服务在 ${AI_TIMEOUT_MS}ms 内没有响应`);
+    if (isAiTimeoutError(error)) {
+      throw new HttpError(504, 'AI_TIMEOUT', `AI 服务在 ${requestTimeoutMs}ms 内没有响应`);
     }
     throw new HttpError(
       502,
@@ -5064,13 +5439,16 @@ async function callOpenAIChatCompletions({ provider, inputText, sources, request
       { role: 'user', content: userContent },
     ],
     response_format: { type: 'json_object' },
-    max_tokens: OPENAI_MAX_OUTPUT_TOKENS,
+    ...(prefersMaxCompletionTokens(provider.model)
+      ? { max_completion_tokens: OPENAI_MAX_OUTPUT_TOKENS }
+      : { max_tokens: OPENAI_MAX_OUTPUT_TOKENS }),
     stream: false,
     ...(provider.providerType === 'deepseek' ? { thinking: { type: 'disabled' } } : {}),
   };
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+  const requestTimeoutMs = providerRequestTimeoutMs(provider);
+  const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
   let upstream;
   let rawText;
   try {
@@ -5087,8 +5465,8 @@ async function callOpenAIChatCompletions({ provider, inputText, sources, request
     });
     rawText = await upstream.text();
   } catch (error) {
-    if (error?.name === 'AbortError') {
-      throw new HttpError(504, 'AI_TIMEOUT', `AI 服务在 ${AI_TIMEOUT_MS}ms 内没有响应`);
+    if (isAiTimeoutError(error)) {
+      throw new HttpError(504, 'AI_TIMEOUT', `AI 服务在 ${requestTimeoutMs}ms 内没有响应`);
     }
     throw new HttpError(
       502,
@@ -5150,6 +5528,10 @@ async function callOpenAIChatCompletions({ provider, inputText, sources, request
   return result;
 }
 
+function prefersMaxCompletionTokens(model) {
+  return /^(?:gpt(?:-|$)|o\d|chatgpt(?:-|$))/i.test(String(model || '').trim());
+}
+
 function recordProviderUsage(provider, taskType, model) {
   if (!provider?.providerId || provider.providerId === 'environment-fallback') return;
   store.updateChannel(provider.providerId, (channel) => ({
@@ -5204,6 +5586,136 @@ function normalizeGenerateRequest(body, storedSources = []) {
     sourceText,
     sources,
   };
+}
+
+function normalizeLessonRecordInput(body, { requireLessonPlan, allowId }) {
+  assertPlainObject(body, '教案保存请求必须是 JSON 对象');
+  const output = {};
+  if (allowId && body.id !== undefined) {
+    const id = cleanText(body.id, 207);
+    if (!/^lesson-[A-Za-z0-9._~-]{1,200}$/.test(id)) {
+      throw new HttpError(400, 'LESSON_ID_INVALID', '教案编号格式无效');
+    }
+    output.id = id;
+  }
+
+  if (body.lessonPlan !== undefined) {
+    if (!body.lessonPlan || typeof body.lessonPlan !== 'object' || Array.isArray(body.lessonPlan)) {
+      throw new HttpError(400, 'LESSON_PLAN_REQUIRED', '教案内容必须是结构化对象');
+    }
+    const serialized = JSON.stringify(body.lessonPlan);
+    if (Buffer.byteLength(serialized) > 2 * 1024 * 1024) {
+      throw new HttpError(413, 'LESSON_PLAN_TOO_LARGE', '教案内容不能超过 2MB');
+    }
+    const validationError = validateLessonPlan(
+      body.lessonPlan,
+      body.lessonPlan.metadata?.durationMinutes,
+    );
+    if (validationError) throw new HttpError(422, 'INVALID_LESSON_PLAN', validationError);
+    output.lessonPlan = structuredClone(body.lessonPlan);
+  } else if (requireLessonPlan) {
+    throw new HttpError(400, 'LESSON_PLAN_REQUIRED', '请提供需要保存的教案内容');
+  }
+
+  if (body.customSections !== undefined) {
+    if (!Array.isArray(body.customSections) || body.customSections.length > 50) {
+      throw new HttpError(400, 'CUSTOM_SECTIONS_INVALID', '自定义模块必须是最多 50 项的数组');
+    }
+    const seenIds = new Set();
+    let totalBytes = 0;
+    output.customSections = body.customSections.map((section, index) => {
+      assertPlainObject(section, `第 ${index + 1} 个自定义模块必须是 JSON 对象`);
+      const id = cleanText(section.id, 120);
+      const title = cleanText(section.title, 120);
+      const content = cleanText(section.content, 100_000);
+      if (!id || !/^[A-Za-z0-9_-]{1,120}$/.test(id) || seenIds.has(id)) {
+        throw new HttpError(400, 'CUSTOM_SECTION_ID_INVALID', '自定义模块编号无效或重复');
+      }
+      if (!title) throw new HttpError(400, 'CUSTOM_SECTION_TITLE_REQUIRED', '自定义模块标题不能为空');
+      totalBytes += Buffer.byteLength(content);
+      seenIds.add(id);
+      return { id, title, content };
+    });
+    if (totalBytes > 500_000) {
+      throw new HttpError(413, 'CUSTOM_SECTIONS_TOO_LARGE', '自定义模块内容过大');
+    }
+  }
+
+  if (body.sourceFiles !== undefined) {
+    if (!Array.isArray(body.sourceFiles) || body.sourceFiles.length > 100) {
+      throw new HttpError(400, 'SOURCE_FILES_INVALID', '教材来源必须是最多 100 项的数组');
+    }
+    output.sourceFiles = body.sourceFiles.map((file, index) => {
+      assertPlainObject(file, `第 ${index + 1} 个教材来源必须是 JSON 对象`);
+      const name = cleanText(file.name, 180);
+      const type = cleanText(file.type, 120).toLowerCase();
+      const size = parseBoundedInteger(file.size, 0, 0, MAX_PDF_BYTES);
+      if (!name || !/^(?:image\/(?:png|jpeg|webp|gif)|application\/pdf)$/.test(type)) {
+        throw new HttpError(400, 'SOURCE_FILE_INVALID', '教材来源名称或类型无效');
+      }
+      return { name, type, size };
+    });
+  }
+
+  if (body.sectionOrder !== undefined) {
+    if (!Array.isArray(body.sectionOrder) || body.sectionOrder.length > 100) {
+      throw new HttpError(400, 'SECTION_ORDER_INVALID', '教案大纲顺序必须是最多 100 项的数组');
+    }
+    output.sectionOrder = body.sectionOrder.map((item) => {
+      const key = cleanText(item, 120);
+      if (!key || !/^(?:[A-Za-z0-9_-]{1,120}|custom:[A-Za-z0-9_-]{1,113})$/.test(key)) {
+        throw new HttpError(400, 'SECTION_ORDER_INVALID', '教案大纲包含无效模块编号');
+      }
+      return key;
+    });
+    if (new Set(output.sectionOrder).size !== output.sectionOrder.length) {
+      throw new HttpError(422, 'SECTION_ORDER_DUPLICATED', '教案大纲顺序不能包含重复模块');
+    }
+  }
+
+  if (body.sectionTitles !== undefined) {
+    assertPlainObject(body.sectionTitles, '教案大纲标题必须是 JSON 对象');
+    const entries = Object.entries(body.sectionTitles);
+    if (entries.length > 100) throw new HttpError(400, 'SECTION_TITLES_INVALID', '教案大纲标题过多');
+    output.sectionTitles = Object.fromEntries(entries.map(([key, value]) => {
+      if (!/^(?:[A-Za-z0-9_-]{1,120}|custom:[A-Za-z0-9_-]{1,113})$/.test(key)) {
+        throw new HttpError(400, 'SECTION_TITLES_INVALID', '教案大纲标题包含无效模块编号');
+      }
+      const title = cleanText(value, 120);
+      if (!title) throw new HttpError(400, 'SECTION_TITLES_INVALID', '教案大纲标题不能为空');
+      return [key, title];
+    }));
+  }
+
+  const plan = output.lessonPlan || body.lessonPlan;
+  for (const field of ['title', 'subject', 'grade']) {
+    if (body[field] !== undefined) output[field] = cleanText(body[field], field === 'title' ? 200 : 100);
+  }
+  if (requireLessonPlan) {
+    output.title ||= cleanText(
+      plan.metadata?.lessonTitle || plan.metadata?.title || `${plan.metadata?.chapterTitle || '未命名章节'}教学设计`,
+      200,
+    );
+    output.subject ||= cleanText(plan.metadata?.subject, 100);
+    output.grade ||= cleanText(plan.metadata?.grade, 100);
+    output.customSections ||= [];
+    output.sectionOrder ||= [];
+    output.sectionTitles ||= {};
+    output.sourceFiles ||= [];
+  }
+
+  const mutableFields = ['lessonPlan', 'customSections', 'sectionOrder', 'sectionTitles', 'sourceFiles', 'title', 'subject', 'grade'];
+  if (!requireLessonPlan && !mutableFields.some((field) => Object.hasOwn(output, field))) {
+    throw new HttpError(400, 'LESSON_UPDATE_EMPTY', '没有需要保存的教案修改');
+  }
+  return output;
+}
+
+function generatedLessonRecordInput(lessonPlan, sourceFiles = []) {
+  return normalizeLessonRecordInput(
+    { lessonPlan, sourceFiles },
+    { requireLessonPlan: true, allowId: false },
+  );
 }
 
 function normalizeRevisionJobRequest(body) {

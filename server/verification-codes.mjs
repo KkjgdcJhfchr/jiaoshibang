@@ -24,8 +24,8 @@ export function createVerificationCodeService({
   const deliveryHistory = new Map();
 
   async function issue({ identifier, purpose, deliver, shouldDeliver = true }) {
-    const target = normalizeVerificationTarget(identifier);
     assertPurpose(purpose);
+    const target = normalizeVerificationTarget(identifier, { allowPhone: purpose === 'checkout' });
     const key = challengeKey(target.key, purpose);
     enforceDeliveryRate(key);
 
@@ -70,8 +70,8 @@ export function createVerificationCodeService({
   }
 
   function verify({ identifier, purpose, code, verificationId = '' }) {
-    const target = normalizeVerificationTarget(identifier);
     assertPurpose(purpose);
+    const target = normalizeVerificationTarget(identifier, { allowPhone: purpose === 'checkout' });
     const key = challengeKey(target.key, purpose);
     const challenge = challenges.get(key);
     const provided = String(code || '').trim();
@@ -152,17 +152,19 @@ export function createVerificationCodeService({
   return { issue, verify };
 }
 
-export function normalizeVerificationTarget(identifier) {
+export function normalizeVerificationTarget(identifier, { allowPhone = false } = {}) {
   const original = String(identifier || '').trim();
-  const phone = original.replace(/^(?:\+?86|0086)/, '').replace(/[\s-]/g, '');
-  if (/^1[3-9]\d{9}$/.test(phone)) {
-    return { channel: 'sms', value: phone, key: `phone:${phone}` };
+  if (allowPhone) {
+    const phone = original.replace(/^(?:\+?86|0086)/, '').replace(/[\s-]/g, '');
+    if (/^1[3-9]\d{9}$/.test(phone)) {
+      return { channel: 'sms', value: phone, key: `phone:${phone}` };
+    }
   }
   const email = original.toLowerCase();
   if (/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/u.test(email) && email.length <= 254) {
     return { channel: 'email', value: email, key: `email:${email}` };
   }
-  throw new VerificationCodeError('IDENTIFIER_INVALID', '请输入有效的中国大陆手机号或邮箱地址');
+  throw new VerificationCodeError('IDENTIFIER_INVALID', allowPhone ? '请输入有效的邮箱或中国大陆手机号' : '请输入有效的邮箱地址');
 }
 
 function assertPurpose(purpose) {

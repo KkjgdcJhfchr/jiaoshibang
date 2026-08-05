@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDown,
   ArrowRight,
@@ -15,6 +15,7 @@ import {
   Filter,
   GitBranch,
   ListChecks,
+  LoaderCircle,
   MessageSquareText,
   Network,
   Plus,
@@ -27,26 +28,10 @@ import {
   UsersRound,
   X,
 } from 'lucide-react';
-import { sampleLesson } from '../data/sampleLesson.js';
 import { api } from '../lib/api.js';
 import { navigate } from '../lib/navigation.jsx';
-import { Button, Status, TeacherShell, Toast } from './components.jsx';
-
-function readCurrentLesson() {
-  try {
-    return JSON.parse(localStorage.getItem('current-lesson')) || sampleLesson;
-  } catch {
-    return sampleLesson;
-  }
-}
-
-function readStoredLesson() {
-  try {
-    return JSON.parse(localStorage.getItem('current-lesson')) || null;
-  } catch {
-    return null;
-  }
-}
+import { Button, EmptyState, Status, TeacherShell, Toast } from './components.jsx';
+import { useLessonRecord } from './useLessonRecords.js';
 
 function lessonTitle(lesson) {
   return lesson.metadata?.title || `${lesson.metadata?.chapter || '当前章节'}教学设计`;
@@ -144,8 +129,26 @@ function graphLayout(points, questions) {
   return { canvasHeight, pointNodes, questionNodes };
 }
 
+function LessonWorkflowState({ path, title, loading, error, onRetry }) {
+  return (
+    <TeacherShell path={path} title={title} subtitle="内容只会基于当前账户实际生成并保存的教案显示。">
+      <EmptyState
+        icon={loading ? LoaderCircle : BookOpen}
+        title={loading ? '正在读取教案' : error ? '教案暂时无法读取' : '还没有可用教案'}
+        text={loading ? '正在从你的账户同步教案，请稍候。' : error || '请先创建并完成一份教案，再使用此功能。'}
+        action={!loading ? <Button onClick={error ? onRetry : () => navigate('/app/create')}>{error ? '重新加载' : '创建教案'}</Button> : null}
+      />
+    </TeacherShell>
+  );
+}
+
 export function KnowledgeMapPage({ path }) {
-  const lesson = useMemo(readCurrentLesson, []);
+  const state = useLessonRecord(path);
+  if (!state.lesson) return <LessonWorkflowState path={path} title="教学认知图谱" loading={state.loading} error={state.error} onRetry={() => void state.reload()} />;
+  return <KnowledgeMapContent path={path} lesson={state.lesson} lessonId={state.lessonId} />;
+}
+
+function KnowledgeMapContent({ path, lesson, lessonId }) {
   const points = useMemo(() => knowledgeList(lesson), [lesson]);
   const questions = lesson.exercises || [];
   const { canvasHeight, pointNodes, questionNodes } = useMemo(() => graphLayout(points, questions), [points, questions]);
@@ -175,7 +178,7 @@ export function KnowledgeMapPage({ path }) {
             <span className="workflow-icon"><Network size={25} /></span>
             <div><p>当前教案</p><h2>{lessonTitle(lesson)}</h2><small>{lesson.metadata?.grade} · {lesson.metadata?.subject} · 自动关联 {questions.length} 道题</small></div>
           </div>
-          <div className="workflow-hero-actions"><Button variant="secondary" onClick={() => navigate(`/app/lesson/${lesson.id || 'lesson-spring-001'}`)}>返回教案</Button><Button icon={Sparkles} onClick={reextract} disabled={extracting}>{extracting ? '正在校验…' : '重新分析关系'}</Button></div>
+          <div className="workflow-hero-actions"><Button variant="secondary" onClick={() => navigate(`/app/lesson/${lessonId}`)}>返回教案</Button><Button icon={Sparkles} onClick={reextract} disabled={extracting}>{extracting ? '正在校验…' : '重新分析关系'}</Button></div>
         </section>
 
         <div className="knowledge-metrics">
@@ -221,8 +224,8 @@ export function KnowledgeMapPage({ path }) {
                 <header><span><Network size={17} /></span><div><small>已选知识点</small><h3>{selected.name}</h3></div></header>
                 <dl><div><dt>认知层级</dt><dd>{selected.cognitive}</dd></div><div><dt>适用环节</dt><dd>{selected.phase}</dd></div><div><dt>关联完整度</dt><dd>{selected.confidence}%</dd></div><div><dt>关联习题</dt><dd>{linkedQuestions.length} 道</dd></div></dl>
                 <div className="knowledge-confidence"><p><span>关联完整度</span><b>{selected.confidence}%</b></p><i><span style={{ width: `${selected.confidence}%` }} /></i><small>依据教案目标、重难点与题目标注综合计算</small></div>
-                <div className="linked-question-list"><h4>关联题目</h4>{linkedQuestions.map((question, index) => <button key={question.id || index} onClick={() => navigate('/app/papers')}><span>{question.id?.replace('q', '') || index + 1}</span><p><b>{question.stem}</b><small>{questionTypeLabel(question.type)} · 难度 {question.difficulty}/5</small></p><ArrowRight size={14} /></button>)}{!linkedQuestions.length ? <p className="empty-linked">暂无直接关联题目，建议人工确认后补充。</p> : null}</div>
-                <Button icon={FileText} onClick={() => navigate('/app/papers')}>基于该知识点组卷</Button>
+                <div className="linked-question-list"><h4>关联题目</h4>{linkedQuestions.map((question, index) => <button key={question.id || index} onClick={() => navigate(`/app/papers/${lessonId}`)}><span>{question.id?.replace('q', '') || index + 1}</span><p><b>{question.stem}</b><small>{questionTypeLabel(question.type)} · 难度 {question.difficulty}/5</small></p><ArrowRight size={14} /></button>)}{!linkedQuestions.length ? <p className="empty-linked">暂无直接关联题目，建议人工确认后补充。</p> : null}</div>
+                <Button icon={FileText} onClick={() => navigate(`/app/papers/${lessonId}`)}>基于该知识点组卷</Button>
               </> : <div className="knowledge-detail-empty"><BookOpen size={27} /><h3>{lesson.metadata?.chapter}</h3><p>请选择一个知识点查看详情。</p></div>}
             </aside>
           </div>
@@ -261,7 +264,6 @@ function downloadFile(content, name) {
   setTimeout(() => URL.revokeObjectURL(url), 500);
 }
 
-const TEAM_REVIEWS_KEY = 'teacher-helper.team-reviews.v2';
 const MAX_REVIEW_ACTIVITIES = 30;
 
 function reviewActivity(author, text) {
@@ -273,8 +275,54 @@ function reviewActivity(author, text) {
   };
 }
 
+function reviewRecordFromResponse(response) {
+  return response?.data?.review || response?.review || null;
+}
+
+function reviewRecordsFromResponse(response) {
+  const reviews = response?.data?.reviews || response?.reviews;
+  return Array.isArray(reviews) ? reviews : [];
+}
+
+function reviewUpdatedLabel(value) {
+  const timestamp = new Date(value || '').getTime();
+  if (!Number.isFinite(timestamp)) return '刚刚';
+  return new Date(timestamp).toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function normalizeReviewRecord(record) {
+  const explicitUpdated = String(record?.updated || '');
+  const explicitUpdatedTime = new Date(explicitUpdated).getTime();
+  return {
+    ...record,
+    id: String(record?.id || ''),
+    title: String(record?.title || '未命名评审'),
+    owner: String(record?.owner || '当前教师'),
+    subject: String(record?.subject || '课程待确认'),
+    reviewers: Array.isArray(record?.reviewers) ? record.reviewers : [],
+    comments: Number(record?.comments || 0),
+    status: String(record?.status || '草稿'),
+    source: String(record?.source || '教案'),
+    questions: Array.isArray(record?.questions) ? record.questions : [],
+    activities: Array.isArray(record?.activities) ? record.activities : [],
+    updated: Number.isFinite(explicitUpdatedTime)
+      ? reviewUpdatedLabel(explicitUpdated)
+      : (explicitUpdated || reviewUpdatedLabel(record?.updatedAt || record?.createdAt)),
+  };
+}
+
 export function PaperBuilderPage({ path }) {
-  const lesson = useMemo(readCurrentLesson, []);
+  const state = useLessonRecord(path);
+  if (!state.lesson) return <LessonWorkflowState path={path} title="智能组卷" loading={state.loading} error={state.error} onRetry={() => void state.reload()} />;
+  return <PaperBuilderContent path={path} lesson={state.lesson} lessonId={state.lessonId} />;
+}
+
+function PaperBuilderContent({ path, lesson, lessonId }) {
   const initialQuestions = useMemo(() => paperQuestions(lesson), [lesson]);
   const [questions, setQuestions] = useState(initialQuestions);
   const [selectedIds, setSelectedIds] = useState(() => new Set(initialQuestions.slice(0, 10).map((item) => item.id)));
@@ -283,6 +331,7 @@ export function PaperBuilderPage({ path }) {
   const [query, setQuery] = useState('');
   const [preview, setPreview] = useState(false);
   const [toast, setToast] = useState('');
+  const [publishingReview, setPublishingReview] = useState(false);
   const selectedQuestions = questions.filter((question) => selectedIds.has(question.id));
   const types = ['全部题型', ...new Set(questions.map((question) => question.type))];
   const filtered = questions.filter((question) => {
@@ -322,12 +371,34 @@ export function PaperBuilderPage({ path }) {
   }
   const title = `${lesson.metadata?.chapter || '当前章节'}同步练习`;
 
+  async function publishReviewDraft() {
+    if (publishingReview) return;
+    setPublishingReview(true);
+    try {
+      await api.createReview({
+        title,
+        subject: [lesson.metadata?.grade, lesson.metadata?.subject].filter(Boolean).join(' · ') || '课程待确认',
+        reviewers: [],
+        comments: 0,
+        status: '草稿',
+        source: '试卷',
+        questions: selectedQuestions,
+        activities: [],
+      });
+      navigate('/app/team');
+    } catch (error) {
+      setToast(error.message || '评审草稿保存失败，请稍后重试。');
+    } finally {
+      setPublishingReview(false);
+    }
+  }
+
   return (
     <TeacherShell path={path} title="智能组卷" subtitle="从教案意图和知识点出发，完成选题、排序、预览与双版本导出">
       <div className="workflow-page paper-page">
         <section className="workflow-hero paper-hero">
           <div><span className="workflow-icon"><FileCheck2 size={25} /></span><div><p>基于当前教案</p><h2>{title}</h2><small>{lesson.metadata?.grade} · {lesson.metadata?.subject} · {selectedQuestions.length} 道题 · {selectedQuestions.length * 10} 分</small></div></div>
-          <div className="workflow-hero-actions"><Button variant="secondary" icon={Network} onClick={() => navigate('/app/knowledge')}>查看图谱</Button><Button icon={Shuffle} onClick={smartOrder}>智能排序</Button></div>
+          <div className="workflow-hero-actions"><Button variant="secondary" icon={Network} onClick={() => navigate(`/app/lesson/${lessonId}/knowledge`)}>查看图谱</Button><Button icon={Shuffle} onClick={smartOrder}>智能排序</Button></div>
         </section>
 
         <div className="paper-builder-layout">
@@ -358,7 +429,7 @@ export function PaperBuilderPage({ path }) {
             <dl className="paper-health"><div><dt>知识点覆盖</dt><dd>{knowledgeCoverage} 个</dd></div><div><dt>题干完全重复</dt><dd className={duplicateCount ? '' : 'healthy'}>{duplicateCount} 道</dd></div><div><dt>答案与解析</dt><dd className={answersComplete ? 'healthy' : ''}>{answersComplete ? '完整' : '需补充'}</dd></div><div><dt>人工审核</dt><dd>导出前确认</dd></div></dl>
             <div className="paper-outline-list"><h4>题目顺序</h4>{selectedQuestions.map((question, index) => <button key={question.id} onClick={() => toggleQuestion(question.id)}><span>{index + 1}</span><p><b>{questionTypeLabel(question.type)}</b><small>{question.stem}</small></p><X size={14} /></button>)}</div>
             <div className="paper-actions"><Button variant="secondary" icon={Eye} onClick={() => setPreview(true)}>预览试卷</Button><Button icon={Download} onClick={() => { downloadFile(paperHtml(title, selectedQuestions, true), `${title}-答案版.doc`); setToast('答案版 Word 已开始下载'); }}>导出答案版</Button></div>
-            <button className="publish-team" onClick={() => { localStorage.setItem('pending-team-paper', JSON.stringify({ title, questions: selectedQuestions, createdAt: new Date().toISOString() })); navigate('/app/team'); }}><Share2 size={15} /> 保存为评审草稿</button>
+            <button className="publish-team" onClick={() => void publishReviewDraft()} disabled={publishingReview}><Share2 size={15} /> {publishingReview ? '正在保存…' : '保存为评审草稿'}</button>
           </aside>
         </div>
         <p className="workflow-disclosure"><ShieldCheck size={15} /> 当前题目均来自本教案的结构化习题，请在导出前核对题干、答案与难度是否符合本班学情。</p>
@@ -369,45 +440,56 @@ export function PaperBuilderPage({ path }) {
   );
 }
 
-function loadTeamReviews() {
-  try {
-    const stored = JSON.parse(localStorage.getItem(TEAM_REVIEWS_KEY));
-    const reviews = Array.isArray(stored) ? stored : [];
-    const pendingPaper = JSON.parse(localStorage.getItem('pending-team-paper'));
-    if (pendingPaper?.title && !reviews.some((item) => item.title === pendingPaper.title)) {
-      localStorage.removeItem('pending-team-paper');
-      return [{ title: pendingPaper.title, owner: '当前教师', subject: '当前学科', reviewers: [], comments: 0, status: '草稿', updated: '刚刚', source: '试卷' }, ...reviews];
-    }
-    return reviews;
-  } catch { return []; }
-}
-
 export function TeamWorkspacePage({ path }) {
-  const lesson = useMemo(readStoredLesson, []);
-  const [reviews, setReviews] = useState(loadTeamReviews);
+  const { lesson } = useLessonRecord(path);
+  const [reviews, setReviews] = useState([]);
   const reviewsRef = useRef(reviews);
   const [toast, setToast] = useState('');
   const [comment, setComment] = useState('');
   const [filter, setFilter] = useState('全部');
-  const [selectedTitle, setSelectedTitle] = useState(() => loadTeamReviews()[0]?.title || '');
-  const [activities, setActivities] = useState([]);
-  const selectedReview = reviews.find((item) => item.title === selectedTitle) || reviews[0] || null;
+  const [selectedReviewId, setSelectedReviewId] = useState('');
+  const [loadingReviews, setLoadingReviews] = useState(true);
+  const [reviewError, setReviewError] = useState('');
+  const [savingReview, setSavingReview] = useState(false);
+  const selectedReview = reviews.find((item) => item.id === selectedReviewId) || reviews[0] || null;
+  const activities = selectedReview?.activities || [];
   const visibleReviews = reviews.filter((review) => filter === '全部' || (filter === '待我处理' ? review.status === '待评审' : review.owner === '当前教师'));
   reviewsRef.current = reviews;
 
-  function replaceReviews(updater) {
+  const loadReviews = useCallback(async () => {
+    setLoadingReviews(true);
+    setReviewError('');
+    try {
+      const response = await api.getReviews();
+      const records = reviewRecordsFromResponse(response).map(normalizeReviewRecord).filter((item) => item.id);
+      reviewsRef.current = records;
+      setReviews(records);
+      setSelectedReviewId((current) => (records.some((item) => item.id === current) ? current : (records[0]?.id || '')));
+    } catch (error) {
+      setReviewError(error.message || '评审任务暂时无法读取，请稍后重试。');
+      reviewsRef.current = [];
+      setReviews([]);
+      setSelectedReviewId('');
+    } finally {
+      setLoadingReviews(false);
+    }
+  }, []);
+
+  useEffect(() => { void loadReviews(); }, [loadReviews]);
+
+  function replaceReview(record) {
+    const normalized = normalizeReviewRecord(record);
     const current = reviewsRef.current;
-    const next = typeof updater === 'function' ? updater(current) : updater;
-    if (next === current) return false;
+    const next = current.some((item) => item.id === normalized.id)
+      ? current.map((item) => (item.id === normalized.id ? normalized : item))
+      : [normalized, ...current];
     reviewsRef.current = next;
-    localStorage.setItem(TEAM_REVIEWS_KEY, JSON.stringify(next));
     setReviews(next);
-    return true;
+    setSelectedReviewId(normalized.id);
+    return normalized;
   }
-  function addActivity(activity) {
-    setActivities((items) => [activity, ...items].slice(0, MAX_REVIEW_ACTIVITIES));
-  }
-  function startReview() {
+
+  async function startReview() {
     if (!lesson) {
       setToast('请先创建或打开一份教案，再发起评审');
       return;
@@ -415,47 +497,79 @@ export function TeamWorkspacePage({ path }) {
     const baseTitle = lessonTitle(lesson);
     const existing = reviewsRef.current.find((item) => item.title === baseTitle);
     if (existing) {
-      setSelectedTitle(existing.title);
+      setSelectedReviewId(existing.id);
       setToast('当前教案已有评审任务');
       return;
     }
     const subject = [lesson.metadata?.grade, lesson.metadata?.subject].filter(Boolean).join(' · ') || '课程待确认';
-    const review = { title: baseTitle, owner: '当前教师', subject, reviewers: [], comments: 0, status: '草稿', updated: '刚刚' };
-    replaceReviews((items) => [review, ...items]);
-    setSelectedTitle(review.title);
-    setToast('评审草稿已保存');
+    setSavingReview(true);
+    try {
+      const response = await api.createReview({ title: baseTitle, subject, reviewers: [], comments: 0, status: '草稿', source: '教案', questions: [], activities: [] });
+      const review = reviewRecordFromResponse(response);
+      if (!review) throw new Error('服务器没有返回评审任务。');
+      replaceReview(review);
+      setToast('评审草稿已保存到当前账户');
+    } catch (error) {
+      setToast(error.message || '评审草稿保存失败，请稍后重试。');
+    } finally {
+      setSavingReview(false);
+    }
   }
-  function submitComment() {
+
+  async function submitComment() {
     const value = comment.trim();
-    if (!value || !selectedReview) return;
-    replaceReviews((items) => items.map((item) => item.title === selectedReview.title ? { ...item, comments: Number(item.comments || 0) + 1, updated: '刚刚' } : item));
-    addActivity(reviewActivity('当前教师', value));
-    setComment('');
-    setToast('评审意见已保存在当前浏览器');
+    if (!value || !selectedReview || savingReview) return;
+    setSavingReview(true);
+    const activity = reviewActivity('当前教师', value);
+    try {
+      const response = await api.updateReview(selectedReview.id, {
+        comments: Number(selectedReview.comments || 0) + 1,
+        activities: [activity, ...activities].slice(0, MAX_REVIEW_ACTIVITIES),
+      });
+      const review = reviewRecordFromResponse(response);
+      if (!review) throw new Error('服务器没有返回更新后的评审任务。');
+      replaceReview(review);
+      setComment('');
+      setToast('评审意见已保存到当前账户');
+    } catch (error) {
+      setToast(error.message || '评审意见保存失败，请稍后重试。');
+    } finally {
+      setSavingReview(false);
+    }
   }
-  function decide(status) {
-    if (!selectedReview) return;
-    const changed = replaceReviews((items) => {
-      const current = items.find((item) => item.title === selectedReview.title);
-      if (!current || current.status === status) return items;
-      return items.map((item) => item.title === selectedReview.title ? { ...item, status, updated: '刚刚' } : item);
-    });
-    if (!changed) {
+
+  async function decide(status) {
+    if (!selectedReview || savingReview) return;
+    if (selectedReview.status === status) {
       setToast(status === '已通过' ? '当前任务已经是通过状态' : '当前任务已经是退回修改状态');
       return;
     }
-    addActivity(reviewActivity('系统', status === '已通过' ? '评审已通过' : '已退回作者修改'));
-    setToast(status === '已通过' ? '当前任务已标记为通过' : '当前任务已标记为退回修改');
+    setSavingReview(true);
+    const activity = reviewActivity('系统', status === '已通过' ? '评审已通过' : '已退回作者修改');
+    try {
+      const response = await api.updateReview(selectedReview.id, {
+        status,
+        activities: [activity, ...activities].slice(0, MAX_REVIEW_ACTIVITIES),
+      });
+      const review = reviewRecordFromResponse(response);
+      if (!review) throw new Error('服务器没有返回更新后的评审任务。');
+      replaceReview(review);
+      setToast(status === '已通过' ? '当前任务已标记为通过' : '当前任务已标记为退回修改');
+    } catch (error) {
+      setToast(error.message || '评审状态保存失败，请稍后重试。');
+    } finally {
+      setSavingReview(false);
+    }
   }
   return (
     <TeacherShell path={path} title="教案评审" subtitle="集中查看草稿、记录批注，让每次修改都有依据">
       <div className="workflow-page team-page">
-        <section className="workflow-hero team-hero"><div><span className="workflow-icon"><UsersRound size={25} /></span><div><p>教案评审工作区</p><h2>通过评审记录持续打磨教学内容</h2><small>{reviews.length} 项评审任务 · {reviews.filter((item) => item.status === '待评审').length} 项等待处理</small></div></div><div className="workflow-hero-actions"><Button icon={FileCheck2} onClick={startReview}>创建评审草稿</Button></div></section>
-        <div className="team-metrics"><article><span><FileText size={18} /></span><div><strong>{reviews.length}</strong><small>评审任务</small></div><p>保存在当前浏览器</p></article><article><span><MessageSquareText size={18} /></span><div><strong>{reviews.reduce((sum, item) => sum + Number(item.comments || 0), 0)}</strong><small>评审批注</small></div><p>随任务保留</p></article><article><span><CheckCircle2 size={18} /></span><div><strong>{reviews.filter((item) => item.status === '已通过').length}</strong><small>已通过</small></div><p>状态可追溯</p></article><article><span><FileCheck2 size={18} /></span><div><strong>{reviews.filter((item) => item.status === '草稿').length}</strong><small>待完善草稿</small></div><p>可继续补充批注</p></article></div>
-        <div className="team-layout"><section className="review-queue"><header className="workflow-panel-head"><div><h3>评审队列</h3><p>可在当前浏览器中筛选任务、记录批注并更新评审状态。</p></div><div className="view-switch">{['全部', '待我处理', '我发起的'].map((item) => <button key={item} className={filter === item ? 'active' : ''} onClick={() => setFilter(item)}>{item}</button>)}</div></header><div className="review-table"><div className="review-row head"><span>教案</span><span>发起人</span><span>评审人</span><span>批注</span><span>状态</span><span>更新</span></div>{visibleReviews.map((review) => <button className={`review-row ${selectedReview?.title === review.title ? 'selected' : ''}`} key={review.title} onClick={() => setSelectedTitle(review.title)}><span><b>{review.title}</b><small>{review.subject}</small></span><span>{review.owner}</span><span className="reviewer-stack">{review.reviewers.length ? review.reviewers.map((reviewer) => <i key={reviewer}>{reviewer}</i>) : <small>未分配</small>}</span><span>{review.comments} 条</span><span><Status>{review.status === '待评审' ? '审核中' : review.status === '已通过' ? '已完成' : review.status === '修改中' ? '修改中' : '草稿'}</Status></span><span>{review.updated}</span></button>)}{!visibleReviews.length ? <p className="review-empty">当前筛选下没有评审任务。</p> : null}</div></section>
-          <aside className="team-activity"><header><div><h3>评审动态</h3><p>当前选中：{selectedReview?.title || '暂无任务'}</p></div><span>{selectedReview?.status || '—'}</span></header><div className="activity-stream">{activities.map((activity) => <article key={activity.id}><span className={activity.author === '系统' ? 'system' : ''}>{activity.author === '系统' ? <Clock3 size={15} /> : activity.author.slice(0, 1)}</span><div><p><b>{activity.author}</b></p><blockquote>{activity.text}</blockquote><small>{activity.time}</small></div></article>)}{!activities.length ? <article><span className="system"><Clock3 size={15} /></span><div><p><b>系统</b> 等待新的评审记录</p><small>当前会话</small></div></article> : null}</div><div className="team-comment"><textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder="写下具体、可执行的评审意见…" /><Button size="sm" icon={Send} disabled={!comment.trim() || !selectedReview} onClick={submitComment}>保存批注</Button></div><div className="review-decision"><button onClick={() => decide('修改中')} disabled={!selectedReview || selectedReview.status === '修改中'}>标记退回</button><button onClick={() => decide('已通过')} disabled={!selectedReview || selectedReview.status === '已通过'}><CheckCircle2 size={16} /> 标记通过</button></div></aside>
+        <section className="workflow-hero team-hero"><div><span className="workflow-icon"><UsersRound size={25} /></span><div><p>教案评审工作区</p><h2>通过评审记录持续打磨教学内容</h2><small>{reviews.length} 项评审任务 · {reviews.filter((item) => item.status === '待评审').length} 项等待处理</small></div></div><div className="workflow-hero-actions"><Button icon={FileCheck2} onClick={() => void startReview()} disabled={savingReview}>{savingReview ? '正在保存…' : '创建评审草稿'}</Button></div></section>
+        <div className="team-metrics"><article><span><FileText size={18} /></span><div><strong>{reviews.length}</strong><small>评审任务</small></div><p>保存在当前账户</p></article><article><span><MessageSquareText size={18} /></span><div><strong>{reviews.reduce((sum, item) => sum + Number(item.comments || 0), 0)}</strong><small>评审批注</small></div><p>跨设备同步</p></article><article><span><CheckCircle2 size={18} /></span><div><strong>{reviews.filter((item) => item.status === '已通过').length}</strong><small>已通过</small></div><p>状态可追溯</p></article><article><span><FileCheck2 size={18} /></span><div><strong>{reviews.filter((item) => item.status === '草稿').length}</strong><small>待完善草稿</small></div><p>可继续补充批注</p></article></div>
+        <div className="team-layout"><section className="review-queue"><header className="workflow-panel-head"><div><h3>评审队列</h3><p>任务、批注和状态会保存在当前账户并跨设备同步。</p></div><div className="view-switch">{['全部', '待我处理', '我发起的'].map((item) => <button key={item} className={filter === item ? 'active' : ''} onClick={() => setFilter(item)}>{item}</button>)}</div></header><div className="review-table"><div className="review-row head"><span>教案</span><span>发起人</span><span>评审人</span><span>批注</span><span>状态</span><span>更新</span></div>{visibleReviews.map((review) => <button className={`review-row ${selectedReview?.id === review.id ? 'selected' : ''}`} key={review.id} onClick={() => setSelectedReviewId(review.id)}><span><b>{review.title}</b><small>{review.subject}</small></span><span>{review.owner}</span><span className="reviewer-stack">{review.reviewers.length ? review.reviewers.map((reviewer) => <i key={reviewer}>{reviewer}</i>) : <small>未分配</small>}</span><span>{review.comments} 条</span><span><Status>{review.status === '待评审' ? '审核中' : review.status === '已通过' ? '已完成' : review.status === '修改中' ? '修改中' : '草稿'}</Status></span><span>{review.updated}</span></button>)}{loadingReviews ? <p className="review-empty"><LoaderCircle className="spin" size={17} /> 正在读取评审任务…</p> : null}{!loadingReviews && reviewError ? <p className="review-empty">{reviewError} <button type="button" onClick={() => void loadReviews()}>重新加载</button></p> : null}{!loadingReviews && !reviewError && !visibleReviews.length ? <p className="review-empty">当前筛选下没有评审任务。</p> : null}</div></section>
+          <aside className="team-activity"><header><div><h3>评审动态</h3><p>当前选中：{selectedReview?.title || '暂无任务'}</p></div><span>{selectedReview?.status || '—'}</span></header><div className="activity-stream">{activities.map((activity) => <article key={activity.id}><span className={activity.author === '系统' ? 'system' : ''}>{activity.author === '系统' ? <Clock3 size={15} /> : activity.author.slice(0, 1)}</span><div><p><b>{activity.author}</b></p><blockquote>{activity.text}</blockquote><small>{activity.time}</small></div></article>)}{!activities.length ? <article><span className="system"><Clock3 size={15} /></span><div><p><b>系统</b> 等待新的评审记录</p><small>当前任务</small></div></article> : null}</div><div className="team-comment"><textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder="写下具体、可执行的评审意见…" disabled={savingReview} /><Button size="sm" icon={Send} disabled={!comment.trim() || !selectedReview || savingReview} onClick={() => void submitComment()}>{savingReview ? '保存中…' : '保存批注'}</Button></div><div className="review-decision"><button onClick={() => void decide('修改中')} disabled={!selectedReview || selectedReview.status === '修改中' || savingReview}>标记退回</button><button onClick={() => void decide('已通过')} disabled={!selectedReview || selectedReview.status === '已通过' || savingReview}><CheckCircle2 size={16} /> 标记通过</button></div></aside>
         </div>
-        <p className="workflow-disclosure"><ShieldCheck size={15} /> 草稿、批注与评审状态保存在当前浏览器，请及时导出或备份重要内容。</p>
+        <p className="workflow-disclosure"><ShieldCheck size={15} /> 草稿、批注与评审状态仅保存在当前账户，其他用户无法查看。</p>
       </div>
       {toast ? <Toast message={toast} onClose={() => setToast('')} /> : null}
     </TeacherShell>
