@@ -18,6 +18,51 @@ const footerEntries = [...entries.entries()].filter(([name]) => /^word\/footer\d
 assert.ok(documentXml, 'DOCX 缺少 word/document.xml');
 assert.ok(footerEntries.length > 0, 'DOCX 缺少 footer.xml');
 
+const bodyXml = documentXml.match(/<w:body>([\s\S]*?)<\/w:body>/)?.[1] || '';
+const topLevelTables = extractTopLevelElements(bodyXml, 'w:tbl');
+const headedTables = topLevelTables.filter((table) => /<w:tblHeader(?:\s[^>]*)?\/>/.test(table));
+const timelineCount = model.sections
+  .find((section) => section.kind === 'timeline')?.data?.stages?.length || 0;
+const exerciseCount = model.sections
+  .find((section) => section.kind === 'exercises')?.data?.items?.length || 0;
+assert.equal(
+  headedTables.length,
+  timelineCount + exerciseCount,
+  '每个教学环节和每道习题必须各自使用一个带重复表头的连续表格',
+);
+for (const table of headedTables) {
+  const rows = extractTopLevelElements(table, 'w:tr');
+  assert.ok(rows.length > 1, '带标题的教学环节或习题表格必须包含明细行');
+  assert.match(rows[0], /<w:tblHeader(?:\s[^>]*)?\/>/, '首行必须是重复表头');
+  assert.match(rows[0], /<w:cantSplit(?:\s[^>]*)?\/>/, '表头不得跨页拆分');
+  for (const row of rows.slice(1)) {
+    assert.match(row, /<w:cantSplit(?:\s[^>]*)?\/>/, '明细行不得跨页拆分');
+  }
+}
+
+const objectiveSection = model.sections.find((section) => section.kind === 'objectives');
+const objectiveTables = topLevelTables.filter((table) => {
+  const nestedTableCount = (table.match(/<w:tbl(?:\s[^>]*)?>/g) || []).length;
+  return nestedTableCount > 1;
+});
+assert.equal(
+  objectiveTables.length,
+  objectiveSection?.data?.objectives?.length || 0,
+  '每个教学目标必须使用一个不可拆分的外层表格保持整体分页',
+);
+for (const table of objectiveTables) {
+  const rows = extractTopLevelElements(table, 'w:tr');
+  assert.equal(rows.length, 1, '教学目标外层表格只能包含一个整体行');
+  assert.match(rows[0], /<w:cantSplit(?:\s[^>]*)?\/>/, '单个教学目标不得跨页拆分');
+}
+
+const beforeSectPr = bodyXml.replace(/<w:sectPr[\s\S]*$/, '').trim();
+assert.match(
+  beforeSectPr,
+  /<\/w:tbl>$/,
+  '最后一道习题后不得残留会生成空白页的空段落',
+);
+
 const footerXml = footerEntries.map(([, contents]) => contents.toString('utf8')).join('\n');
 const inspectedXml = `${documentXml}\n${footerXml}`;
 assert.doesNotMatch(
@@ -111,4 +156,25 @@ function decodeXml(value) {
 
 function normalizeVisibleText(value) {
   return String(value ?? '').replace(/\s+/g, '');
+}
+
+function extractTopLevelElements(xml, tagName) {
+  const token = new RegExp(`<${tagName}(?:\\s[^>]*)?>|<\\/${tagName}>`, 'g');
+  const output = [];
+  let depth = 0;
+  let start = -1;
+
+  for (const match of xml.matchAll(token)) {
+    if (match[0].startsWith('</')) {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        output.push(xml.slice(start, match.index + match[0].length));
+        start = -1;
+      }
+    } else {
+      if (depth === 0) start = match.index;
+      depth += 1;
+    }
+  }
+  return output;
 }

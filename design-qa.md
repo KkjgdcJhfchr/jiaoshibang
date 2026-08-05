@@ -40,4 +40,29 @@
 - 已在生产环境提交一条真实 AI 定向注释，修改任务成功完成；生成后自动退出注释、进入“完成编辑”状态，修改版使用正常教案版式，并已保存。
 - 生产健康检查正常，应用与反向代理容器均为健康状态。
 
+## 教案导出专项整改与验收（2026-08-05）
+
+### 问题来源
+
+- 注释悬停对比度：`C:\Users\Administrator\AppData\Local\Temp\codex-clipboard-a3e0d636-9010-4b5c-b91e-fff6125add63.png`
+- PDF 裁切、浏览器页眉页脚：`C:\Users\Administrator\AppData\Local\Temp\codex-clipboard-642de39c-0c60-465c-909a-4e691de5138c.png`
+- PDF 异常留白：`C:\Users\Administrator\AppData\Local\Temp\codex-clipboard-592ac127-3a3a-4f6b-89d4-7feb3d6d3074.png`
+- Word 杂乱编号与版式偏差：`C:\Users\Administrator\AppData\Local\Temp\codex-clipboard-b317d6ae-f810-4aaa-b159-ab2c4b9040b4.png`
+
+### 最终实现
+
+- 注释模式悬停仅添加蓝色选区轮廓；板书设计等深色卡片始终保持深色背景、浅色正文与清晰标签，不再出现文字和背景融为一体。
+- PDF 改为服务端生成真实二进制文件并直接下载，不再调用浏览器打印界面；彻底移除浏览器日期、标题、网址和页码页脚。
+- PDF 教学环节改为可跨页的语义表格，跨页重复环节标题；习题按完整题目分块，避免题干、答案或解析被裁切。
+- Word 改为结构化教学文档：教学目标整体换页，教学环节和习题跨页重复表头；清除列表误解析产生的孤立 1—12 编号和末尾空白页。
+- PDF 与 Word 都从同一份完整教案模型生成，保留九个章节、十道习题、十份参考答案及十份解析。
+
+### 自动化与视觉验收
+
+- PDF 实际渲染为 A4 共 9 页；逐页检查无裁切、横向溢出、网址页脚或异常空白页。
+- PDF 文本回读与导出模型逐项比对，189/189 个可见文本片段全部命中；参考答案 10 条、解析 10 条。
+- Word 经 LibreOffice 实际渲染为 A4 共 11 页；逐页检查无裁切、横向溢出、异常空白页或孤立编号。
+- Word 文本回读与导出模型逐项比对，189/189 个可见文本片段全部命中；教学环节和习题跨页标题均正确重复。
+- 导出单元测试覆盖真实文件签名、Content-Type、Content-Disposition、重复表头、不可拆分行和末尾空段落回归。
+
 final result: passed

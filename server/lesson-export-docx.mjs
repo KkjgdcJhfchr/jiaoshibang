@@ -70,6 +70,12 @@ const NO_TABLE_BORDERS = {
   insideHorizontal: NO_BORDER,
   insideVertical: NO_BORDER,
 };
+const NO_CELL_BORDERS = {
+  top: NO_BORDER,
+  bottom: NO_BORDER,
+  left: NO_BORDER,
+  right: NO_BORDER,
+};
 
 export async function generateLessonDocx(model) {
   const exportModel = isRecord(model) ? model : {};
@@ -293,7 +299,7 @@ function addObjectives(children, data) {
     children.push(spacer());
   }
   const objectives = array(data.objectives);
-  for (const objective of objectives) {
+  objectives.forEach((objective, index) => {
     const item = record(objective);
     const rows = [
       ['目标类型', clean(item.type) || '教学目标'],
@@ -305,9 +311,10 @@ function addObjectives(children, data) {
     children.push(labelDetailTable(rows.filter(([, value]) => hasContent(value)), {
       labelFill: COLORS.pale,
       topAccent: true,
+      keepTogether: true,
     }));
-    children.push(spacer(100));
-  }
+    if (index < objectives.length - 1) children.push(spacer(100));
+  });
   if (!clean(data.sourceSummary) && !array(data.coreCompetencies).length && !objectives.length) addEmpty(children);
 }
 
@@ -342,9 +349,8 @@ function addPreparation(children, data) {
 function addTimeline(children, data) {
   const stages = array(data.stages);
   if (!stages.length) return addEmpty(children);
-  for (const rawStage of stages) {
+  stages.forEach((rawStage, index) => {
     const stage = record(rawStage);
-    children.push(stageBand(stage.stage || '教学环节', timeRange(stage)));
     const rows = [
       ['参与目标', stage.engagementGoal],
       ['教师活动', bulletParagraphs(stage.teacherActions)],
@@ -358,9 +364,9 @@ function addTimeline(children, data) {
       ['备用策略', stage.fallbackStrategy],
       ['教材依据', sourceRefLines(stage.sourceRefs).map((text) => bodyParagraph(text, 50))],
     ].filter(([, value]) => hasContent(value));
-    children.push(labelDetailTable(rows, { labelFill: 'F3F7F6' }));
-    children.push(spacer(180));
-  }
+    children.push(headedDetailTable(stage.stage || '教学环节', timeRange(stage), rows, { labelFill: 'F3F7F6' }));
+    if (index < stages.length - 1) children.push(spacer(180));
+  });
 }
 
 function addInteraction(children, data) {
@@ -433,11 +439,11 @@ function addExercises(children, data) {
   if (!items.length) return addEmpty(children);
   items.forEach((raw, index) => {
     const item = record(raw);
-    children.push(stageBand(`题目 ${String(index + 1).padStart(2, '0')} · ${clean(item.type) || '练习题'}`, exerciseMeta(item)));
-    if (clean(item.stem)) children.push(bodyParagraph(item.stem, 120, true));
+    const questionContent = [];
+    if (clean(item.stem)) questionContent.push(bodyParagraph(item.stem, 120, true));
     array(item.options).forEach((option, optionIndex) => {
       const label = optionIndex < 26 ? String.fromCharCode(65 + optionIndex) : String(optionIndex + 1);
-      children.push(new Paragraph({
+      questionContent.push(new Paragraph({
         style: 'LessonBody',
         indent: { left: 420, hanging: 0 },
         spacing: { before: 0, after: 70, line: 300, lineRule: LineRuleType.AUTO },
@@ -448,13 +454,19 @@ function addExercises(children, data) {
       }));
     });
     const rows = [
+      [null, questionContent],
       ['参考答案', item.answer],
       ['答案解析', item.explanation],
       ['评分标准', item.scoringRubric],
       ['教材依据', sourceRefLines(item.sourceRefs).map((text) => bodyParagraph(text, 50))],
     ].filter(([, value]) => hasContent(value));
-    if (rows.length) children.push(labelDetailTable(rows, { labelFill: COLORS.paleGold }));
-    children.push(spacer(180));
+    children.push(headedDetailTable(
+      `题目 ${String(index + 1).padStart(2, '0')} · ${clean(item.type) || '练习题'}`,
+      exerciseMeta(item),
+      rows,
+      { labelFill: COLORS.paleGold },
+    ));
+    if (index < items.length - 1) children.push(spacer(180));
   });
 }
 
@@ -536,7 +548,8 @@ function callout(label, content, fill) {
 }
 
 function labelDetailTable(rows, options = {}) {
-  return makeTable(rows.map(([label, value]) => new TableRow({
+  const detailTable = makeTable(rows.map(([label, value]) => new TableRow({
+    cantSplit: true,
     children: [
       makeCell([textParagraph(label, { size: 18, bold: true, color: COLORS.accentDark, after: 0 })], LABEL_WIDTH, options.labelFill || COLORS.pale),
       makeCell(normalizeCellContent(value), DETAIL_WIDTH, COLORS.white),
@@ -546,8 +559,55 @@ function labelDetailTable(rows, options = {}) {
       ...TABLE_BORDERS,
       top: { style: BorderStyle.SINGLE, size: 14, color: COLORS.accent },
     } : TABLE_BORDERS,
-    indent: TABLE_INDENT,
+    indent: options.keepTogether ? 0 : TABLE_INDENT,
   });
+  if (!options.keepTogether) return detailTable;
+  return makeTable([new TableRow({
+    cantSplit: true,
+    children: [new TableCell({
+      children: [detailTable],
+      width: { size: TABLE_WIDTH, type: WidthType.DXA },
+      margins: { top: 0, bottom: 0, left: 0, right: 0 },
+      borders: NO_CELL_BORDERS,
+      verticalAlign: VerticalAlign.TOP,
+    })],
+  })], [TABLE_WIDTH], { borders: NO_TABLE_BORDERS, indent: TABLE_INDENT });
+}
+
+function headedDetailTable(title, meta, rows, options = {}) {
+  const metaText = clean(meta);
+  const metaWidth = metaText ? 2200 : 0;
+  const widths = metaWidth
+    ? [LABEL_WIDTH, DETAIL_WIDTH - metaWidth, metaWidth]
+    : [LABEL_WIDTH, DETAIL_WIDTH];
+  const spanCount = widths.length;
+  const headerCells = [makeCell([
+    textParagraph(title, { size: 22, bold: true, color: COLORS.white, after: 0, keepNext: true }),
+  ], TABLE_WIDTH - metaWidth, COLORS.accentDark, { columnSpan: metaWidth ? 2 : spanCount })];
+  if (metaWidth) {
+    headerCells.push(makeCell([
+      textParagraph(metaText, { size: 18, bold: true, color: COLORS.accentDark, after: 0, alignment: AlignmentType.RIGHT, keepNext: true }),
+    ], metaWidth, COLORS.pale));
+  }
+  const bodyRows = rows.map(([label, value]) => {
+    if (label === null || label === undefined || label === '') {
+      return new TableRow({
+        cantSplit: true,
+        children: [makeCell(normalizeCellContent(value), TABLE_WIDTH, COLORS.white, { columnSpan: spanCount })],
+      });
+    }
+    return new TableRow({
+      cantSplit: true,
+      children: [
+        makeCell([textParagraph(label, { size: 18, bold: true, color: COLORS.accentDark, after: 0 })], LABEL_WIDTH, options.labelFill || COLORS.pale),
+        makeCell(normalizeCellContent(value), DETAIL_WIDTH, COLORS.white, { columnSpan: metaWidth ? 2 : 1 }),
+      ],
+    });
+  });
+  return makeTable([
+    new TableRow({ children: headerCells, cantSplit: true, tableHeader: true }),
+    ...bodyRows,
+  ], widths, { borders: TABLE_BORDERS, indent: TABLE_INDENT });
 }
 
 function twoColumnTable(left, right) {
@@ -579,7 +639,7 @@ function stageBand(title, meta) {
     ], metaWidth, COLORS.pale));
     widths.push(metaWidth);
   }
-  return makeTable([new TableRow({ children: cells })], widths, { borders: NO_TABLE_BORDERS, indent: TABLE_INDENT });
+  return makeTable([new TableRow({ children: cells, cantSplit: true })], widths, { borders: NO_TABLE_BORDERS, indent: TABLE_INDENT });
 }
 
 function makeTable(rows, columnWidths, options = {}) {
@@ -594,13 +654,15 @@ function makeTable(rows, columnWidths, options = {}) {
   });
 }
 
-function makeCell(children, width, fill = COLORS.white) {
+function makeCell(children, width, fill = COLORS.white, options = {}) {
   return new TableCell({
     children: children.length ? children : [new Paragraph('')],
     width: { size: width, type: WidthType.DXA },
     margins: CELL_MARGINS,
     verticalAlign: VerticalAlign.TOP,
     shading: { type: ShadingType.CLEAR, fill, color: 'auto' },
+    columnSpan: options.columnSpan,
+    borders: options.borders,
   });
 }
 

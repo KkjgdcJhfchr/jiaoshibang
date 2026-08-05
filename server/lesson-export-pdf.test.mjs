@@ -26,6 +26,9 @@ assert.ok(html.includes('第二段完整课堂话术。'));
 assert.ok(!html.includes('beikexing.cn'));
 assert.ok(!html.includes('window.print'));
 assert.ok(!html.includes('<script'));
+assert.match(html, /\.stage-card thead \{[^}]*display: table-header-group;/);
+assert.match(html, /\.stage-card tbody > tr \{[^}]*break-inside: avoid-page;[^}]*page-break-inside: avoid;/);
+assert.match(html, /\.exercise-card \{[^}]*break-inside: avoid-page;[^}]*page-break-inside: avoid;/);
 
 for (const text of collectLessonExportTexts(model)) {
   const expected = htmlTextFragment(text);

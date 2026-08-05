@@ -182,22 +182,23 @@ function renderPreparation(data = {}) {
 
 function renderTimeline(data = {}) {
   return `<div class="timeline-stack">${array(data.stages).map((stage, index) => `
-    <article class="stage-card">
-      <header class="stage-header">
+    <table class="stage-card">
+      <thead><tr><th><div class="stage-header">
         <div><span>环节 ${index + 1}</span><h3>${formatText(stage.stage || `教学环节 ${index + 1}`)}</h3></div>
         <p><b>${numberOrZero(stage.startMinute)}—${numberOrZero(stage.startMinute) + numberOrZero(stage.durationMinutes)} 分钟</b><small>共 ${numberOrZero(stage.durationMinutes)} 分钟</small></p>
-      </header>
-      ${visible(stage.engagementGoal) ? `<div class="goal-banner"><b>参与目标</b>${formatText(stage.engagementGoal)}</div>` : ''}
-      <div class="stage-grid">
-        <div>${detailGroup('教师活动', bulletList(stage.teacherActions))}${detailGroup('讲解话术', textBlock(stage.teacherScript), 'script')}</div>
-        <div>${detailGroup('学生活动', bulletList(stage.studentActions))}${detailGroup('形成性评价', textBlock(stage.formativeAssessment))}</div>
-      </div>
-      ${renderQuestions(stage)}
-      <div class="stage-grid stage-grid-secondary">
-        <div>${detailGroup('预期回应', bulletList(stage.expectedResponses))}${detailGroup('常见误区', bulletList(stage.misconceptions))}</div>
-        <div>${detailGroup('备用策略', textBlock(stage.fallbackStrategy))}${renderSourceRefs(stage.sourceRefs)}</div>
-      </div>
-    </article>`).join('')}</div>`;
+      </div></th></tr></thead>
+      <tbody>
+        <tr><td>${visible(stage.engagementGoal) ? `<div class="goal-banner"><b>参与目标</b>${formatText(stage.engagementGoal)}</div>` : ''}<div class="stage-grid">
+          <div>${detailGroup('教师活动', bulletList(stage.teacherActions))}${detailGroup('讲解话术', textBlock(stage.teacherScript), 'script')}</div>
+          <div>${detailGroup('学生活动', bulletList(stage.studentActions))}${detailGroup('形成性评价', textBlock(stage.formativeAssessment))}</div>
+        </div></td></tr>
+        ${renderQuestions(stage) ? `<tr><td>${renderQuestions(stage)}</td></tr>` : ''}
+        <tr><td><div class="stage-grid stage-grid-secondary">
+          <div>${detailGroup('预期回应', bulletList(stage.expectedResponses))}${detailGroup('常见误区', bulletList(stage.misconceptions))}</div>
+          <div>${detailGroup('备用策略', textBlock(stage.fallbackStrategy))}${renderSourceRefs(stage.sourceRefs)}</div>
+        </div></td></tr>
+      </tbody>
+    </table>`).join('')}</div>`;
 }
 
 function renderQuestions(stage) {
@@ -386,8 +387,12 @@ const PDF_STYLES = `
   .feature-card.accent { border-top: 3px solid #35897b; }
   .feature-card.warm { border-top: 3px solid #c9974c; }
   .safety-card, .reflection-card { margin-top: 8pt; }
-  .timeline-stack { display: grid; gap: 10pt; }
-  .stage-card { border: 1px solid #cfdcd7; border-radius: 8pt; overflow: hidden; background: #fff; }
+  .timeline-stack { display: block; }
+  .stage-card { width: 100%; border: 1px solid #cfdcd7; border-spacing: 0; border-radius: 8pt; background: #fff; }
+  .stage-card + .stage-card { margin-top: 10pt; }
+  .stage-card thead { display: table-header-group; }
+  .stage-card th, .stage-card td { padding: 0; text-align: left; font-weight: 400; }
+  .stage-card tbody > tr { break-inside: avoid-page; page-break-inside: avoid; }
   .stage-header { display: flex; justify-content: space-between; gap: 12pt; align-items: center; padding: 8pt 10pt; color: #fff; background: #2b4a42; break-after: avoid-page; page-break-after: avoid; }
   .stage-header > div { display: flex; align-items: center; gap: 8pt; min-width: 0; }
   .stage-header span { color: #b9d8cf; font-size: 8pt; font-weight: 700; }
@@ -422,8 +427,9 @@ const PDF_STYLES = `
   .homework-card dl > div { display: grid; grid-template-columns: 58pt minmax(0,1fr); gap: 7pt; }
   .homework-card dt { color: #2d776b; font-weight: 700; }
   .homework-card dd { margin: 0; }
-  .exercise-list { display: grid; gap: 8pt; }
-  .exercise-card { border: 1px solid #d7e2dd; border-radius: 7pt; overflow: hidden; }
+  .exercise-list { display: block; }
+  .exercise-card { border: 1px solid #d7e2dd; border-radius: 7pt; overflow: hidden; break-inside: avoid-page; page-break-inside: avoid; }
+  .exercise-card + .exercise-card { margin-top: 8pt; }
   .exercise-card > header { display: grid; grid-template-columns: 25pt minmax(0,1fr); gap: 8pt; align-items: start; padding: 8pt 10pt; background: #f4f8f6; break-after: avoid-page; page-break-after: avoid; }
   .exercise-card > header > span { display: flex; align-items: center; justify-content: center; width: 22pt; height: 22pt; border-radius: 50%; color: #1f6f62; background: #e3efeb; font-weight: 800; }
   .exercise-card h3 { margin: 0; color: #17231f; font-size: 10.5pt; }
