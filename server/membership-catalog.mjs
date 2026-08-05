@@ -7,15 +7,15 @@ const MAX_PRODUCTS = 50;
 
 const DEFAULT_PRODUCTS = Object.freeze([
   defaultFreeProduct('free', '免费版', 3,
-    ['基础教案生成', 'AI 教案修改', 'DOC / 打印-PDF 导出', '点数余额查询']),
+    ['基础教案生成', 'AI 教案修改', 'DOCX / PDF 导出', '点数余额查询']),
   defaultProduct('pro-monthly', '专业版月卡', 'pro', 10, 'month', 3_900, 30, 20,
-    ['20 次教案生成点数', 'AI 教案修改', 'DOC / 打印-PDF 导出', '历史版本长期保存']),
+    ['20 次教案生成点数', 'AI 教案修改', 'DOCX / PDF 导出', '历史版本长期保存']),
   defaultProduct('pro-quarterly', '专业版季卡', 'pro', 10, 'quarter', 10_500, 90, 60,
-    ['60 次教案生成点数', 'AI 教案修改', 'DOC / 打印-PDF 导出', '历史版本长期保存']),
+    ['60 次教案生成点数', 'AI 教案修改', 'DOCX / PDF 导出', '历史版本长期保存']),
   defaultProduct('pro-half-yearly', '专业版半年卡', 'pro', 10, 'half_year', 19_800, 180, 120,
-    ['120 次教案生成点数', 'AI 教案修改', 'DOC / 打印-PDF 导出', '历史版本长期保存']),
+    ['120 次教案生成点数', 'AI 教案修改', 'DOCX / PDF 导出', '历史版本长期保存']),
   defaultProduct('pro-yearly', '专业版年卡', 'pro', 10, 'year', 32_400, 365, 240,
-    ['240 次教案生成点数', 'AI 教案修改', 'DOC / 打印-PDF 导出', '历史版本长期保存']),
+    ['240 次教案生成点数', 'AI 教案修改', 'DOCX / PDF 导出', '历史版本长期保存']),
   defaultProduct('research-monthly', '教研版月卡', 'research', 20, 'month', 9_900, 30, 80,
     ['80 次教案生成点数', '共享教案模板库', '模型质量报告', '优先客服支持']),
   defaultProduct('research-quarterly', '教研版季卡', 'research', 20, 'quarter', 26_700, 90, 240,
@@ -312,10 +312,10 @@ function migrateMembershipFeatures(features) {
     .map((item) => String(item || '').trim().slice(0, 100))
     .filter(Boolean)
     .map((feature) => feature
-      .replace(/DOC\s*\/\s*打印-?PDF\s*\/\s*JSON\s*导出/gi, 'DOC / 打印-PDF 导出')
-      .replace(/AI\s*修改与结构化(?:教案)?导出/gi, 'AI 修改与 DOC / 打印-PDF 导出')
-      .replace(/结构化(?:教案)?导出/gi, 'DOC / 打印-PDF 导出')
-      .replace(/JSON\s*导出/gi, 'DOC / 打印-PDF 导出')
+      .replace(/DOC\s*\/\s*打印-?PDF(?:\s*\/\s*JSON)?\s*导出/gi, 'DOCX / PDF 导出')
+      .replace(/AI\s*修改与结构化(?:教案)?导出/gi, 'AI 修改与 DOCX / PDF 导出')
+      .replace(/结构化(?:教案)?导出/gi, 'DOCX / PDF 导出')
+      .replace(/JSON\s*导出/gi, 'DOCX / PDF 导出')
       .replace(/\s*\/\s*JSON\b/gi, '')
       .replace(/\s{2,}/g, ' '));
 }

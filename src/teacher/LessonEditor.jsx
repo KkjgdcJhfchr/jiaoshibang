@@ -16,7 +16,6 @@ import {
   Network,
   Pencil,
   Plus,
-  Printer,
   RotateCcw,
   ScrollText,
   Send,
@@ -116,11 +115,6 @@ function sourceReferenceLabel(reference) {
   return excerpt ? `${location}：${excerpt}` : location;
 }
 
-function htmlSourceRefs(references = []) {
-  const labels = references.map(sourceReferenceLabel).filter(Boolean);
-  return labels.length ? `<div class="sources"><b>教材依据：</b>${htmlList(labels)}</div>` : '';
-}
-
 function loadLesson(isDemo) {
   if (isDemo) return { ...normalizeLesson(sampleLesson), custom_sections: [], section_order: [] };
   try {
@@ -144,86 +138,16 @@ function loadCanonicalLesson() {
   try { return JSON.parse(localStorage.getItem('current-lesson-canonical')); } catch { return null; }
 }
 
-function escapeHtml(value = '') {
-  return String(value).replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]);
-}
-
-function htmlList(items = []) {
-  return `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`;
-}
-
-function formatExerciseMeta(item) {
-  const type = questionTypeLabel(item.type);
-  const difficulty = item.difficulty ? `难度 ${item.difficulty}/5` : '';
-  const knowledge = (item.knowledge_points || []).length ? `知识点：${item.knowledge_points.join('、')}` : '';
-  const estimatedMinutes = item.estimated_minutes ? `建议用时 ${item.estimated_minutes} 分钟` : '';
-  return [type, difficulty, knowledge, estimatedMinutes].filter(Boolean).join(' · ');
-}
-
-function lessonToHtml(lesson) {
-  const title = lesson.metadata?.title || `${lesson.metadata?.chapter || ''}教学设计`;
-  const objectives = (lesson.learning_objectives || []).map((item) => `<li><b>${escapeHtml(objectiveTypeLabel(item.type))}：</b>${escapeHtml(item.content)}${item.measurable_evidence ? `<p><b>达成证据：</b>${escapeHtml(item.measurable_evidence)}</p>` : ''}${htmlSourceRefs(item.source_refs)}</li>`).join('');
-  const timeline = (lesson.timeline || []).map((item) => {
-    const teacherActions = (item.teacher_actions || []).length ? `<p><b>教师活动：</b>${escapeHtml(item.teacher_actions.join('；'))}</p>` : '';
-    const questionDetails = (item.question_details || []).map((question, index) => `<div class="question-detail"><b>课堂提问 ${index + 1}：</b>${escapeHtml(question.prompt)}${question.purpose ? `<p><b>提问目的：</b>${escapeHtml(question.purpose)}</p>` : ''}${question.expected_response ? `<p><b>预期回答：</b>${escapeHtml(question.expected_response)}</p>` : ''}${question.follow_up ? `<p><b>追问：</b>${escapeHtml(question.follow_up)}</p>` : ''}${htmlSourceRefs(question.source_refs)}</div>`).join('');
-    const questions = questionDetails || ((item.questions || []).length ? `<div><b>课堂提问：</b>${htmlList(item.questions)}</div>` : '');
-    const expectedResponses = (item.expected_responses || []).length ? `<div><b>预期回应：</b>${htmlList(item.expected_responses)}</div>` : '';
-    const misconceptions = (item.misconceptions || []).length ? `<div><b>常见误区：</b>${htmlList(item.misconceptions)}</div>` : '';
-    const assessment = item.formative_assessment ? `<p><b>形成性评价：</b>${escapeHtml(item.formative_assessment)}</p>` : '';
-    const fallback = item.fallback_strategy ? `<p><b>备用方案：</b>${escapeHtml(item.fallback_strategy)}</p>` : '';
-    return `<div class="stage"><h3>${escapeHtml(item.stage)}</h3><p><b>时间：</b>第 ${Number(item.start_minute || 0)} 分钟开始，共 ${Number(item.duration_minutes || 0)} 分钟</p><p><b>参与目标：</b>${escapeHtml(item.engagement_goal)}</p>${teacherActions}<p><b>讲解话术：</b>${escapeHtml(item.teacher_script)}</p><div><b>学生活动：</b>${htmlList(item.student_actions || [])}</div>${questions}${expectedResponses}${misconceptions}${assessment}${fallback}${htmlSourceRefs(item.source_refs)}</div>`;
-  }).join('');
-  const assessmentPlan = lesson.assessment_plan || {};
-  const assessments = [
-    ['课前诊断', assessmentPlan.diagnostic],
-    ['过程评价', assessmentPlan.formative],
-    ['总结评价', assessmentPlan.summative],
-    ['达成标准', assessmentPlan.success_criteria],
-  ].map(([label, items]) => (items || []).length ? `<div><b>${label}：</b>${htmlList(items)}</div>` : '').join('');
-  const board = lesson.board_design_structured;
-  const structuredBoard = board && (board.layout_description || board.sections?.length)
-    ? `<p><b>整体布局：</b>${escapeHtml(board.layout_description || '')}</p>${(board.sections || []).map((section) => `<div><b>${escapeHtml(section.title || '板书区域')}${section.position ? `（${escapeHtml(section.position)}）` : ''}：</b>${escapeHtml(section.content)}</div>`).join('')}`
-    : `<pre>${escapeHtml(lesson.board_design || '')}</pre>`;
-  const homework = (lesson.homework || []).map((item) => `<li><b>${escapeHtml(item.level || '课后任务')}：</b>${escapeHtml(item.content)}${item.estimated_minutes ? `<p><b>建议用时：</b>${item.estimated_minutes} 分钟</p>` : ''}${item.answer_guidance ? `<p><b>完成指导：</b>${escapeHtml(item.answer_guidance)}</p>` : ''}${htmlSourceRefs(item.source_refs)}</li>`).join('');
-  const exercises = (lesson.exercises || []).map((item, index) => `<div class="question"><b>${index + 1}. ${escapeHtml(item.stem)}</b><p class="question-meta">${escapeHtml(formatExerciseMeta(item))}</p>${item.options?.length ? htmlList(item.options) : ''}<p><b>参考答案：</b>${escapeHtml(item.answer)}</p><p><b>解析：</b>${escapeHtml(item.explanation)}</p>${item.scoring_rubric ? `<p><b>评分标准：</b>${escapeHtml(item.scoring_rubric)}</p>` : ''}${htmlSourceRefs(item.source_refs)}</div>`).join('');
-  const standardSectionBodies = new Map([
-    ['objectives', `<p><b>章节内容概述：</b>${escapeHtml(lesson.source_summary || '')}</p><div><b>核心素养：</b>${htmlList(lesson.core_competencies || [])}</div><ol>${objectives}</ol>`],
-    ['learner', `<p><b>班级整体情况：</b>${escapeHtml(lesson.metadata?.class_profile || '')}</p><p><b>班级学习特征：</b>${escapeHtml(lesson.learner_analysis?.class_characteristics || '')}</p><p><b>已有基础：</b>${escapeHtml(lesson.learner_analysis?.known)}</p><p><b>学习挑战：</b>${escapeHtml(lesson.learner_analysis?.challenge)}</p><p><b>教学策略：</b>${escapeHtml(lesson.learner_analysis?.strategy)}</p>`],
-    ['keypoints', `<p><b>重点：</b>${escapeHtml((lesson.key_points || []).join('；'))}</p><p><b>难点：</b>${escapeHtml((lesson.difficult_points || []).join('；'))}</p>`],
-    ['preparation', `<p><b>教师：</b>${escapeHtml((lesson.preparation?.teacher || []).join('；'))}</p><p><b>学生：</b>${escapeHtml((lesson.preparation?.students || []).join('；'))}</p><p><b>材料：</b>${escapeHtml((lesson.preparation?.materials || []).join('；'))}</p><div><b>课堂安全与包容：</b>${htmlList(lesson.safety_and_inclusion || [])}</div>`],
-    ['timeline', timeline],
-    ['interaction', `<p><b>基础支持：</b>${escapeHtml((lesson.differentiation?.support || []).join('；'))}</p><p><b>常规任务：</b>${escapeHtml((lesson.differentiation?.standard || []).join('；'))}</p><p><b>拓展挑战：</b>${escapeHtml((lesson.differentiation?.challenge || []).join('；'))}</p>${assessments}`],
-    ['board', structuredBoard],
-    ['homework', `<ol>${homework}</ol><div><b>课后反思提示：</b>${htmlList(lesson.reflection_prompts || [])}</div>`],
-    ['exercises', exercises],
-  ]);
-  const customSectionBodies = new Map((lesson.custom_sections || []).map((item) => [`custom:${item.id}`, `<p>${escapeHtml(item.content).replace(/\n/g, '<br>')}</p>`]));
-  const customTitles = lesson.section_titles || {};
-  const availableSections = [
-    ...baseOutline.map(([key, label]) => [key, customTitles[key] || documentSectionTitles[key] || label]),
-    ...(lesson.custom_sections || []).map((item) => [`custom:${item.id}`, item.title]),
-  ];
-  const labelByKey = new Map(availableSections);
-  const savedOrder = Array.isArray(lesson.section_order) ? lesson.section_order : [];
-  const orderedKeys = [
-    ...savedOrder.filter((key, index) => labelByKey.has(key) && savedOrder.indexOf(key) === index),
-    ...availableSections.map(([key]) => key).filter((key) => !savedOrder.includes(key)),
-  ];
-  const orderedSections = orderedKeys.map((key, index) => {
-    const ordinal = ['一', '二', '三', '四', '五', '六', '七', '八', '九'][index] || String(index + 1);
-    const body = standardSectionBodies.get(key) ?? customSectionBodies.get(key) ?? '';
-    return `<h2>${ordinal}、${escapeHtml(labelByKey.get(key) || '')}</h2>${body}`;
-  }).join('');
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>*{box-sizing:border-box}body{margin:0;padding:34px 30px 70px;background:#fff;color:#21302c;font-family:'Microsoft YaHei','Noto Sans SC',sans-serif;font-size:14px;line-height:1.82}h1{margin:0;text-align:left;font-family:'Noto Serif SC','Microsoft YaHei',serif;font-size:28px;line-height:1.4}h2{margin:34px 0 18px;padding-bottom:10px;border-bottom:1px solid #dfe6e2;color:#182420;font-family:'Noto Serif SC','Microsoft YaHei',serif;font-size:21px}h3{margin:0 0 8px;color:#26443c;font-size:15px}.question,.stage{page-break-inside:avoid;margin:13px 0;padding:15px 17px;border:1px solid #d8e1dd;border-radius:8px;background:#fbfcfb}.question-detail{margin:10px 0;padding:11px 13px;border-left:3px solid #78aa9e;background:#f2f7f5}.question-meta,.meta{color:#71807b;font-size:12px}.meta{margin:10px 0 22px;padding-bottom:20px;border-bottom:2px solid #21302c;text-align:left}.sources{margin-top:8px;padding-top:7px;border-top:1px dashed #d6dedb;color:#6c7b76;font-size:11px}.sources ul{margin-top:4px}ul,ol{padding-left:22px}li{margin:4px 0}p{margin:7px 0}pre{padding:18px;border-radius:8px;background:#24342f;color:#edf6f2;white-space:pre-wrap}</style></head><body><h1>${escapeHtml(title)}</h1><p class="meta">${escapeHtml(lesson.metadata?.grade)} · ${escapeHtml(lesson.metadata?.subject)} · ${escapeHtml(lesson.metadata?.textbook_edition || '')} · ${lesson.metadata?.duration_minutes || 45}分钟<br>章节：${escapeHtml(lesson.metadata?.chapter || '')}</p>${orderedSections}</body></html>`;
-}
-
-function downloadBlob(contents, type, name) {
-  const url = URL.createObjectURL(new Blob([contents], { type }));
+function downloadBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
   anchor.download = name;
+  anchor.hidden = true;
+  document.body.appendChild(anchor);
   anchor.click();
-  setTimeout(() => URL.revokeObjectURL(url), 500);
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1_000);
 }
 
 function editableTextValue(element, multiline) {
@@ -290,6 +214,7 @@ export function LessonEditor({ path }) {
   const [retryRevision, setRetryRevision] = useState(null);
   const [versionsOpen, setVersionsOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  const [exportingFormat, setExportingFormat] = useState('');
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [newSectionOpen, setNewSectionOpen] = useState(false);
   const [newSectionTitle, setNewSectionTitle] = useState('');
@@ -1029,30 +954,24 @@ export function LessonEditor({ path }) {
     setAssistantEnabled(false);
   }
 
-  function exportDoc() {
-    const currentLesson = lessonRef.current;
-    const currentTitle = currentLesson.metadata?.title || `${currentLesson.metadata?.chapter || '新教案'}教学设计`;
-    downloadBlob(lessonToHtml(currentLesson), 'application/msword;charset=utf-8', `${currentTitle}.doc`);
-    setExportOpen(false);
-    setToast('DOC 文档已开始下载');
-    void submitTrainingCandidate();
-  }
-
-  function exportPrint() {
-    setExportOpen(false);
-    setTimeout(() => {
-      const details = [...document.querySelectorAll('.lesson-document details.exercise-item')];
-      const previousStates = details.map((item) => item.open);
-      details.forEach((item) => { item.open = true; });
-      // 强制浏览器在打开打印对话框前完成展开后的版面计算。
-      void document.body.offsetHeight;
-      try {
-        window.print();
-      } finally {
-        details.forEach((item, index) => { item.open = previousStates[index]; });
-      }
-    }, 100);
-    void submitTrainingCandidate();
+  async function exportLesson(format) {
+    if (exportingFormat) return;
+    const isPdf = format === 'pdf';
+    const label = isPdf ? 'PDF' : 'Word';
+    setExportingFormat(format);
+    try {
+      const exported = isPdf
+        ? await api.exportLessonPdf(lessonRef.current)
+        : await api.exportLessonDocx(lessonRef.current);
+      downloadBlob(exported.blob, exported.filename);
+      setExportOpen(false);
+      setToast(`${label} 教案已下载`);
+      void submitTrainingCandidate();
+    } catch (error) {
+      setToast(`${label} 导出失败：${error?.message || '请稍后重试'}`);
+    } finally {
+      setExportingFormat('');
+    }
   }
 
   const editable = manualEditing && !revising;
@@ -1219,8 +1138,19 @@ export function LessonEditor({ path }) {
         {historySelection ? <div className="version-selection-summary"><span>将恢复 v{historySelection.version}.0</span><p>{historySelection.snapshot.metadata?.title || historySelection.snapshot.metadata?.chapter || '所选教案版本'}</p><small>当前版本会先自动保留在历史记录中，因此仍可恢复。</small></div> : null}
       </Modal>
 
-      <Modal open={exportOpen} onClose={() => setExportOpen(false)} title="导出教案" description={`导出当前完整版本 v${currentVersion}.0。`} footer={<><Button variant="ghost" onClick={() => setExportOpen(false)}>取消</Button><Button icon={FileDown} onClick={exportDoc}>导出 DOC</Button></>}>
-        <div className="export-options"><button className="selected" onClick={exportDoc}><FileText size={22} /><div><b>Word 文档</b><p>包含全部标准模块、自定义模块、习题答案与解析，可继续编辑。</p></div><CheckCircle2 size={18} /></button><button onClick={exportPrint}><Printer size={22} /><div><b>打印 / PDF</b><p>使用浏览器打印，可保存为 PDF 文件。</p></div></button></div>
+      <Modal open={exportOpen} onClose={() => { if (!exportingFormat) setExportOpen(false); }} title="导出教案" description={`下载当前完整版本 v${currentVersion}.0，文件由服务端完整排版生成。`} footer={<Button variant="ghost" onClick={() => setExportOpen(false)} disabled={Boolean(exportingFormat)}>取消</Button>}>
+        <div className="export-options" aria-busy={Boolean(exportingFormat)}>
+          <button type="button" className={exportingFormat === 'docx' ? 'is-exporting' : ''} onClick={() => void exportLesson('docx')} disabled={Boolean(exportingFormat)}>
+            <FileText size={22} />
+            <div><b>{exportingFormat === 'docx' ? '正在生成 Word…' : 'Word 文档（DOCX）'}</b><p>可直接继续编辑，完整保留教案模块、正文、习题答案与解析。</p></div>
+            {exportingFormat === 'docx' ? <LoaderCircle className="spin" size={18} /> : <FileDown size={18} />}
+          </button>
+          <button type="button" className={exportingFormat === 'pdf' ? 'is-exporting' : ''} onClick={() => void exportLesson('pdf')} disabled={Boolean(exportingFormat)}>
+            <FileDown size={22} />
+            <div><b>{exportingFormat === 'pdf' ? '正在生成 PDF…' : 'PDF 文档'}</b><p>直接下载正式 PDF 文件，无打印对话框、浏览器页眉、网址或裁切。</p></div>
+            {exportingFormat === 'pdf' ? <LoaderCircle className="spin" size={18} /> : <Download size={18} />}
+          </button>
+        </div>
       </Modal>
 
       {toast ? <Toast message={toast} onClose={() => setToast(null)} /> : null}

@@ -92,8 +92,20 @@
 .lesson-workflow-nav > button:hover { background: var(--brand-soft); }
 .lesson-section-order { position: relative; min-width: 0; }
 .lesson-section-order.is-annotating > .document-section { cursor: none; }
-.lesson-section-order.is-annotating [data-annotation-path] { outline: 0 solid transparent; transition: outline-color .12s, background .12s; }
-.lesson-section-order.is-annotating [data-annotation-path]:hover:not(:has([data-annotation-path]:hover)) { outline: 2px solid rgba(45,108,223,.55); outline-offset: 3px; background-color: rgba(45,108,223,.08); }
+.lesson-section-order.is-annotating [data-annotation-path] { outline: 0 solid transparent; transition: outline-color .12s; }
+.lesson-section-order.is-annotating [data-annotation-path]:hover:not(:has([data-annotation-path]:hover)) { outline: 2px solid rgba(45,108,223,.65); outline-offset: 3px; }
+.lesson-section-order.is-annotating .board-section-grid article[data-annotation-path]:hover,
+.lesson-section-order.is-annotating .board-preview[data-annotation-path]:hover {
+  background: #24342f !important;
+  color: #edf6f2 !important;
+}
+.lesson-section-order.is-annotating .board-section-grid article[data-annotation-path]:hover :is(b, span, div, p),
+.lesson-section-order.is-annotating .board-preview[data-annotation-path]:hover {
+  color: inherit;
+}
+.lesson-section-order.is-annotating .board-section-grid article[data-annotation-path]:hover p b {
+  color: #a9c8bf;
+}
 .annotation-pointer { position: fixed; z-index: 150; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; background: #2d6cdf; color: #fff; box-shadow: 0 5px 16px rgba(25,78,171,.3); pointer-events: none; transform: translate(-50%,-50%); }
 .annotation-pin { position: absolute; z-index: 8; width: 28px; height: 28px; padding: 0; display: grid; grid-template-columns: 13px 1fr; place-items: center; border: 2px solid #fff; border-radius: 50%; background: #2d6cdf; color: #fff; box-shadow: 0 3px 12px rgba(25,78,171,.32); font-size: 9px; cursor: pointer; transform: translate(-50%,-50%); }
 .annotation-pin:hover { background: #174ea6; transform: translate(-50%,-50%) scale(1.08); }
@@ -270,6 +282,9 @@
 .export-options { display: flex; flex-direction: column; gap: 9px; }
 .export-options button { width: 100%; padding: 14px; display: grid; grid-template-columns: 32px 1fr 22px; align-items: center; gap: 11px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--muted); text-align: left; cursor: pointer; }
 .export-options button.selected { border-color: var(--brand); background: var(--brand-pale); color: var(--brand); }
+.export-options button:hover:not(:disabled), .export-options button.is-exporting { border-color: var(--brand); background: var(--brand-pale); color: var(--brand); }
+.export-options button:disabled { cursor: wait; opacity: .62; }
+.export-options button.is-exporting { opacity: 1; }
 .export-options button > div { display: flex; flex-direction: column; gap: 3px; }
 .export-options button b { color: var(--ink); font-size: 14px; }
 .export-options button p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.55; }

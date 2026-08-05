@@ -22,6 +22,7 @@ import {
 } from './security.mjs';
 import { buildTrainingCandidate, publicTrainingCandidate } from './training-candidate.mjs';
 import { buildKnowledgeMap, buildRecommendedPaper } from './teaching-workflow.mjs';
+import { exportLessonDocument } from './lesson-export-service.mjs';
 import {
   AdminMfaError,
   consumeRecoveryCode,
@@ -134,6 +135,27 @@ const AI_MAX_CONCURRENCY = parsePositiveInteger(process.env.AI_MAX_CONCURRENCY, 
 const TRUST_PROXY = parseBoolean(process.env.TRUST_PROXY, IS_PRODUCTION);
 const ALLOW_INSECURE_PROVIDER_URLS = parseBoolean(process.env.ALLOW_INSECURE_PROVIDER_URLS, false);
 const ALLOW_PRIVATE_PROVIDER_NETWORKS = parseBoolean(process.env.ALLOW_PRIVATE_PROVIDER_NETWORKS, false);
+const GOTENBERG_URL = resolveInternalServiceUrl(process.env.GOTENBERG_URL || 'http://gotenberg:3000');
+const DOCUMENT_EXPORT_TIMEOUT_MS = Math.min(
+  parsePositiveInteger(process.env.DOCUMENT_EXPORT_TIMEOUT_MS, 120_000),
+  300_000,
+);
+const DOCUMENT_EXPORT_RATE_LIMIT_WINDOW_MS = parsePositiveInteger(
+  process.env.DOCUMENT_EXPORT_RATE_LIMIT_WINDOW_MS,
+  60_000,
+);
+const DOCUMENT_EXPORT_RATE_LIMIT_USER_MAX = parsePositiveInteger(
+  process.env.DOCUMENT_EXPORT_RATE_LIMIT_USER_MAX,
+  8,
+);
+const DOCUMENT_EXPORT_RATE_LIMIT_IP_MAX = parsePositiveInteger(
+  process.env.DOCUMENT_EXPORT_RATE_LIMIT_IP_MAX,
+  24,
+);
+const DOCUMENT_EXPORT_MAX_CONCURRENCY = Math.min(
+  parsePositiveInteger(process.env.DOCUMENT_EXPORT_MAX_CONCURRENCY, 2),
+  16,
+);
 const MODEL_CAPABILITIES = new Set(['lesson_generation', 'lesson_revision', 'multimodal_input']);
 const MODEL_ADAPTERS = new Set(['openai_responses', 'openai_chat_completions']);
 const PROVIDER_PROBE_TIMEOUT_MS = Math.min(
@@ -177,7 +199,10 @@ const DUMMY_PASSWORD = hashPassword(randomBytes(32).toString('hex'));
 const authRateBuckets = new Map();
 const aiUserRateBuckets = new Map();
 const aiIpRateBuckets = new Map();
+const documentExportUserRateBuckets = new Map();
+const documentExportIpRateBuckets = new Map();
 let activeAiRequests = 0;
+let activeDocumentExports = 0;
 const GENERATION_JOB_TERMINAL_TTL_MS = 30 * 60 * 1000;
 const GENERATION_JOB_MAX_ENTRIES = 100;
 const GENERATION_JOB_POLL_AFTER_MS = 1_000;
@@ -506,6 +531,29 @@ async function handleRequest(request, response) {
           settings,
         },
       });
+      return;
+    }
+
+    const lessonExportMatch = url.pathname.match(/^\/api\/app\/lesson-exports\/(docx|pdf)$/);
+    if (request.method === 'POST' && lessonExportMatch) {
+      assertSameOriginMutation(request);
+      const session = requireUserSession(request);
+      enforceDocumentExportRateLimits(session.user.id, getClientIp(request));
+      const body = await readJsonBody(request, 4 * 1024 * 1024);
+      const lessonPlan = body.lessonPlan ?? body.lesson ?? body.plan;
+      if (!lessonPlan || typeof lessonPlan !== 'object' || Array.isArray(lessonPlan)) {
+        throw new HttpError(422, 'LESSON_EXPORT_INVALID', '缺少可导出的教案内容');
+      }
+      const exported = await withDocumentExportSlot(() => exportLessonDocument(
+        lessonPlan,
+        lessonExportMatch[1],
+        {
+          gotenbergUrl: GOTENBERG_URL,
+          timeoutMs: DOCUMENT_EXPORT_TIMEOUT_MS,
+          requestId,
+        },
+      ));
+      sendAttachment(response, exported);
       return;
     }
 
@@ -1162,6 +1210,7 @@ function deleteUserAccounts(userIds, actor) {
   const removedAttachments = materialUploads.deleteUserAttachments(ids);
   const deletedUsers = store.deleteUsers(ids);
   for (const id of ids) aiUserRateBuckets.delete(`user:${id}`);
+  for (const id of ids) documentExportUserRateBuckets.delete(`user:${id}`);
   return {
     deletedIds: ids,
     deletedUsers,
@@ -3554,6 +3603,25 @@ function enforceAiRateLimits(userId, ip) {
   );
 }
 
+function enforceDocumentExportRateLimits(userId, ip) {
+  consumeRateLimit(
+    documentExportUserRateBuckets,
+    `user:${userId}`,
+    DOCUMENT_EXPORT_RATE_LIMIT_USER_MAX,
+    DOCUMENT_EXPORT_RATE_LIMIT_WINDOW_MS,
+    'DOCUMENT_EXPORT_USER_RATE_LIMITED',
+    '导出请求过于频繁，请稍后再试',
+  );
+  consumeRateLimit(
+    documentExportIpRateBuckets,
+    `ip:${ip}`,
+    DOCUMENT_EXPORT_RATE_LIMIT_IP_MAX,
+    DOCUMENT_EXPORT_RATE_LIMIT_WINDOW_MS,
+    'DOCUMENT_EXPORT_IP_RATE_LIMITED',
+    '当前网络的导出请求过于频繁，请稍后再试',
+  );
+}
+
 function consumeRateLimit(bucket, key, maximum, windowMs, code, message) {
   const now = Date.now();
   let state = bucket.get(key);
@@ -3587,6 +3655,28 @@ async function withAiSlot(operation) {
   } finally {
     activeAiRequests -= 1;
     if (aiJobQueue.length) scheduleAiJobDrain();
+  }
+}
+
+async function withDocumentExportSlot(operation) {
+  if (activeDocumentExports >= DOCUMENT_EXPORT_MAX_CONCURRENCY) {
+    throw new HttpError(
+      503,
+      'DOCUMENT_EXPORT_BUSY',
+      '当前导出任务较多，请稍后重试',
+      {
+        active: activeDocumentExports,
+        maximum: DOCUMENT_EXPORT_MAX_CONCURRENCY,
+        retryAfterSeconds: 5,
+      },
+      { 'Retry-After': '5' },
+    );
+  }
+  activeDocumentExports += 1;
+  try {
+    return await operation();
+  } finally {
+    activeDocumentExports -= 1;
   }
 }
 
@@ -5396,6 +5486,32 @@ function sendStoredFile(request, response, file, { publicCache = false } = {}) {
   createReadStream(file.path).on('error', () => response.destroy()).pipe(response);
 }
 
+function sendAttachment(response, { buffer, mimeType, filename }) {
+  if (!Buffer.isBuffer(buffer) || buffer.byteLength === 0) {
+    throw new HttpError(502, 'DOCUMENT_EXPORT_EMPTY', '导出的文档内容为空，请稍后重试');
+  }
+  const requestedName = String(filename || 'lesson-export');
+  const extension = requestedName.match(/\.(?:docx|pdf)$/i)?.[0]?.toLowerCase() || '';
+  const normalizedAsciiName = requestedName
+    .normalize('NFKD')
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 120);
+  const asciiName = normalizedAsciiName && !normalizedAsciiName.startsWith('.')
+    ? normalizedAsciiName
+    : `lesson-plan${extension}`;
+  const encodedName = encodeURIComponent(requestedName || asciiName)
+    .replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  response.writeHead(200, {
+    'Content-Type': mimeType || 'application/octet-stream',
+    'Content-Length': buffer.byteLength,
+    'Content-Disposition': `attachment; filename="${asciiName}"; filename*=UTF-8''${encodedName}`,
+    'Cache-Control': 'private, no-store',
+    'X-Content-Type-Options': 'nosniff',
+  });
+  response.end(buffer);
+}
+
 async function serveStatic(request, response, pathname) {
   if (!['GET', 'HEAD'].includes(request.method || '')) {
     throw new HttpError(405, 'METHOD_NOT_ALLOWED', '请求方法不受支持');
@@ -5777,6 +5893,28 @@ function normalizePublicBaseUrl(value) {
   }
   if (parsed.pathname !== '/' && parsed.pathname !== '') throw new Error('PUBLIC_BASE_URL 不能包含路径');
   if (IS_PRODUCTION && parsed.protocol !== 'https:') throw new Error('生产环境 PUBLIC_BASE_URL 必须使用 https');
+  return parsed.origin;
+}
+
+function resolveInternalServiceUrl(value) {
+  try {
+    return normalizeInternalServiceUrl(value);
+  } catch (error) {
+    console.error(`[lesson-export] PDF export disabled: ${safeMessage(error?.message || 'GOTENBERG_URL 配置无效')}`);
+    return '';
+  }
+}
+
+function normalizeInternalServiceUrl(value) {
+  const candidate = String(value || '').trim().replace(/\/+$/, '');
+  if (!candidate) throw new Error('GOTENBERG_URL 不能为空');
+  let parsed;
+  try { parsed = new URL(candidate); }
+  catch { throw new Error('GOTENBERG_URL 必须是完整的 http 或 https 地址'); }
+  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error('GOTENBERG_URL 格式无效');
+  }
+  if (parsed.pathname !== '/' && parsed.pathname !== '') throw new Error('GOTENBERG_URL 不能包含路径');
   return parsed.origin;
 }
 

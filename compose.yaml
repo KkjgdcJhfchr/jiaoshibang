@@ -57,6 +57,12 @@ services:
       TRUST_PROXY: ${TRUST_PROXY:-true}
       ALLOW_INSECURE_PROVIDER_URLS: ${ALLOW_INSECURE_PROVIDER_URLS:-false}
       ALLOW_PRIVATE_PROVIDER_NETWORKS: ${ALLOW_PRIVATE_PROVIDER_NETWORKS:-false}
+      GOTENBERG_URL: ${GOTENBERG_URL:-http://gotenberg:3000}
+      DOCUMENT_EXPORT_TIMEOUT_MS: ${DOCUMENT_EXPORT_TIMEOUT_MS:-120000}
+      DOCUMENT_EXPORT_RATE_LIMIT_WINDOW_MS: ${DOCUMENT_EXPORT_RATE_LIMIT_WINDOW_MS:-60000}
+      DOCUMENT_EXPORT_RATE_LIMIT_USER_MAX: ${DOCUMENT_EXPORT_RATE_LIMIT_USER_MAX:-8}
+      DOCUMENT_EXPORT_RATE_LIMIT_IP_MAX: ${DOCUMENT_EXPORT_RATE_LIMIT_IP_MAX:-24}
+      DOCUMENT_EXPORT_MAX_CONCURRENCY: ${DOCUMENT_EXPORT_MAX_CONCURRENCY:-2}
     expose:
       - "8787"
     volumes:
@@ -76,6 +82,43 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 3
+
+  gotenberg:
+    image: gotenberg/gotenberg:8.32.0-chromium
+    restart: unless-stopped
+    init: true
+    environment:
+      API_TIMEOUT: 120s
+      API_BODY_LIMIT: 8MB
+      API_DISABLE_DOWNLOAD_FROM: "true"
+      CHROMIUM_AUTO_START: "true"
+      CHROMIUM_MAX_CONCURRENCY: "2"
+      CHROMIUM_MAX_QUEUE_SIZE: "8"
+      CHROMIUM_DISABLE_JAVASCRIPT: "true"
+      CHROMIUM_DENY_PRIVATE_IPS: "true"
+      CHROMIUM_DENY_PUBLIC_IPS: "true"
+      XDG_CONFIG_HOME: /tmp/.chromium
+      XDG_CACHE_HOME: /tmp/.chromium
+      WEBHOOK_DISABLE: "true"
+      LOG_LEVEL: warn
+    expose:
+      - "3000"
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - --fail
+        - --silent
+        - http://127.0.0.1:3000/health
+      interval: 30s
+      timeout: 5s
+      start_period: 25s
+      retries: 5
 
   caddy:
     image: caddy:2-alpine

@@ -42,6 +42,74 @@ async function request(path, options = {}) {
   }
 }
 
+function decodeAttachmentFilename(value) {
+  const raw = String(value || '').trim().replace(/^['"]|['"]$/g, '');
+  if (!raw) return '';
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function attachmentFilename(headerValue, fallbackName) {
+  const disposition = String(headerValue || '');
+  const utf8Match = disposition.match(/filename\*\s*=\s*(?:UTF-8'')?([^;]+)/i);
+  const basicMatch = disposition.match(/filename\s*=\s*(?:"([^"]+)"|([^;]+))/i);
+  const decoded = decodeAttachmentFilename(utf8Match?.[1] || basicMatch?.[1] || basicMatch?.[2]);
+  const filename = (decoded || fallbackName || 'download')
+    .normalize('NFC')
+    .replace(/[\u0000-\u001f\u007f/\\:*?"<>|]/g, '_')
+    .trim();
+  return filename || fallbackName || 'download';
+}
+
+async function binaryRequest(path, options = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), options.timeout ?? 180_000);
+  try {
+    const response = await fetch(path, {
+      method: options.method ?? 'GET',
+      headers: {
+        ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+        ...(options.headers || {}),
+      },
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: controller.signal,
+      credentials: 'same-origin',
+    });
+    const contentType = response.headers.get('content-type') || '';
+    if (!response.ok || contentType.toLowerCase().includes('json')) {
+      const text = await response.text().catch(() => '');
+      let payload = {};
+      try { payload = text ? JSON.parse(text) : {}; } catch { payload = {}; }
+      throw new ApiError(
+        payload.error?.message
+          || payload.message
+          || (typeof payload.error === 'string' ? payload.error : '')
+          || (!response.ok ? `导出失败（${response.status}）` : '导出服务未返回文件'),
+        {
+          status: response.status,
+          code: payload.error?.code || payload.code || '',
+          details: payload.error?.details || payload.data || (text || null),
+        },
+      );
+    }
+    const blob = await response.blob();
+    if (!blob.size) throw new ApiError('导出的文件为空，请稍后重试。', { status: response.status, code: 'EMPTY_EXPORT' });
+    return {
+      blob,
+      filename: attachmentFilename(response.headers.get('content-disposition'), options.fallbackName),
+    };
+  } catch (error) {
+    if (error.name === 'AbortError') throw new ApiError('文件生成时间较长，本次导出已超时，请稍后重试。', { code: 'EXPORT_TIMEOUT' });
+    if (error instanceof ApiError) throw error;
+    throw new ApiError('无法连接导出服务，请检查网络后重试。', { code: 'EXPORT_NETWORK_ERROR', details: error?.message || null });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export const api = {
   health: () => request('/api/health', { timeout: 8_000 }),
   getSiteConfig: () => request('/api/site-config', { timeout: 10_000 }),
@@ -156,6 +224,8 @@ export const api = {
   generateLesson: (body) => request('/api/ai/generate', { method: 'POST', body, timeout: 660_000 }),
   reviseLesson: (body) => request('/api/ai/revise', { method: 'POST', body, timeout: 660_000 }),
   reviseCustomSections: (body) => request('/api/ai/revise-custom-sections', { method: 'POST', body, timeout: 660_000 }),
+  exportLessonDocx: (lessonPlan) => binaryRequest('/api/app/lesson-exports/docx', { method: 'POST', body: { lessonPlan }, timeout: 180_000, fallbackName: '教案.docx' }),
+  exportLessonPdf: (lessonPlan) => binaryRequest('/api/app/lesson-exports/pdf', { method: 'POST', body: { lessonPlan }, timeout: 180_000, fallbackName: '教案.pdf' }),
   buildKnowledgeMap: (body) => request('/api/workflow/knowledge-map', { method: 'POST', body, timeout: 30_000 }),
   recommendPaper: (body) => request('/api/workflow/papers/recommend', { method: 'POST', body, timeout: 30_000 }),
   submitTrainingCandidate: (body) => request('/api/training/candidates', { method: 'POST', body, timeout: 20_000 }),

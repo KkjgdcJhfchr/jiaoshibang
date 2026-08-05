@@ -16,6 +16,10 @@ const required = [
   'server/admin-entry.mjs',
   'server/admin-mfa.mjs',
   'server/message-service.mjs',
+  'server/lesson-export-model.mjs',
+  'server/lesson-export-docx.mjs',
+  'server/lesson-export-pdf.mjs',
+  'server/lesson-export-service.mjs',
   'server/teaching-workflow.mjs',
   'scripts/bootstrap.sh',
   'shared/lesson-plan.schema.json',
@@ -51,6 +55,25 @@ if (!/allowBuilds:\s*[\r\n]+\s+esbuild@0\.25\.12:\s*true/.test(pnpmWorkspace)) {
 const dockerfile = fs.readFileSync(path.resolve('Dockerfile'), 'utf8');
 if (!dockerfile.includes('COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./')) {
   throw new Error('Docker 依赖安装阶段必须复制 pnpm-workspace.yaml');
+}
+
+const compose = fs.readFileSync(path.resolve('compose.yaml'), 'utf8');
+const appServiceStart = compose.indexOf('\n  app:');
+const gotenbergServiceStart = compose.indexOf('\n  gotenberg:');
+const appServiceBlock = compose.slice(appServiceStart, gotenbergServiceStart);
+if (/depends_on:\s*[\s\S]*?gotenberg:/.test(appServiceBlock)) {
+  throw new Error('主站启动不得硬依赖 PDF 转换服务健康状态');
+}
+for (const marker of ['XDG_CONFIG_HOME: /tmp/.chromium', 'XDG_CACHE_HOME: /tmp/.chromium']) {
+  if (!compose.includes(marker)) throw new Error(`只读 Chromium 容器缺少可写目录配置: ${marker}`);
+}
+
+const serverSource = fs.readFileSync(path.resolve('server/index.mjs'), 'utf8');
+for (const marker of ['DOCUMENT_EXPORT_MAX_CONCURRENCY', 'enforceDocumentExportRateLimits', 'withDocumentExportSlot']) {
+  if (!serverSource.includes(marker)) throw new Error(`文档导出资源保护缺少关键实现: ${marker}`);
+}
+if (!serverSource.includes('`lesson-plan${extension}`')) {
+  throw new Error('文档下载必须为纯中文标题提供安全的 ASCII 备用文件名');
 }
 
 const gitIgnore = fs.readFileSync(path.resolve('.gitignore'), 'utf8');

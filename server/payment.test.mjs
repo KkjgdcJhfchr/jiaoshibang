@@ -169,7 +169,7 @@ test('免费版可编辑但不可购买或删除，付费套餐归档后不会�
   assert.equal(savedFree.amountCents, 0);
   assert.equal(savedFree.credits, 5);
   assert.equal(savedFree.purchasable, false);
-  assert.deepEqual(savedFree.features, ['免费教案生成', 'DOC / 打印-PDF 导出']);
+  assert.deepEqual(savedFree.features, ['免费教案生成', 'DOCX / PDF 导出']);
   assert.match(savedFree.subject, /^备课星/);
   siteName = '课堂星';
   assert.match(catalog.getFreeProduct().subject, /^课堂星/);
@@ -209,7 +209,7 @@ test('旧套餐中的结构化或 JSON 导出承诺在读取和报价时安全�
   const reloaded = createMembershipCatalog({ dataDir, now: () => FIXED_DATE });
   const publicPlan = reloaded.listProducts({ includeInactive: true }).find((item) => item.planId === 'pro-monthly');
   const quote = reloaded.resolveProduct({ planId: 'pro-monthly' });
-  assert.deepEqual(publicPlan.features, ['20 次教案生成点数', 'AI 修改与 DOC / 打印-PDF 导出', 'DOC / 打印-PDF 导出', '专属客服']);
+  assert.deepEqual(publicPlan.features, ['20 次教案生成点数', 'AI 修改与 DOCX / PDF 导出', 'DOCX / PDF 导出', '专属客服']);
   assert.deepEqual(quote.features, publicPlan.features);
   assert.doesNotMatch(JSON.stringify([publicPlan, quote]), /结构化.*导出|JSON.*导出/i);
 });

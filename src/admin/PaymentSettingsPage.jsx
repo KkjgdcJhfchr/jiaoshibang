@@ -54,7 +54,7 @@ const CELEBRATION_TEMPLATES = Object.freeze({
 
 const EMPTY_PLAN_FORM = Object.freeze({
   planId: '', name: '', kind: 'paid', tier: 'pro', tierRank: '10', billingPeriod: 'month', price: '', credits: '',
-  durationDays: '30', features: '教案生成点数\nAI 教案修改\nDOC / 打印-PDF 导出', saleable: true,
+  durationDays: '30', features: '教案生成点数\nAI 教案修改\nDOCX / PDF 导出', saleable: true,
 })
 
 const EMPTY_PROMOTION_FORM = Object.freeze({
