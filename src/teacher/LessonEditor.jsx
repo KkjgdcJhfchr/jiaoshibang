@@ -17,18 +17,17 @@ import {
   Pencil,
   Plus,
   Printer,
-  Redo2,
   RotateCcw,
   ScrollText,
   Send,
   Trash2,
-  Undo2,
   X,
 } from 'lucide-react';
 import { sampleLesson } from '../data/sampleLesson.js';
 import { formatStructuredBoard, isAnnotationPathAllowed, mergeAnnotationTargets, synchronizeAnnotationDerivedFields } from '../lib/annotationPatch.js';
 import { api } from '../lib/api.js';
 import { normalizeLesson } from '../lib/lessonAdapter.js';
+import { completeRevisionTransition, confirmVersionRestore, exitAnnotationSession, selectVersionPreview } from '../lib/lessonEditorSession.js';
 import { navigate } from '../lib/navigation.jsx';
 import {
   filterRevisionSelection,
@@ -48,6 +47,17 @@ const baseOutline = [
   ['timeline', '教学过程'], ['interaction', '课堂互动'], ['board', '板书设计'], ['homework', '课后作业'], ['exercises', '习题与答案'],
 ];
 const standardRevisionKeys = baseOutline.map(([key]) => key);
+const documentSectionTitles = {
+  objectives: '教学目标',
+  learner: '学情分析',
+  keypoints: '教学重点',
+  preparation: '教学准备',
+  timeline: '教学过程',
+  interaction: '课堂互动与分层评价',
+  board: '板书设计',
+  homework: '课后作业',
+  exercises: '习题与答案',
+};
 
 const sectionFields = {
   objectives: ['source_summary', 'core_competencies', 'learning_objectives'],
@@ -188,7 +198,11 @@ function lessonToHtml(lesson) {
     ['exercises', exercises],
   ]);
   const customSectionBodies = new Map((lesson.custom_sections || []).map((item) => [`custom:${item.id}`, `<p>${escapeHtml(item.content).replace(/\n/g, '<br>')}</p>`]));
-  const availableSections = [...baseOutline, ...(lesson.custom_sections || []).map((item) => [`custom:${item.id}`, item.title])];
+  const customTitles = lesson.section_titles || {};
+  const availableSections = [
+    ...baseOutline.map(([key, label]) => [key, customTitles[key] || documentSectionTitles[key] || label]),
+    ...(lesson.custom_sections || []).map((item) => [`custom:${item.id}`, item.title]),
+  ];
   const labelByKey = new Map(availableSections);
   const savedOrder = Array.isArray(lesson.section_order) ? lesson.section_order : [];
   const orderedKeys = [
@@ -200,7 +214,7 @@ function lessonToHtml(lesson) {
     const body = standardSectionBodies.get(key) ?? customSectionBodies.get(key) ?? '';
     return `<h2>${ordinal}、${escapeHtml(labelByKey.get(key) || '')}</h2>${body}`;
   }).join('');
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>body{font-family:'Microsoft YaHei',sans-serif;max-width:900px;margin:40px auto;color:#1a2522;line-height:1.75}h1{text-align:center}h2{border-bottom:1px solid #ccc;padding-bottom:8px;margin-top:32px}h3{margin:0 0 8px}.question,.stage{page-break-inside:avoid;margin:16px 0;padding:14px;border:1px solid #d6dedb;border-radius:6px}.question-detail{margin:10px 0;padding:10px;background:#f6f8f7}.meta{text-align:center;color:#666}.sources{color:#66736f;font-size:12px}.sources ul{margin-top:4px}pre{white-space:pre-wrap}</style></head><body><h1>${escapeHtml(title)}</h1><p class="meta">${escapeHtml(lesson.metadata?.grade)} · ${escapeHtml(lesson.metadata?.subject)} · ${escapeHtml(lesson.metadata?.textbook_edition || '')} · ${lesson.metadata?.duration_minutes || 45}分钟</p><p><b>章节：</b>${escapeHtml(lesson.metadata?.chapter || '')}</p>${orderedSections}</body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>*{box-sizing:border-box}body{margin:0;padding:34px 30px 70px;background:#fff;color:#21302c;font-family:'Microsoft YaHei','Noto Sans SC',sans-serif;font-size:14px;line-height:1.82}h1{margin:0;text-align:left;font-family:'Noto Serif SC','Microsoft YaHei',serif;font-size:28px;line-height:1.4}h2{margin:34px 0 18px;padding-bottom:10px;border-bottom:1px solid #dfe6e2;color:#182420;font-family:'Noto Serif SC','Microsoft YaHei',serif;font-size:21px}h3{margin:0 0 8px;color:#26443c;font-size:15px}.question,.stage{page-break-inside:avoid;margin:13px 0;padding:15px 17px;border:1px solid #d8e1dd;border-radius:8px;background:#fbfcfb}.question-detail{margin:10px 0;padding:11px 13px;border-left:3px solid #78aa9e;background:#f2f7f5}.question-meta,.meta{color:#71807b;font-size:12px}.meta{margin:10px 0 22px;padding-bottom:20px;border-bottom:2px solid #21302c;text-align:left}.sources{margin-top:8px;padding-top:7px;border-top:1px dashed #d6dedb;color:#6c7b76;font-size:11px}.sources ul{margin-top:4px}ul,ol{padding-left:22px}li{margin:4px 0}p{margin:7px 0}pre{padding:18px;border-radius:8px;background:#24342f;color:#edf6f2;white-space:pre-wrap}</style></head><body><h1>${escapeHtml(title)}</h1><p class="meta">${escapeHtml(lesson.metadata?.grade)} · ${escapeHtml(lesson.metadata?.subject)} · ${escapeHtml(lesson.metadata?.textbook_edition || '')} · ${lesson.metadata?.duration_minutes || 45}分钟<br>章节：${escapeHtml(lesson.metadata?.chapter || '')}</p>${orderedSections}</body></html>`;
 }
 
 function downloadBlob(contents, type, name) {
@@ -264,12 +278,11 @@ export function LessonEditor({ path }) {
   const annotationsRef = useRef([]);
   const [annotationDraft, setAnnotationDraft] = useState(null);
   const [annotationPointer, setAnnotationPointer] = useState(null);
-  const [revisionPreview, setRevisionPreview] = useState(null);
-  const revisionPreviewRef = useRef(null);
   const [draggedOutlineKey, setDraggedOutlineKey] = useState(null);
   const [dragOverOutlineKey, setDragOverOutlineKey] = useState(null);
   const pointerDraggedOutlineRef = useRef(null);
   const pointerDropOutlineRef = useRef(null);
+  const cancelledOutlineEditRef = useRef(false);
   const [feedback, setFeedback] = useState('');
   const [revising, setRevising] = useState(false);
   const [revisionStage, setRevisionStage] = useState('idle');
@@ -281,18 +294,26 @@ export function LessonEditor({ path }) {
   const [newSectionOpen, setNewSectionOpen] = useState(false);
   const [newSectionTitle, setNewSectionTitle] = useState('');
   const [outlineDrawerOpen, setOutlineDrawerOpen] = useState(false);
-  const [returnSnapshot, setReturnSnapshot] = useState(null);
+  const [editingOutlineKey, setEditingOutlineKey] = useState(null);
+  const [editingOutlineValue, setEditingOutlineValue] = useState('');
+  const [regenerateOpen, setRegenerateOpen] = useState(false);
+  const [regenerateFeedback, setRegenerateFeedback] = useState('');
+  const [historySelection, setHistorySelection] = useState(null);
   const [toast, setToast] = useState(null);
   const [historyVersion, setHistoryVersion] = useState(0);
   const candidateSubmitted = useRef(false);
   const historyRef = useRef([]);
   const redoRef = useRef([]);
   const revisionRunRef = useRef(0);
+  const revisionInFlightRef = useRef(false);
   const revisionAbortRef = useRef(null);
   const activeRevisionRef = useRef(null);
   const title = lesson.metadata?.title || `${lesson.metadata?.chapter || '新教案'}教学设计`;
   const customOutline = (lesson.custom_sections || []).map((item) => [`custom:${item.id}`, item.title]);
-  const availableOutline = [...baseOutline, ...customOutline];
+  const availableOutline = [
+    ...baseOutline.map(([key, label]) => [key, lesson.section_titles?.[key] || label]),
+    ...customOutline,
+  ];
   const outlineLabelMap = new Map(availableOutline);
   const savedOutlineKeys = Array.isArray(lesson.section_order) ? lesson.section_order : [];
   const fullOutline = [
@@ -306,7 +327,7 @@ export function LessonEditor({ path }) {
   const currentCustomIds = (lesson.custom_sections || []).map((item) => item.id);
   const revisionScopeSignature = currentCustomIds.join('\u0000');
   const exerciseCount = lesson.exercises?.length || 0;
-  const currentVersion = historyRef.current.length + 1;
+  const currentVersion = lessonVersionRef.current + 1;
   const sourceItems = isDemo
     ? [{ name: '教材《春》原文', detail: '图片 · 6 页', mark: '书' }, { name: '七年级语文课程标准', detail: 'PDF', mark: '纲' }]
     : (lesson.source_files || []).map((file) => ({ name: file.name, detail: `${file.type || '文件'} · 本次使用`, mark: '源' }));
@@ -320,17 +341,18 @@ export function LessonEditor({ path }) {
     return next;
   }
 
-  function replaceRevisionPreview(next) {
-    revisionPreviewRef.current = next;
-    setRevisionPreview(next);
+  function clearAnnotationSession() {
+    const cleared = exitAnnotationSession();
+    replaceAnnotations(cleared.annotations);
+    setAssistantEnabled(cleared.assistantEnabled);
+    setAnnotationDraft(cleared.annotationDraft);
+    setAnnotationPointer(cleared.annotationPointer);
+    setFeedback(cleared.feedback);
+    setRetryRevision(cleared.retryRevision);
   }
 
-  function invalidateRevisionPreview({ resetAnnotations = true } = {}) {
-    if (!revisionPreviewRef.current) return;
-    replaceRevisionPreview(null);
-    if (resetAnnotations) {
-      replaceAnnotations((items) => items.map((item) => ({ ...item, status: 'pending' })));
-    }
+  function sectionHeadingTitle(key, fallback = documentSectionTitles[key] || outlineLabelMap.get(key) || '') {
+    return lesson.section_titles?.[key] || fallback;
   }
 
   function displayedSectionNumber(sectionKey) {
@@ -367,11 +389,24 @@ export function LessonEditor({ path }) {
     updateLesson((current) => ({ ...current, section_order: normalizedOutlineKeys }), { recordHistory: false });
   }, [storedOutlineSignature, normalizedOutlineSignature]);
 
+  useEffect(() => {
+    if (!manualEditing) return undefined;
+    const onKeyDown = (event) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'z') return;
+      const target = event.target;
+      if (target instanceof HTMLElement && (target.isContentEditable || ['INPUT', 'TEXTAREA'].includes(target.tagName))) return;
+      event.preventDefault();
+      if (event.shiftKey) redo();
+      else undo();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [manualEditing, revising]);
+
   function updateLesson(updater, { recordHistory = true } = {}) {
-    invalidateRevisionPreview();
     const current = lessonRef.current;
     const next = typeof updater === 'function' ? updater(current) : updater;
-    if (recordHistory) historyRef.current = [...historyRef.current.slice(-19), structuredClone(current)];
+    if (recordHistory) historyRef.current = [...historyRef.current.slice(-19), { lesson: structuredClone(current), version: lessonVersionRef.current + 1, createdAt: Date.now() }];
     redoRef.current = [];
     lessonRef.current = next;
     lessonVersionRef.current += 1;
@@ -408,12 +443,12 @@ export function LessonEditor({ path }) {
   function undo() {
     const previous = historyRef.current.pop();
     if (!previous) return;
-    invalidateRevisionPreview();
-    redoRef.current.push(structuredClone(lessonRef.current));
-    lessonRef.current = previous;
+    redoRef.current.push({ lesson: structuredClone(lessonRef.current), version: lessonVersionRef.current + 1, createdAt: Date.now() });
+    const restored = structuredClone(previous.lesson);
+    lessonRef.current = restored;
     lessonVersionRef.current += 1;
-    setLesson(previous);
-    saveLesson(previous, isDemo);
+    setLesson(restored);
+    saveLesson(restored, isDemo);
     setHistoryVersion((value) => value + 1);
     setToast('已撤销上一步编辑');
   }
@@ -421,40 +456,32 @@ export function LessonEditor({ path }) {
   function redo() {
     const next = redoRef.current.pop();
     if (!next) return;
-    invalidateRevisionPreview();
-    historyRef.current.push(structuredClone(lessonRef.current));
-    lessonRef.current = next;
-    lessonVersionRef.current += 1;
-    setLesson(next);
-    saveLesson(next, isDemo);
-    setHistoryVersion((value) => value + 1);
-    setToast('已重做上一步编辑');
-  }
-
-  function restoreSnapshot(snapshot) {
-    invalidateRevisionPreview();
-    if (!returnSnapshot) setReturnSnapshot(structuredClone(lessonRef.current));
-    const restored = structuredClone(snapshot);
-    lessonRef.current = restored;
-    lessonVersionRef.current += 1;
-    setLesson(restored);
-    setVersionsOpen(false);
-    setHistoryVersion((value) => value + 1);
-    setToast('已打开所选历史版本；未编辑或保存前不会替换当前版本');
-  }
-
-  function returnToCurrentSnapshot() {
-    if (!returnSnapshot) return;
-    invalidateRevisionPreview();
-    const restored = structuredClone(returnSnapshot);
+    historyRef.current.push({ lesson: structuredClone(lessonRef.current), version: lessonVersionRef.current + 1, createdAt: Date.now() });
+    const restored = structuredClone(next.lesson);
     lessonRef.current = restored;
     lessonVersionRef.current += 1;
     setLesson(restored);
     saveLesson(restored, isDemo);
-    setReturnSnapshot(null);
-    setVersionsOpen(false);
     setHistoryVersion((value) => value + 1);
-    setToast('已返回打开历史版本前的教案');
+    setToast('已重做上一步编辑');
+  }
+
+  function selectHistorySnapshot(snapshot, version) {
+    const selection = selectVersionPreview([snapshot], 0);
+    setHistorySelection(selection ? { snapshot: selection.preview, version } : null);
+  }
+
+  function restoreSelectedHistory() {
+    if (!historySelection?.snapshot || revising) return;
+    const restored = confirmVersionRestore({ preview: historySelection.snapshot });
+    if (!restored) return;
+    updateLesson(restored.currentLesson);
+    setHistorySelection(null);
+    setVersionsOpen(false);
+    setManualEditing(true);
+    setAssistantEnabled(false);
+    clearAnnotationSession();
+    setToast(`已恢复 v${historySelection.version}.0，并进入编辑模式`);
   }
 
   function addStage() {
@@ -553,17 +580,50 @@ export function LessonEditor({ path }) {
     setToast('教案大纲与正文顺序已更新');
   }
 
+  function beginOutlineTitleEdit(event, key, label) {
+    if (revising) return;
+    event.preventDefault();
+    event.stopPropagation();
+    cancelledOutlineEditRef.current = false;
+    setEditingOutlineKey(key);
+    setEditingOutlineValue(label);
+  }
+
+  function cancelOutlineTitleEdit() {
+    cancelledOutlineEditRef.current = true;
+    setEditingOutlineKey(null);
+    setEditingOutlineValue('');
+  }
+
+  function commitOutlineTitleEdit(key) {
+    if (cancelledOutlineEditRef.current) {
+      cancelledOutlineEditRef.current = false;
+      return;
+    }
+    if (editingOutlineKey !== key) return;
+    const nextTitle = editingOutlineValue.trim();
+    const currentTitle = outlineLabelMap.get(key) || '';
+    setEditingOutlineKey(null);
+    setEditingOutlineValue('');
+    if (!nextTitle || nextTitle === currentTitle) return;
+    mutateLesson((next) => {
+      if (key.startsWith('custom:')) {
+        const customId = key.slice(7);
+        const item = (next.custom_sections || []).find((section) => section.id === customId);
+        if (item) item.title = nextTitle;
+        return;
+      }
+      next.section_titles = { ...(next.section_titles || {}), [key]: nextTitle };
+    });
+    setToast(`模块标题已修改为“${nextTitle}”`);
+  }
+
   function toggleAnnotationMode() {
     if (revising) return;
-    setAssistantEnabled((current) => {
-      const next = !current;
-      if (next) setManualEditing(false);
-      if (!next) {
-        setAnnotationDraft(null);
-        setAnnotationPointer(null);
-      }
-      return next;
-    });
+    const next = !assistantEnabled;
+    clearAnnotationSession();
+    setAssistantEnabled(next);
+    if (next) setManualEditing(false);
     setOutlineDrawerOpen(false);
   }
 
@@ -660,7 +720,6 @@ export function LessonEditor({ path }) {
       anchorY: annotationDraft.anchorY,
       status: 'pending',
     };
-    invalidateRevisionPreview();
     replaceAnnotations((items) => annotationDraft.id
       ? items.map((item) => item.id === annotationDraft.id ? nextAnnotation : { ...item, status: 'pending' })
       : [...items.map((item) => ({ ...item, status: 'pending' })), nextAnnotation]);
@@ -670,7 +729,6 @@ export function LessonEditor({ path }) {
   }
 
   function removeAnnotation(id) {
-    invalidateRevisionPreview();
     replaceAnnotations((items) => items.filter((item) => item.id !== id).map((item) => ({ ...item, status: 'pending' })));
     if (annotationDraft?.id === id) setAnnotationDraft(null);
     setRetryRevision(null);
@@ -711,7 +769,7 @@ export function LessonEditor({ path }) {
     void runRevision(request);
   }
 
-  function buildRevisionRequest(instruction, selectedKeys = [], annotationIds = [], targetPaths = []) {
+  function buildRevisionRequest(instruction, selectedKeys = [], annotationIds = [], targetPaths = [], mode = 'targeted') {
     const currentLesson = lessonRef.current;
     const currentCustomSectionIds = (currentLesson.custom_sections || []).map((item) => item.id);
     const safeSelectedKeys = filterRevisionSelection(selectedKeys, {
@@ -726,6 +784,7 @@ export function LessonEditor({ path }) {
       customIds,
       annotationIds,
       targetPaths: [...new Set(targetPaths.filter((path) => typeof path === 'string'))],
+      mode,
       clientVersion: lessonVersionRef.current,
       idempotencyKey: revisionIdempotencyKey(),
       body: {
@@ -743,17 +802,40 @@ export function LessonEditor({ path }) {
       [...(request.standardKeys || []), ...(request.customIds || []).map((id) => `custom:${id}`)],
       request.annotationIds || [],
       request.targetPaths || [],
+      request.mode || 'targeted',
     );
   }
 
+  function submitFullRegeneration() {
+    if (revising) return;
+    const requirement = regenerateFeedback.trim();
+    if (!requirement) {
+      setToast('请先说明当前教案不满意的地方');
+      return;
+    }
+    const allKeys = fullOutline.map(([key]) => key);
+    const instruction = [
+      '请根据下列反馈重新生成整份教案。保留课程基本信息与教材事实，全面重写所有教学模块；内容要可直接用于真实课堂，习题不少于十道。',
+      `教师反馈：${requirement}`,
+    ].join('\n');
+    const request = buildRevisionRequest(instruction, allKeys, [], [], 'full');
+    setRegenerateOpen(false);
+    setRegenerateFeedback('');
+    clearAnnotationSession();
+    setAssistantEnabled(false);
+    setManualEditing(false);
+    void runRevision(request);
+  }
+
   async function runRevision(request) {
+    if (revisionInFlightRef.current) return;
+    revisionInFlightRef.current = true;
     const runId = revisionRunRef.current + 1;
     revisionRunRef.current = runId;
     const abortController = new AbortController();
     revisionAbortRef.current = abortController;
     let trackedRequest = { ...request, jobId: request.jobId || null };
     activeRevisionRef.current = trackedRequest;
-    setFeedback('');
     setRetryRevision(null);
     setRevisionStage('submitting');
     setRevising(true);
@@ -822,26 +904,39 @@ export function LessonEditor({ path }) {
           return changed ? { ...item, title: changed.title || item.title, content: changed.content || item.content } : item;
         });
       }
-      const targetPaths = [...new Set(request.targetPaths || [])];
-      const requestScopeKeys = [...request.standardKeys, ...request.customIds.map((id) => `custom:${id}`)];
-      if (!targetPaths.length || targetPaths.some((path) => !requestScopeKeys.some((sectionKey) => isAnnotationPathAllowed(sectionKey, path, latestLesson)))) {
-        throw new Error('批注目标已失效，请重新选择具体内容。');
+      let candidateLesson;
+      if (request.mode === 'full') {
+        candidateLesson = {
+          ...revisedSource,
+          id: latestLesson.id,
+          metadata: { ...(latestLesson.metadata || {}), ...(revisedSource.metadata || {}) },
+          source_files: latestLesson.source_files || [],
+          section_order: latestLesson.section_order || [],
+          section_titles: latestLesson.section_titles || {},
+          updated_at: '刚刚',
+        };
+      } else {
+        const targetPaths = [...new Set(request.targetPaths || [])];
+        const requestScopeKeys = [...request.standardKeys, ...request.customIds.map((id) => `custom:${id}`)];
+        if (!targetPaths.length || targetPaths.some((path) => !requestScopeKeys.some((sectionKey) => isAnnotationPathAllowed(sectionKey, path, latestLesson)))) {
+          throw new Error('批注目标已失效，请重新选择具体内容。');
+        }
+        candidateLesson = {
+          ...synchronizeAnnotationDerivedFields(mergeAnnotationTargets(latestLesson, revisedSource, targetPaths), targetPaths),
+          id: latestLesson.id,
+          updated_at: '刚刚',
+        };
       }
-      const candidateLesson = {
-        ...synchronizeAnnotationDerivedFields(mergeAnnotationTargets(latestLesson, revisedSource, targetPaths), targetPaths),
-        id: latestLesson.id,
-        updated_at: '刚刚',
-      };
-      replaceRevisionPreview({
-        baseLesson: structuredClone(latestLesson),
-        baseVersion: request.clientVersion,
-        candidateLesson,
-      });
-      setToast('修改版已生成，请在右侧对比后应用');
-      if (request.annotationIds?.length) {
-        const submittedIds = new Set(request.annotationIds);
-        replaceAnnotations((items) => items.map((item) => submittedIds.has(item.id) ? { ...item, status: 'review' } : item));
-      }
+      const transition = completeRevisionTransition({}, candidateLesson);
+      updateLesson(transition.lesson);
+      replaceAnnotations(transition.annotations);
+      setFeedback(transition.feedback);
+      setRetryRevision(transition.retryRevision);
+      setAnnotationDraft(transition.annotationDraft);
+      setAnnotationPointer(transition.annotationPointer);
+      setAssistantEnabled(transition.assistantEnabled);
+      setManualEditing(transition.manualEditing);
+      setToast(request.mode === 'full' ? '整份教案已重新生成，已进入编辑模式' : '修改版已生成，已进入编辑模式');
       setRetryRevision(null);
     } catch (error) {
       if (revisionRunRef.current !== runId) return;
@@ -853,6 +948,7 @@ export function LessonEditor({ path }) {
       setToast(`本次修改未完成：${message}`);
     } finally {
       if (revisionRunRef.current === runId) {
+        revisionInFlightRef.current = false;
         setRevising(false);
         setRevisionStage('idle');
         revisionAbortRef.current = null;
@@ -868,6 +964,7 @@ export function LessonEditor({ path }) {
     revisionAbortRef.current?.abort();
     revisionAbortRef.current = null;
     activeRevisionRef.current = null;
+    revisionInFlightRef.current = false;
     setRevising(false);
     setRevisionStage('idle');
     if (request) {
@@ -913,34 +1010,8 @@ export function LessonEditor({ path }) {
     }
   }
 
-  function applyRevisionPreview() {
-    const preview = revisionPreviewRef.current;
-    if (!preview) return;
-    if (preview.baseVersion !== lessonVersionRef.current || JSON.stringify(preview.baseLesson) !== JSON.stringify(lessonRef.current)) {
-      invalidateRevisionPreview();
-      setToast('原版教案已发生变化，修改版已失效，请重新发送批注');
-      return;
-    }
-    const candidateLesson = structuredClone(preview.candidateLesson);
-    updateLesson(candidateLesson);
-    replaceRevisionPreview(null);
-    replaceAnnotations([]);
-    setFeedback('');
-    setAssistantEnabled(false);
-    setAnnotationDraft(null);
-    setAnnotationPointer(null);
-    setToast('修改版已应用并保存');
-  }
-
-  function discardRevisionPreview() {
-    if (!revisionPreviewRef.current) return;
-    invalidateRevisionPreview();
-    setToast('已放弃修改版，原教案保持不变');
-  }
-
   function saveCurrent() {
     saveLesson(lessonRef.current, isDemo);
-    setReturnSnapshot(null);
     setToast('教案已保存');
     void submitTrainingCandidate();
   }
@@ -953,11 +1024,9 @@ export function LessonEditor({ path }) {
       setToast('手动编辑已完成并保存');
       return;
     }
-    invalidateRevisionPreview();
+    clearAnnotationSession();
     setManualEditing(true);
     setAssistantEnabled(false);
-    setAnnotationDraft(null);
-    setAnnotationPointer(null);
   }
 
   function exportDoc() {
@@ -994,15 +1063,15 @@ export function LessonEditor({ path }) {
     <div className="editor-shell">
       <header className="editor-topbar">
         <div className="editor-top-left"><button className="icon-button" onClick={() => navigate('/app')} aria-label="返回工作台"><ArrowLeft size={18} /></button><span className="editor-brand"><BookOpen size={18} /> {siteName}</span><i /></div>
-        <div className="editor-history-tools"><button title="撤销上一步编辑" onClick={undo} disabled={revising || !historyRef.current.length}><Undo2 size={17} /><span>撤销</span></button><button title="恢复刚才撤销的编辑" onClick={redo} disabled={revising || !redoRef.current.length}><Redo2 size={17} /><span>重做编辑</span></button></div>
-        <div className="editor-top-actions"><button className="outline-drawer-trigger" onClick={() => setOutlineDrawerOpen(true)} aria-label="打开教案大纲"><FileText size={17} /><span>大纲</span></button><button className={`annotation-mode-button${assistantEnabled ? ' is-active' : ''}`} onClick={toggleAnnotationMode} disabled={revising} aria-pressed={assistantEnabled} aria-label={assistantEnabled ? '退出注释模式' : '进入注释模式'}><MessageSquarePlus size={17} /><span>{assistantEnabled ? '正在注释' : '注释'}</span></button><button className={`editor-mode-button${manualEditing ? ' is-active' : ''}`} onClick={toggleManualEditing} disabled={revising} aria-pressed={manualEditing} aria-label={manualEditing ? '完成手动编辑' : '编辑教案'}><Pencil size={17} /><span>{manualEditing ? '完成编辑' : '编辑'}</span></button><button onClick={() => setVersionsOpen(true)} disabled={revising} aria-label="版本历史" title="版本历史"><History size={17} /><span>版本历史</span></button><button className="editor-save-button" onClick={saveCurrent} disabled={revising} aria-label="保存教案"><CheckCircle2 size={17} /><span>保存</span></button><Button icon={Download} onClick={() => setExportOpen(true)} disabled={revising}>导出教案</Button></div>
+        <div className="editor-history-tools"><button title="根据反馈重新生成整份教案" onClick={() => setRegenerateOpen(true)} disabled={revising}><RotateCcw size={17} /><span>重新生成</span></button></div>
+        <div className="editor-top-actions"><button className="outline-drawer-trigger" onClick={() => setOutlineDrawerOpen(true)} aria-label="打开教案大纲"><FileText size={17} /><span>大纲</span></button><button className={`annotation-mode-button${assistantEnabled ? ' is-active' : ''}`} onClick={toggleAnnotationMode} disabled={revising} aria-pressed={assistantEnabled} aria-label={assistantEnabled ? '退出注释模式' : '进入注释模式'}><MessageSquarePlus size={17} /><span>{assistantEnabled ? '正在注释' : '注释'}</span></button><button className={`editor-mode-button${manualEditing ? ' is-active' : ''}`} onClick={toggleManualEditing} disabled={revising} aria-pressed={manualEditing} aria-label={manualEditing ? '完成手动编辑' : '编辑教案'}><Pencil size={17} /><span>{manualEditing ? '完成编辑' : '编辑'}</span></button><button onClick={() => { setHistorySelection(null); setVersionsOpen(true); }} disabled={revising} aria-label="版本历史" title="版本历史"><History size={17} /><span>版本历史</span></button><button className="editor-save-button" onClick={saveCurrent} disabled={revising} aria-label="保存教案"><CheckCircle2 size={17} /><span>保存</span></button><Button icon={Download} onClick={() => setExportOpen(true)} disabled={revising}>导出教案</Button></div>
       </header>
 
       <div className="editor-layout">
         <aside className={`editor-leftbar ${outlineDrawerOpen ? 'is-open' : ''}`}>
           <header><button onClick={() => navigate('/app')} aria-label="返回工作台"><ArrowLeft size={17} /></button><b>教案大纲</b><button aria-label="新增教案模块" title="新增教案模块" onClick={() => { setOutlineDrawerOpen(false); setNewSectionOpen(true); }} disabled={revising}><Plus size={18} /></button><button className="outline-drawer-close" onClick={() => setOutlineDrawerOpen(false)} aria-label="关闭教案大纲"><X size={18} /></button></header>
-          <div className="mobile-editor-tools"><button type="button" onClick={undo} disabled={revising || !historyRef.current.length}><Undo2 size={16} />撤销</button><button type="button" onClick={redo} disabled={revising || !redoRef.current.length}><Redo2 size={16} />重做编辑</button><button type="button" className={`annotation-mode-button${assistantEnabled ? ' is-active' : ''}`} onClick={toggleAnnotationMode} disabled={revising} aria-pressed={assistantEnabled}><MessageSquarePlus size={16} />{assistantEnabled ? '正在注释' : '注释教案'}</button><button type="button" className={`editor-mode-button${manualEditing ? ' is-active' : ''}`} onClick={toggleManualEditing} disabled={revising} aria-pressed={manualEditing}><Pencil size={16} />{manualEditing ? '完成编辑' : '编辑教案'}</button><button type="button" onClick={() => { setOutlineDrawerOpen(false); setVersionsOpen(true); }} disabled={revising}><History size={16} />版本历史</button><button type="button" onClick={() => { saveCurrent(); setOutlineDrawerOpen(false); }} disabled={revising}><CheckCircle2 size={16} />保存教案</button></div>
-          <nav aria-label="教案章节">{fullOutline.map(([key, label], index) => <div className="outline-sort-row" key={key}><button data-outline-key={key} draggable={!revising} aria-current={selected === key ? 'location' : undefined} className={`outline-sort-item${selected === key ? ' active' : ''}${draggedOutlineKey === key ? ' is-dragging' : ''}${dragOverOutlineKey === key && draggedOutlineKey !== key ? ' is-drag-over' : ''}`} onDragStart={(event) => { setDraggedOutlineKey(key); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', key); }} onDragOver={(event) => { event.preventDefault(); setDragOverOutlineKey(key); event.dataTransfer.dropEffect = 'move'; }} onDrop={(event) => { event.preventDefault(); reorderOutline(key); }} onDragEnd={() => { setDraggedOutlineKey(null); setDragOverOutlineKey(null); }} onClick={() => scrollTo(key)} title="拖动排序"><GripVertical className="outline-drag-handle" size={15} aria-hidden="true" onPointerDown={(event) => beginOutlinePointerDrag(event, key)} onPointerMove={moveOutlinePointerDrag} onPointerUp={(event) => finishOutlinePointerDrag(event)} onPointerCancel={(event) => finishOutlinePointerDrag(event, true)} /><span>{index + 1}</span>{label}<Check size={14} /></button></div>)}</nav>
+          <div className="mobile-editor-tools"><button type="button" onClick={() => { setOutlineDrawerOpen(false); setRegenerateOpen(true); }} disabled={revising}><RotateCcw size={16} />重新生成</button><button type="button" className={`annotation-mode-button${assistantEnabled ? ' is-active' : ''}`} onClick={toggleAnnotationMode} disabled={revising} aria-pressed={assistantEnabled}><MessageSquarePlus size={16} />{assistantEnabled ? '正在注释' : '注释教案'}</button><button type="button" className={`editor-mode-button${manualEditing ? ' is-active' : ''}`} onClick={toggleManualEditing} disabled={revising} aria-pressed={manualEditing}><Pencil size={16} />{manualEditing ? '完成编辑' : '编辑教案'}</button><button type="button" onClick={() => { setOutlineDrawerOpen(false); setVersionsOpen(true); setHistorySelection(null); }} disabled={revising}><History size={16} />版本历史</button><button type="button" onClick={() => { saveCurrent(); setOutlineDrawerOpen(false); }} disabled={revising}><CheckCircle2 size={16} />保存教案</button></div>
+          <nav aria-label="教案章节">{fullOutline.map(([key, label], index) => <div className="outline-sort-row" key={key}><div data-outline-key={key} draggable={!revising && editingOutlineKey !== key} role="button" tabIndex={0} aria-current={selected === key ? 'location' : undefined} className={`outline-sort-item${selected === key ? ' active' : ''}${draggedOutlineKey === key ? ' is-dragging' : ''}${dragOverOutlineKey === key && draggedOutlineKey !== key ? ' is-drag-over' : ''}`} onDragStart={(event) => { setDraggedOutlineKey(key); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', key); }} onDragOver={(event) => { event.preventDefault(); setDragOverOutlineKey(key); event.dataTransfer.dropEffect = 'move'; }} onDrop={(event) => { event.preventDefault(); reorderOutline(key); }} onDragEnd={() => { setDraggedOutlineKey(null); setDragOverOutlineKey(null); }} onClick={() => { if (editingOutlineKey !== key) scrollTo(key); }} onDoubleClick={(event) => beginOutlineTitleEdit(event, key, label)} onKeyDown={(event) => { if (editingOutlineKey === key) return; if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); scrollTo(key); } }} title="拖动排序；双击标题可修改"><GripVertical className="outline-drag-handle" size={15} aria-hidden="true" onPointerDown={(event) => beginOutlinePointerDrag(event, key)} onPointerMove={moveOutlinePointerDrag} onPointerUp={(event) => finishOutlinePointerDrag(event)} onPointerCancel={(event) => finishOutlinePointerDrag(event, true)} /><span className="outline-index">{index + 1}</span>{editingOutlineKey === key ? <input className="outline-title-input" autoFocus value={editingOutlineValue} maxLength={30} aria-label={`修改${label}标题`} onClick={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()} onChange={(event) => setEditingOutlineValue(event.target.value)} onBlur={() => commitOutlineTitleEdit(key)} onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Enter') event.currentTarget.blur(); if (event.key === 'Escape') cancelOutlineTitleEdit(); }} /> : <span className="outline-title" onDoubleClick={(event) => beginOutlineTitleEdit(event, key, label)}>{label}</span>}<Check size={14} /></div></div>)}</nav>
           <div className="source-materials"><button onClick={() => setSourcesOpen((value) => !value)} aria-expanded={sourcesOpen}><b>素材来源（{sourceItems.length}）</b><ChevronDown size={16} className={sourcesOpen ? 'open' : ''} /></button>{sourcesOpen ? <div className="source-material-list">{sourceItems.map((file, index) => <article key={`${file.name}-${index}`}><span className="source-thumb guide">{file.mark}</span><p><b title={file.name}>{file.name}</b><small>{file.detail}</small></p></article>)}{!sourceItems.length ? <p className="source-empty">当前教案没有素材记录。</p> : null}</div> : null}</div>
         </aside>
 
@@ -1016,7 +1085,7 @@ export function LessonEditor({ path }) {
 
             <div className={`lesson-section-order${assistantEnabled ? ' is-annotating' : ''}`} style={{ display: 'flex', flexDirection: 'column' }} onMouseMove={moveAnnotationPointer} onMouseLeave={() => setAnnotationPointer(null)} onClick={startAnnotation}>
             <section id="lesson-objectives" data-section-key="objectives" className="document-section" style={{ order: outlineOrderMap.get('objectives') }}>
-              <SectionHeading number={displayedSectionNumber('objectives')} title="教学目标" />
+              <SectionHeading number={displayedSectionNumber('objectives')} title={sectionHeadingTitle('objectives')} />
               <div className="teaching-field-block" data-annotation-path="source_summary"><b>章节内容概述</b><EditableText as="p" value={lesson.source_summary || ''} editable={editable} aria-label="章节内容概述" onCommit={(value) => mutateLesson((next) => { next.source_summary = value; })} /></div>
               <div className="teaching-field-block" data-annotation-path="core_competencies"><b>核心素养</b><EditableList items={lesson.core_competencies || []} editable={editable} emptyText="当前教案暂未单列核心素养" onCommit={(index, value) => editArray('core_competencies', index, value)} /></div>
               <ol className="objective-list">{(lesson.learning_objectives || []).map((item, index) => <li data-annotation-path={`learning_objectives[${index}]`} key={`${item.type}-${index}`}>
@@ -1026,22 +1095,22 @@ export function LessonEditor({ path }) {
             </section>
 
             <section id="lesson-learner" data-section-key="learner" className="document-section" style={{ order: outlineOrderMap.get('learner') }}>
-              <SectionHeading number={displayedSectionNumber('learner')} title="学情分析" />
+              <SectionHeading number={displayedSectionNumber('learner')} title={sectionHeadingTitle('learner')} />
               <div className="teaching-field-block" data-annotation-path="metadata.class_profile"><b>班级整体情况</b><EditableText as="p" value={lesson.metadata?.class_profile || ''} editable={editable} aria-label="班级整体情况" onCommit={(value) => mutateLesson((next) => { next.metadata.class_profile = value; })} /></div>
               <div className="teaching-field-block" data-annotation-path="learner_analysis.class_characteristics"><b>班级学习特征</b><EditableText as="p" value={lesson.learner_analysis?.class_characteristics || ''} editable={editable} aria-label="班级学习特征" onCommit={(value) => mutateLesson((next) => { next.learner_analysis = next.learner_analysis || {}; next.learner_analysis.class_characteristics = value; })} /></div>
               <div className="analysis-strip">{[['known', '已有基础'], ['challenge', '学习挑战'], ['strategy', '教学策略']].map(([key, label]) => <div data-annotation-path={`learner_analysis.${key}`} key={key}><b>{label}</b><EditableText as="p" value={lesson.learner_analysis?.[key] || ''} editable={editable} onCommit={(value) => mutateLesson((next) => { next.learner_analysis = next.learner_analysis || {}; next.learner_analysis[key] = value; })} /></div>)}</div>
             </section>
 
-            <section id="lesson-keypoints" data-section-key="keypoints" className="document-section two-column-section" style={{ order: outlineOrderMap.get('keypoints') }}><div data-annotation-path="key_points"><SectionHeading number={displayedSectionNumber('keypoints')} title="教学重点" /><ul>{(lesson.key_points || []).map((item, index) => <EditableText as="li" key={index} value={item} editable={editable} onCommit={(value) => editArray('key_points', index, value)} />)}</ul></div><div data-annotation-path="difficult_points"><div className="section-heading-spacer" /><h2>教学难点</h2><ul>{(lesson.difficult_points || []).map((item, index) => <EditableText as="li" key={index} value={item} editable={editable} onCommit={(value) => editArray('difficult_points', index, value)} />)}</ul></div></section>
+            <section id="lesson-keypoints" data-section-key="keypoints" className="document-section two-column-section" style={{ order: outlineOrderMap.get('keypoints') }}><div data-annotation-path="key_points"><SectionHeading number={displayedSectionNumber('keypoints')} title={sectionHeadingTitle('keypoints')} /><ul>{(lesson.key_points || []).map((item, index) => <EditableText as="li" key={index} value={item} editable={editable} onCommit={(value) => editArray('key_points', index, value)} />)}</ul></div><div data-annotation-path="difficult_points"><div className="section-heading-spacer" /><h2>教学难点</h2><ul>{(lesson.difficult_points || []).map((item, index) => <EditableText as="li" key={index} value={item} editable={editable} onCommit={(value) => editArray('difficult_points', index, value)} />)}</ul></div></section>
 
             <section id="lesson-preparation" data-section-key="preparation" className="document-section" style={{ order: outlineOrderMap.get('preparation') }}>
-              <SectionHeading number={displayedSectionNumber('preparation')} title="教学准备" />
+              <SectionHeading number={displayedSectionNumber('preparation')} title={sectionHeadingTitle('preparation')} />
               <div className="preparation-grid">{[['teacher', '教师准备'], ['students', '学生准备'], ['materials', '材料']].map(([key, label]) => <div data-annotation-path={`preparation.${key}`} key={key}><b>{label}</b><EditableList items={lesson.preparation?.[key] || []} editable={editable} onCommit={(index, value) => editNestedArray('preparation', key, index, value)} /></div>)}</div>
               <div className="teaching-field-block" data-annotation-path="safety_and_inclusion"><b>课堂安全与包容</b><EditableList items={lesson.safety_and_inclusion || []} editable={editable} emptyText="当前教案暂无额外安全与包容提示" onCommit={(index, value) => editArray('safety_and_inclusion', index, value)} /></div>
             </section>
 
             <section id="lesson-timeline" data-section-key="timeline" className="document-section" style={{ order: outlineOrderMap.get('timeline') }}>
-              <div className="timeline-heading"><SectionHeading number={displayedSectionNumber('timeline')} title="教学过程" /><span><Clock3 size={14} /> 共 {totalMinutes} 分钟</span></div>
+              <div className="timeline-heading"><SectionHeading number={displayedSectionNumber('timeline')} title={sectionHeadingTitle('timeline')} /><span><Clock3 size={14} /> 共 {totalMinutes} 分钟</span></div>
               <div className="timeline-table"><div className="timeline-row timeline-head"><span>教学环节</span><span>时间</span><span>教师活动、讲解与提问</span><span>学生活动与学习反馈</span><span>参与目标与评价</span></div>{(lesson.timeline || []).map((item, index) => <div className="timeline-row" data-annotation-path={`timeline[${index}]`} key={item.id || `${item.stage}-${index}`}>
                 <span><EditableText as="b" value={item.stage} editable={editable} multiline={false} onCommit={(value) => mutateLesson((next) => { next.timeline[index].stage = value; })} /></span>
                 <span><small>第 <EditableText value={String(item.start_minute ?? 0)} editable={editable} multiline={false} aria-label={`${item.stage}开始分钟`} onCommit={(value) => mutateLesson((next) => { next.timeline[index].start_minute = Math.max(0, Number.parseInt(value, 10) || 0); })} /> 分钟开始</small><EditableText value={String(item.duration_minutes)} editable={editable} multiline={false} aria-label={`${item.stage}持续分钟`} onCommit={(value) => mutateLesson((next) => { next.timeline[index].duration_minutes = Math.max(1, Number.parseInt(value, 10) || 1); })} /> 分钟</span>
@@ -1072,14 +1141,14 @@ export function LessonEditor({ path }) {
             </section>
 
             <section id="lesson-interaction" data-section-key="interaction" className="document-section" style={{ order: outlineOrderMap.get('interaction') }}>
-              <SectionHeading number={displayedSectionNumber('interaction')} title="课堂互动与分层评价" />
+              <SectionHeading number={displayedSectionNumber('interaction')} title={sectionHeadingTitle('interaction')} />
               <div className="interaction-grid">{[['support', '基础支持'], ['standard', '常规任务'], ['challenge', '拓展挑战']].map(([key, label]) => <div data-annotation-path={`differentiation.${key}`} key={key}><b>{label}</b><EditableList items={lesson.differentiation?.[key] || []} editable={editable} onCommit={(index, value) => editNestedArray('differentiation', key, index, value)} /></div>)}</div>
               <h3 className="document-subheading">学习评价方案</h3>
               <div className="assessment-grid">{[['diagnostic', '课前诊断'], ['formative', '过程评价'], ['summative', '总结评价'], ['success_criteria', '达成标准']].map(([key, label]) => <div data-annotation-path={`assessment_plan.${key}`} key={key}><b>{label}</b><EditableList items={lesson.assessment_plan?.[key] || []} editable={editable} emptyText="暂未单列" onCommit={(index, value) => mutateLesson((next) => { next.assessment_plan = next.assessment_plan || {}; next.assessment_plan[key] = next.assessment_plan[key] || []; next.assessment_plan[key][index] = value; })} /></div>)}</div>
             </section>
 
             <section id="lesson-board" data-section-key="board" className="document-section" style={{ order: outlineOrderMap.get('board') }}>
-              <SectionHeading number={displayedSectionNumber('board')} title="板书设计" />
+              <SectionHeading number={displayedSectionNumber('board')} title={sectionHeadingTitle('board')} />
               {lesson.board_design_structured && (lesson.board_design_structured.layout_description || lesson.board_design_structured.sections?.length) ? <div className="structured-board">
                 <div className="teaching-field-block" data-annotation-path="board_design_structured.layout_description"><b>整体布局</b><EditableText as="p" value={lesson.board_design_structured.layout_description || ''} editable={editable} onCommit={(value) => editStructuredBoard((board) => { board.layout_description = value; })} /></div>
                 <div className="board-section-grid">{(lesson.board_design_structured.sections || []).map((section, index) => <article data-annotation-path={`board_design_structured.sections[${index}]`} key={index}><p><b>区域标题</b><EditableText value={section.title || ''} editable={editable} multiline={false} onCommit={(value) => editStructuredBoard((board) => { board.sections[index].title = value; })} /></p><p><b>位置</b><EditableText value={section.position || ''} editable={editable} multiline={false} onCommit={(value) => editStructuredBoard((board) => { board.sections[index].position = value; })} /></p><EditableText as="div" className="board-section-content" value={section.content || ''} editable={editable} onCommit={(value) => editStructuredBoard((board) => { board.sections[index].content = value; })} /></article>)}</div>
@@ -1087,7 +1156,7 @@ export function LessonEditor({ path }) {
             </section>
 
             <section id="lesson-homework" data-section-key="homework" className="document-section" style={{ order: outlineOrderMap.get('homework') }}>
-              <SectionHeading number={displayedSectionNumber('homework')} title="课后作业" />
+              <SectionHeading number={displayedSectionNumber('homework')} title={sectionHeadingTitle('homework')} />
               <div className="homework-list">{(lesson.homework || []).map((item, index) => <div data-annotation-path={`homework[${index}]`} key={item.id || index}>
                 <EditableText as="span" value={item.level || '课后任务'} editable={editable} multiline={false} onCommit={(value) => mutateLesson((next) => { next.homework[index].level = value; })} />
                 <div className="homework-content"><EditableText as="p" value={item.content} editable={editable} onCommit={(value) => mutateLesson((next) => { next.homework[index].content = value; })} /><div className="homework-meta"><p><b>建议用时</b><EditableText value={String(item.estimated_minutes || '')} editable={editable} multiline={false} aria-label={`第 ${index + 1} 项作业建议用时`} onCommit={(value) => mutateLesson((next) => { next.homework[index].estimated_minutes = Math.max(1, Number.parseInt(value, 10) || 1); })} /> 分钟</p><p><b>完成指导</b><EditableText value={item.answer_guidance || ''} editable={editable} onCommit={(value) => mutateLesson((next) => { next.homework[index].answer_guidance = value; })} /></p></div><SourceReferences references={item.source_refs} /></div>
@@ -1096,7 +1165,7 @@ export function LessonEditor({ path }) {
             </section>
 
             <section id="lesson-exercises" data-section-key="exercises" className="document-section exercises-section" style={{ order: outlineOrderMap.get('exercises') }}>
-              <div className="exercises-heading"><SectionHeading number={displayedSectionNumber('exercises')} title="习题与答案" /><span>{exerciseCount} 道 · 含答案、解析与评分标准</span></div>
+              <div className="exercises-heading"><SectionHeading number={displayedSectionNumber('exercises')} title={sectionHeadingTitle('exercises')} /><span>{exerciseCount} 道 · 含答案、解析与评分标准</span></div>
               {(lesson.exercises || []).map((item, index) => <details className="exercise-item" data-annotation-path={`exercises[${index}]`} key={item.id || index}><summary><span>{index + 1}</span><div><EditableText as="b" value={item.stem} editable={editable} onCommit={(value) => mutateLesson((next) => { next.exercises[index].stem = value; })} /><small><EditableText value={questionTypeLabel(item.type)} editable={editable} multiline={false} aria-label={`第 ${index + 1} 题题型`} onCommit={(value) => mutateLesson((next) => { next.exercises[index].type = value; })} /> · 难度 <EditableText value={String(item.difficulty || 1)} editable={editable} multiline={false} aria-label={`第 ${index + 1} 题难度`} onCommit={(value) => mutateLesson((next) => { next.exercises[index].difficulty = Math.min(5, Math.max(1, Number.parseInt(value, 10) || 1)); })} />/5 · 建议 <EditableText value={String(item.estimated_minutes || '')} editable={editable} multiline={false} aria-label={`第 ${index + 1} 题建议用时`} onCommit={(value) => mutateLesson((next) => { next.exercises[index].estimated_minutes = Math.max(1, Number.parseInt(value, 10) || 1); })} /> 分钟 · 知识点：<EditableText value={(item.knowledge_points || []).join('、')} editable={editable} multiline={false} aria-label={`第 ${index + 1} 题知识点`} onCommit={(value) => mutateLesson((next) => { next.exercises[index].knowledge_points = value.split(/[、,，]/).map((entry) => entry.trim()).filter(Boolean); })} /></small></div><ChevronDown size={17} /></summary><div className="exercise-answer">
                 {item.options?.length ? <div className="exercise-options"><b>选项</b><ol type="A">{item.options.map((option, optionIndex) => <EditableText as="li" key={optionIndex} value={option} editable={editable} onCommit={(value) => mutateLesson((next) => { next.exercises[index].options[optionIndex] = value; })} />)}</ol></div> : null}
                 <p><b>参考答案</b><EditableText value={item.answer} editable={editable} onCommit={(value) => mutateLesson((next) => { next.exercises[index].answer = value; })} /></p>
@@ -1112,7 +1181,7 @@ export function LessonEditor({ path }) {
             <footer className="document-footer"><span>{totalMinutes} 分钟课堂流程 · {exerciseCount} 道习题</span><span>最后保存：{lesson.updated_at || '刚刚'}</span></footer>
           </article>
           </section>
-          {assistantEnabled ? <section className="comparison-pane comparison-revised"><header className="comparison-pane-header"><span>修改版</span>{revisionPreview ? <div><button type="button" onClick={discardRevisionPreview} disabled={revising}>放弃</button><button type="button" className="apply-revision-button" onClick={applyRevisionPreview} disabled={revising}><CheckCircle2 size={15} />应用修改</button></div> : <small>发送注释后在这里查看修改结果</small>}</header>{revisionPreview ? <iframe title="修改后的教案预览" srcDoc={lessonToHtml(revisionPreview.candidateLesson)} sandbox="" /> : <div className="revision-preview-empty"><MessageSquarePlus size={28} /><b>等待生成修改版</b><p>在左侧教案正文添加一个或多个注释，然后从底部发送。</p></div>}</section> : null}
+          {assistantEnabled ? <section className="comparison-pane comparison-revised"><header className="comparison-pane-header"><span>修改版</span><small>{revising ? '正在按注释生成完整修改版' : '发送注释后在这里生成，完成后自动进入编辑'}</small></header><div className={`revision-preview-empty${revising ? ' is-processing' : ''}`}>{revising ? <LoaderCircle className="spin" size={28} /> : <MessageSquarePlus size={28} />}<b>{revising ? '正在生成修改版' : '等待生成修改版'}</b><p>{revising ? '完成后会自动保存为当前教案，并进入可编辑状态。' : '在左侧教案正文添加一个或多个注释，然后从底部发送。'}</p></div></section> : null}
           </div>
         </main>
 
@@ -1122,24 +1191,32 @@ export function LessonEditor({ path }) {
       {assistantEnabled && annotationPointer && !annotationDraft ? <span className="annotation-pointer" style={{ left: annotationPointer.x, top: annotationPointer.y }} aria-hidden="true"><MessageSquarePlus size={15} /></span> : null}
 
       {assistantEnabled && annotationDraft ? <div className="annotation-popover" style={{ left: annotationDraft.x, top: annotationDraft.y }} role="dialog" aria-label={`编辑${annotationDraft.label}注释`} onClick={(event) => event.stopPropagation()}>
-        <header><span><MessageSquarePlus size={15} />{annotationDraft.id ? '编辑注释' : '添加注释'}</span><button type="button" onClick={() => setAnnotationDraft(null)} aria-label="取消注释"><X size={15} /></button></header>
+        <header><span><MessageSquarePlus size={15} />{annotationDraft.id ? '编辑注释' : '添加注释'}</span><div className="annotation-popover-actions">{annotationDraft.id ? <button className="annotation-delete" type="button" onClick={() => removeAnnotation(annotationDraft.id)} aria-label="删除这条注释"><Trash2 size={14} /></button> : null}<button type="button" onClick={() => setAnnotationDraft(null)} aria-label="取消注释"><X size={15} /></button></div></header>
         <p>{annotationDraft.label}{annotationDraft.quote ? ` · “${annotationDraft.quote}”` : ''}</p>
-        <div><textarea autoFocus value={annotationDraft.instruction} maxLength={800} placeholder="说明这里要怎样修改…" onChange={(event) => setAnnotationDraft((current) => ({ ...current, instruction: event.target.value }))} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') saveAnnotationDraft(); }} /><button type="button" onClick={saveAnnotationDraft} disabled={!annotationDraft.instruction.trim()} aria-label="保存注释"><Check size={17} /></button></div>
+        <div><textarea autoFocus value={annotationDraft.instruction} maxLength={800} placeholder="说明这里要怎样修改…" onChange={(event) => setAnnotationDraft((current) => ({ ...current, instruction: event.target.value }))} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') saveAnnotationDraft(); }} /><button type="button" onClick={saveAnnotationDraft} disabled={!annotationDraft.instruction.trim()} aria-label="保存注释"><Check size={14} /></button></div>
       </div> : null}
 
-      {assistantEnabled ? <div className="annotation-dock" aria-label="注释发送栏">
-        <div className="annotation-chip-list">{annotations.map((item, index) => <span className={`annotation-chip${item.status === 'review' ? ' is-review' : ''}`} key={item.id}><button type="button" onClick={(event) => editAnnotation(item, event)} disabled={revising}><MessageSquarePlus size={13} />注释 {index + 1}</button><button type="button" onClick={() => removeAnnotation(item.id)} disabled={revising} aria-label={`删除注释 ${index + 1}`}><Trash2 size={12} /></button></span>)}</div>
-        {revising ? <div className="annotation-dock-status" aria-live="polite"><LoaderCircle className="spin" size={16} /><span>{revisionStageLabels[revisionStage] || '正在生成修改版'} · {revisionElapsed} 秒</span><button type="button" onClick={stopRevisionWait}>停止</button></div> : <>
-          {retryRevision ? <button type="button" className="annotation-retry" onClick={retryRevisionRequest}><RotateCcw size={15} />{retryRevision.mode === 'resume' ? '继续查询' : '重试'}</button> : null}
-          <input value={feedback} maxLength={500} placeholder={annotations.length ? '补充整体要求（选填）' : '先点击左侧教案内容添加注释'} disabled={!annotations.length} onChange={(event) => { invalidateRevisionPreview(); setFeedback(event.target.value); }} onKeyDown={(event) => { if (event.key === 'Enter' && allPendingAnnotationsReady) submitAnnotations(); }} />
-          <button type="button" className="annotation-send" onClick={submitAnnotations} disabled={!allPendingAnnotationsReady} aria-label="发送全部注释"><Send size={17} /></button>
-        </>}
+      {assistantEnabled ? <div className="annotation-composer-stack">
+        {revising ? <div className="annotation-process-status" aria-live="polite"><LoaderCircle className="spin" size={16} /><span>{revisionStageLabels[revisionStage] || '正在生成修改版'} · {revisionElapsed} 秒</span><button type="button" onClick={stopRevisionWait}>停止</button></div> : null}
+        <div className="annotation-dock" aria-label="注释发送栏">
+          {annotations.length ? <span className="annotation-count"><MessageSquarePlus size={13} />已添加 {annotations.length} 条注释</span> : null}
+          {!revising && retryRevision ? <button type="button" className="annotation-retry" onClick={retryRevisionRequest}><RotateCcw size={15} />{retryRevision.mode === 'resume' ? '继续查询' : '重试'}</button> : null}
+          <input value={feedback} maxLength={500} placeholder={annotations.length ? '补充整体要求（选填）' : '先点击左侧教案内容添加注释'} disabled={!annotations.length || revising} onChange={(event) => setFeedback(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && allPendingAnnotationsReady && !revising) submitAnnotations(); }} />
+          <button type="button" className="annotation-send" onClick={submitAnnotations} disabled={revising || !allPendingAnnotationsReady} aria-label="发送全部注释"><Send size={17} /></button>
+        </div>
       </div> : null}
+
+      {!assistantEnabled && (revising || retryRevision) ? <div className={`global-revision-status${retryRevision && !revising ? ' is-error' : ''}`} aria-live="polite">{revising ? <LoaderCircle className="spin" size={17} /> : <RotateCcw size={17} />}<span>{revising ? `${revisionStageLabels[revisionStage] || '正在重新生成整份教案'} · ${revisionElapsed} 秒` : '重新生成未完成，可继续尝试'}</span>{revising ? <button type="button" onClick={stopRevisionWait}>停止</button> : <button type="button" onClick={retryRevisionRequest}>重试</button>}</div> : null}
 
       <Modal open={newSectionOpen} onClose={() => { if (!revising) setNewSectionOpen(false); }} title="新增教案模块" description="新模块会加入教案大纲和教案正文，也可以像其他内容一样添加注释。" footer={<><Button variant="ghost" onClick={() => setNewSectionOpen(false)} disabled={revising}>取消</Button><Button icon={Plus} onClick={addCustomSection} disabled={revising || !newSectionTitle.trim()}>添加模块</Button></>}><label className="new-section-field"><span>模块名称</span><input value={newSectionTitle} disabled={revising} onChange={(event) => setNewSectionTitle(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !revising) addCustomSection(); }} placeholder="例如：跨学科拓展" maxLength={30} /></label></Modal>
 
-      <Modal open={versionsOpen} onClose={() => setVersionsOpen(false)} title="版本历史" description="选择历史版本只会打开预览，不会新增版本；确认保存前也不会替换原来的当前版本。">
-        <div className="version-list"><button className="current" type="button" disabled><span>v{currentVersion}.0</span><div><b>{returnSnapshot ? '正在预览' : '当前版本'}</b><p>{title}</p><small>刚刚 · 当前教师</small></div><CheckCircle2 size={18} /></button>{returnSnapshot ? <button type="button" className="return-version" onClick={returnToCurrentSnapshot} disabled={revising}><span>返回</span><div><b>打开历史版本前的版本</b><p>{returnSnapshot.metadata?.title || returnSnapshot.metadata?.chapter || '之前的教案版本'}</p><small>始终保留 · 点击返回</small></div><RotateCcw size={17} /></button> : null}{[...historyRef.current].reverse().map((snapshot, index) => <button type="button" key={`${historyVersion}-${index}`} onClick={() => restoreSnapshot(snapshot)} disabled={revising}><span>v{Math.max(1, currentVersion - index - 1)}.0</span><div><b>历史版本</b><p>{snapshot.metadata?.title || snapshot.metadata?.chapter || '教案快照'}</p><small>本次会话 · 点击打开</small></div><RotateCcw size={17} /></button>)}{!historyRef.current.length && !returnSnapshot ? <p className="version-empty">当前会话还没有历史修改。</p> : null}</div>
+      <Modal open={regenerateOpen} onClose={() => { if (!revising) setRegenerateOpen(false); }} title="重新生成整份教案" description="告诉系统当前版本哪里不合适。重新生成会保留课程和教材信息，并根据你的反馈全面重写教案。" footer={<><Button variant="ghost" onClick={() => setRegenerateOpen(false)} disabled={revising}>取消</Button><Button icon={RotateCcw} onClick={submitFullRegeneration} disabled={revising || !regenerateFeedback.trim()}>开始重新生成</Button></>}>
+        <label className="regenerate-field"><span>需要改进的地方</span><textarea autoFocus value={regenerateFeedback} maxLength={1000} onChange={(event) => setRegenerateFeedback(event.target.value)} placeholder="例如：教学过程不够具体，课堂互动偏少，习题难度层次不明显。请增加可直接照着讲的课堂话术，并把习题按基础、提高、拓展分层。" /><small>{regenerateFeedback.length}/1000</small></label>
+      </Modal>
+
+      <Modal open={versionsOpen} onClose={() => { setVersionsOpen(false); setHistorySelection(null); }} title="版本历史" description="点击历史版本只会选中预览；只有点击“恢复此版本”才会替换当前教案。" footer={<><Button variant="ghost" onClick={() => { setVersionsOpen(false); setHistorySelection(null); }}>取消</Button><Button icon={RotateCcw} onClick={restoreSelectedHistory} disabled={!historySelection || revising}>恢复此版本</Button></>}>
+        <div className="version-list"><button className="current" type="button" disabled><span>v{currentVersion}.0</span><div><b>当前版本</b><p>{title}</p><small>正在使用 · 当前教师</small></div><CheckCircle2 size={18} /></button>{[...historyRef.current].reverse().map((entry, index) => { const version = entry.version || Math.max(1, currentVersion - index - 1); const snapshot = entry.lesson || entry; const selectedVersion = historySelection?.version === version; return <button type="button" className={selectedVersion ? 'is-selected' : ''} key={`${historyVersion}-${version}-${entry.createdAt || index}`} onClick={() => selectHistorySnapshot(snapshot, version)} disabled={revising}><span>v{version}.0</span><div><b>{selectedVersion ? '已选中' : '历史版本'}</b><p>{snapshot.metadata?.title || snapshot.metadata?.chapter || '教案快照'}</p><small>{snapshot.metadata?.grade || '年级待补充'} · {snapshot.metadata?.subject || '学科待补充'}{entry.createdAt ? ` · ${new Date(entry.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : ''}</small></div>{selectedVersion ? <CheckCircle2 size={18} /> : <History size={17} />}</button>; })}{!historyRef.current.length ? <p className="version-empty">当前会话还没有历史修改。开始编辑或重新生成后，原版本会保存在这里。</p> : null}</div>
+        {historySelection ? <div className="version-selection-summary"><span>将恢复 v{historySelection.version}.0</span><p>{historySelection.snapshot.metadata?.title || historySelection.snapshot.metadata?.chapter || '所选教案版本'}</p><small>当前版本会先自动保留在历史记录中，因此仍可恢复。</small></div> : null}
       </Modal>
 
       <Modal open={exportOpen} onClose={() => setExportOpen(false)} title="导出教案" description={`导出当前完整版本 v${currentVersion}.0。`} footer={<><Button variant="ghost" onClick={() => setExportOpen(false)}>取消</Button><Button icon={FileDown} onClick={exportDoc}>导出 DOC</Button></>}>
