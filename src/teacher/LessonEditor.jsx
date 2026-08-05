@@ -1,9 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
-  ArrowDown,
-  ArrowUp,
-  Bot,
   BookOpen,
   Check,
   CheckCircle2,
@@ -29,6 +26,7 @@ import {
   X,
 } from 'lucide-react';
 import { sampleLesson } from '../data/sampleLesson.js';
+import { formatStructuredBoard, isAnnotationPathAllowed, mergeAnnotationTargets, synchronizeAnnotationDerivedFields } from '../lib/annotationPatch.js';
 import { api } from '../lib/api.js';
 import { normalizeLesson } from '../lib/lessonAdapter.js';
 import { navigate } from '../lib/navigation.jsx';
@@ -111,17 +109,6 @@ function sourceReferenceLabel(reference) {
 function htmlSourceRefs(references = []) {
   const labels = references.map(sourceReferenceLabel).filter(Boolean);
   return labels.length ? `<div class="sources"><b>教材依据：</b>${htmlList(labels)}</div>` : '';
-}
-
-function formatStructuredBoard(board) {
-  if (!board || typeof board !== 'object') return '';
-  const lines = [];
-  if (board.layout_description) lines.push(`整体布局：${board.layout_description}`);
-  for (const section of board.sections || []) {
-    const heading = [section.position ? `【${section.position}】` : '', section.title || '板书区域'].filter(Boolean).join(' ');
-    lines.push(`${heading}${heading && section.content ? '：' : ''}${section.content || ''}`);
-  }
-  return lines.filter(Boolean).join('\n');
 }
 
 function loadLesson(isDemo) {
@@ -260,9 +247,8 @@ function mergeSelectedSections(current, revised, selectedKeys) {
   return next;
 }
 
-function SectionHeading({ number, title, editable = false, onCommit, onAnnotate, annotationCount = 0, disabled = false }) {
-  const annotationDisabled = editable || disabled;
-  return <div className="section-heading-row"><span className="section-number">{number}</span>{editable ? <EditableText as="h2" value={title} editable onCommit={onCommit} multiline={false} /> : <h2>{title}</h2>}{onAnnotate ? <button type="button" className={`section-comment-button${annotationCount ? ' has-comments' : ''}`} data-count={annotationCount || undefined} onClick={onAnnotate} disabled={annotationDisabled} aria-label={`批注${title}`} title={annotationDisabled ? (editable ? '请先完成手动编辑' : '正在处理批注，请稍候') : `批注“${title}”`}><MessageSquarePlus size={16} /><span>{annotationCount ? `${annotationCount} 条批注` : '批注'}</span></button> : null}</div>;
+function SectionHeading({ number, title, editable = false, onCommit, annotationPath }) {
+  return <div className="section-heading-row" data-annotation-path={annotationPath || undefined}><span className="section-number">{number}</span>{editable ? <EditableText as="h2" value={title} editable onCommit={onCommit} multiline={false} /> : <h2>{title}</h2>}</div>;
 }
 
 export function LessonEditor({ path }) {
@@ -274,22 +260,26 @@ export function LessonEditor({ path }) {
   const [selected, setSelected] = useState('timeline');
   const [manualEditing, setManualEditing] = useState(false);
   const [assistantEnabled, setAssistantEnabled] = useState(false);
-  const [assistantSections, setAssistantSections] = useState(() => new Set(['timeline']));
   const [annotations, setAnnotations] = useState([]);
+  const annotationsRef = useRef([]);
+  const [annotationDraft, setAnnotationDraft] = useState(null);
+  const [annotationPointer, setAnnotationPointer] = useState(null);
+  const [revisionPreview, setRevisionPreview] = useState(null);
+  const revisionPreviewRef = useRef(null);
   const [draggedOutlineKey, setDraggedOutlineKey] = useState(null);
   const [dragOverOutlineKey, setDragOverOutlineKey] = useState(null);
+  const pointerDraggedOutlineRef = useRef(null);
+  const pointerDropOutlineRef = useRef(null);
   const [feedback, setFeedback] = useState('');
   const [revising, setRevising] = useState(false);
   const [revisionStage, setRevisionStage] = useState('idle');
   const [revisionElapsed, setRevisionElapsed] = useState(0);
   const [retryRevision, setRetryRevision] = useState(null);
-  const [chat, setChat] = useState([{ role: 'assistant', text: '可在教案模块标题旁添加批注；一次填写多条后统一发送，系统只会修改批注对应的教案内容。' }]);
   const [versionsOpen, setVersionsOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [newSectionOpen, setNewSectionOpen] = useState(false);
   const [newSectionTitle, setNewSectionTitle] = useState('');
-  const [assistantDrawerOpen, setAssistantDrawerOpen] = useState(false);
   const [outlineDrawerOpen, setOutlineDrawerOpen] = useState(false);
   const [returnSnapshot, setReturnSnapshot] = useState(null);
   const [toast, setToast] = useState(null);
@@ -315,11 +305,6 @@ export function LessonEditor({ path }) {
   const storedOutlineSignature = savedOutlineKeys.join('\u0000');
   const currentCustomIds = (lesson.custom_sections || []).map((item) => item.id);
   const revisionScopeSignature = currentCustomIds.join('\u0000');
-  const effectiveAssistantSections = useMemo(() => new Set(filterRevisionSelection(
-    assistantSections,
-    { standardKeys: standardRevisionKeys, customIds: currentCustomIds },
-  )), [assistantSections, revisionScopeSignature]);
-  const hasEffectiveAssistantSections = effectiveAssistantSections.size > 0;
   const exerciseCount = lesson.exercises?.length || 0;
   const currentVersion = historyRef.current.length + 1;
   const sourceItems = isDemo
@@ -327,8 +312,25 @@ export function LessonEditor({ path }) {
     : (lesson.source_files || []).map((file) => ({ name: file.name, detail: `${file.type || '文件'} · 本次使用`, mark: '源' }));
   const totalMinutes = useMemo(() => (lesson.timeline || []).reduce((sum, item) => sum + Number(item.duration_minutes || 0), 0), [lesson.timeline]);
 
-  function annotationCount(sectionKey) {
-    return annotations.filter((item) => item.sectionKey === sectionKey).length;
+  function replaceAnnotations(updater) {
+    const current = annotationsRef.current;
+    const next = typeof updater === 'function' ? updater(current) : updater;
+    annotationsRef.current = next;
+    setAnnotations(next);
+    return next;
+  }
+
+  function replaceRevisionPreview(next) {
+    revisionPreviewRef.current = next;
+    setRevisionPreview(next);
+  }
+
+  function invalidateRevisionPreview({ resetAnnotations = true } = {}) {
+    if (!revisionPreviewRef.current) return;
+    replaceRevisionPreview(null);
+    if (resetAnnotations) {
+      replaceAnnotations((items) => items.map((item) => ({ ...item, status: 'pending' })));
+    }
   }
 
   function displayedSectionNumber(sectionKey) {
@@ -350,14 +352,6 @@ export function LessonEditor({ path }) {
   }, []);
 
   useEffect(() => {
-    setAssistantSections((current) => {
-      const filtered = filterRevisionSelection(current, {
-        standardKeys: standardRevisionKeys,
-        customIds: currentCustomIds,
-      });
-      if (filtered.length === current.size && filtered.every((key) => current.has(key))) return current;
-      return new Set(filtered);
-    });
     setRetryRevision((current) => {
       if (current?.mode !== 'resume' || !current.request) return current;
       return isRevisionRequestScopeValid(current.request, {
@@ -365,7 +359,7 @@ export function LessonEditor({ path }) {
         customIds: currentCustomIds,
       }) ? current : { mode: 'resubmit', request: current.request };
     });
-    setAnnotations((items) => items.filter((item) => standardRevisionKeys.includes(item.sectionKey) || (item.sectionKey.startsWith('custom:') && currentCustomIds.includes(item.sectionKey.slice(7)))));
+    replaceAnnotations((items) => items.filter((item) => standardRevisionKeys.includes(item.sectionKey) || (item.sectionKey.startsWith('custom:') && currentCustomIds.includes(item.sectionKey.slice(7)))));
   }, [revisionScopeSignature]);
 
   useEffect(() => {
@@ -374,6 +368,7 @@ export function LessonEditor({ path }) {
   }, [storedOutlineSignature, normalizedOutlineSignature]);
 
   function updateLesson(updater, { recordHistory = true } = {}) {
+    invalidateRevisionPreview();
     const current = lessonRef.current;
     const next = typeof updater === 'function' ? updater(current) : updater;
     if (recordHistory) historyRef.current = [...historyRef.current.slice(-19), structuredClone(current)];
@@ -413,6 +408,7 @@ export function LessonEditor({ path }) {
   function undo() {
     const previous = historyRef.current.pop();
     if (!previous) return;
+    invalidateRevisionPreview();
     redoRef.current.push(structuredClone(lessonRef.current));
     lessonRef.current = previous;
     lessonVersionRef.current += 1;
@@ -425,6 +421,7 @@ export function LessonEditor({ path }) {
   function redo() {
     const next = redoRef.current.pop();
     if (!next) return;
+    invalidateRevisionPreview();
     historyRef.current.push(structuredClone(lessonRef.current));
     lessonRef.current = next;
     lessonVersionRef.current += 1;
@@ -435,6 +432,7 @@ export function LessonEditor({ path }) {
   }
 
   function restoreSnapshot(snapshot) {
+    invalidateRevisionPreview();
     if (!returnSnapshot) setReturnSnapshot(structuredClone(lessonRef.current));
     const restored = structuredClone(snapshot);
     lessonRef.current = restored;
@@ -447,6 +445,7 @@ export function LessonEditor({ path }) {
 
   function returnToCurrentSnapshot() {
     if (!returnSnapshot) return;
+    invalidateRevisionPreview();
     const restored = structuredClone(returnSnapshot);
     lessonRef.current = restored;
     lessonVersionRef.current += 1;
@@ -487,7 +486,7 @@ export function LessonEditor({ path }) {
     if (!sectionTitle) return;
     const id = `custom-${Date.now()}`;
     mutateLesson((next) => {
-      next.custom_sections = [...(next.custom_sections || []), { id, title: sectionTitle, content: '请直接编辑本模块内容，或开启助教后选择本模块并说明要求。' }];
+      next.custom_sections = [...(next.custom_sections || []), { id, title: sectionTitle, content: '请直接编辑本模块内容，或进入注释模式后点击这里说明修改要求。' }];
       const availableKeys = fullOutline.map(([key]) => key);
       const savedKeys = Array.isArray(next.section_order) ? next.section_order.filter((key, index) => availableKeys.includes(key) && next.section_order.indexOf(key) === index) : [];
       const currentOrder = [...savedKeys, ...availableKeys.filter((key) => !savedKeys.includes(key))];
@@ -495,7 +494,6 @@ export function LessonEditor({ path }) {
     });
     setNewSectionTitle('');
     setNewSectionOpen(false);
-    setAssistantSections((items) => new Set([...items, `custom:${id}`]));
     setTimeout(() => scrollTo(`custom:${id}`), 0);
     setToast(`已新增“${sectionTitle}”模块`);
   }
@@ -506,23 +504,45 @@ export function LessonEditor({ path }) {
     document.getElementById(`lesson-${key.replace(':', '-')}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
-  function toggleAssistantSection(key) {
-    setRetryRevision((current) => current?.mode === 'resume' ? { mode: 'resubmit' } : current);
-    setAssistantSections((current) => {
-      const next = new Set(current);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      return next;
-    });
-  }
-
-  function reorderOutline(targetKey) {
-    if (!draggedOutlineKey || draggedOutlineKey === targetKey || revising) return;
+  function reorderOutline(targetKey, sourceKey = draggedOutlineKey) {
+    if (!sourceKey || sourceKey === targetKey || revising) return;
     const orderedKeys = fullOutline.map(([key]) => key);
-    const fromIndex = orderedKeys.indexOf(draggedOutlineKey);
+    const fromIndex = orderedKeys.indexOf(sourceKey);
     const toIndex = orderedKeys.indexOf(targetKey);
     if (fromIndex < 0 || toIndex < 0) return;
     orderedKeys.splice(toIndex, 0, orderedKeys.splice(fromIndex, 1)[0]);
     applyOutlineOrder(orderedKeys);
+    setDraggedOutlineKey(null);
+    setDragOverOutlineKey(null);
+  }
+
+  function beginOutlinePointerDrag(event, key) {
+    if (revising) return;
+    event.preventDefault();
+    pointerDraggedOutlineRef.current = key;
+    pointerDropOutlineRef.current = key;
+    setDraggedOutlineKey(key);
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }
+
+  function moveOutlinePointerDrag(event) {
+    if (!pointerDraggedOutlineRef.current) return;
+    event.preventDefault();
+    const targetKey = document.elementFromPoint(event.clientX, event.clientY)?.closest?.('[data-outline-key]')?.dataset.outlineKey;
+    if (!targetKey || !outlineLabelMap.has(targetKey)) return;
+    pointerDropOutlineRef.current = targetKey;
+    setDragOverOutlineKey(targetKey);
+  }
+
+  function finishOutlinePointerDrag(event, cancelled = false) {
+    const sourceKey = pointerDraggedOutlineRef.current;
+    const targetKey = pointerDropOutlineRef.current;
+    pointerDraggedOutlineRef.current = null;
+    pointerDropOutlineRef.current = null;
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    if (!cancelled && sourceKey && targetKey) reorderOutline(targetKey, sourceKey);
     setDraggedOutlineKey(null);
     setDragOverOutlineKey(null);
   }
@@ -533,62 +553,143 @@ export function LessonEditor({ path }) {
     setToast('教案大纲与正文顺序已更新');
   }
 
-  function moveOutline(sectionKey, offset) {
+  function toggleAnnotationMode() {
     if (revising) return;
-    const orderedKeys = fullOutline.map(([key]) => key);
-    const fromIndex = orderedKeys.indexOf(sectionKey);
-    const toIndex = fromIndex + offset;
-    if (fromIndex < 0 || toIndex < 0 || toIndex >= orderedKeys.length) return;
-    orderedKeys.splice(toIndex, 0, orderedKeys.splice(fromIndex, 1)[0]);
-    applyOutlineOrder(orderedKeys);
+    setAssistantEnabled((current) => {
+      const next = !current;
+      if (next) setManualEditing(false);
+      if (!next) {
+        setAnnotationDraft(null);
+        setAnnotationPointer(null);
+      }
+      return next;
+    });
+    setOutlineDrawerOpen(false);
   }
 
-  function addAnnotation(sectionKey) {
-    if (revising || manualEditing || !outlineLabelMap.has(sectionKey)) return;
-    const section = document.getElementById(`lesson-${sectionKey.replace(':', '-')}`);
+  function annotationSectionFromTarget(target) {
+    const section = target instanceof Element ? target.closest('.lesson-section-order > .document-section[data-section-key]') : null;
+    const sectionKey = section?.dataset.sectionKey;
+    return sectionKey && outlineLabelMap.has(sectionKey) ? { section, sectionKey } : null;
+  }
+
+  function nearbyAnnotationTarget(target, section, clientX, clientY) {
+    const selector = '[data-annotation-path]';
+    let block = target instanceof Element ? target.closest(selector) : null;
+    if (!block || !section.contains(block)) {
+      const candidates = [...section.querySelectorAll(selector)].filter((item) => item.textContent?.trim());
+      block = candidates.reduce((nearest, item) => {
+        const rect = item.getBoundingClientRect();
+        const distance = Math.hypot(clientX - (rect.left + rect.width / 2), clientY - (rect.top + rect.height / 2));
+        return !nearest || distance < nearest.distance ? { item, distance } : nearest;
+      }, null)?.item || section;
+    }
+    if (!block?.dataset.annotationPath) return null;
+    return {
+      targetPath: block.dataset.annotationPath,
+      quote: String(block.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 240),
+    };
+  }
+
+  function moveAnnotationPointer(event) {
+    if (!assistantEnabled || revising || manualEditing || event.target.closest('.annotation-pin')) {
+      setAnnotationPointer(null);
+      return;
+    }
+    const target = annotationSectionFromTarget(event.target);
+    setAnnotationPointer(target ? { x: event.clientX + 12, y: event.clientY + 12 } : null);
+  }
+
+  function startAnnotation(event) {
+    if (!assistantEnabled || revising || manualEditing || event.target.closest('.annotation-pin')) return;
+    const target = annotationSectionFromTarget(event.target);
+    if (!target) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const annotationTarget = nearbyAnnotationTarget(event.target, target.section, event.clientX, event.clientY);
+    if (!annotationTarget || !isAnnotationPathAllowed(target.sectionKey, annotationTarget.targetPath, lessonRef.current)) {
+      setToast('请选择教案正文中的具体内容');
+      return;
+    }
     const selection = window.getSelection?.();
-    const selectedText = selection && !selection.isCollapsed && section?.contains(selection.anchorNode)
+    const selectedQuote = selection && !selection.isCollapsed && target.section.contains(selection.anchorNode)
       ? selection.toString().replace(/\s+/g, ' ').trim().slice(0, 240)
       : '';
-    const annotation = {
-      id: `annotation-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-      sectionKey,
-      label: outlineLabelMap.get(sectionKey),
-      quote: selectedText,
+    const quote = selectedQuote || annotationTarget.quote;
+    const order = target.section.closest('.lesson-section-order');
+    const orderRect = order.getBoundingClientRect();
+    setAnnotationDraft({
+      id: null,
+      sectionKey: target.sectionKey,
+      label: outlineLabelMap.get(target.sectionKey),
+      quote,
+      targetPath: annotationTarget.targetPath,
       instruction: '',
-      status: 'pending',
-    };
-    setAnnotations((items) => [...items, annotation]);
-    setRetryRevision(null);
-    setAssistantSections((items) => new Set([...items, sectionKey]));
-    setAssistantEnabled(true);
-    setOutlineDrawerOpen(false);
-    setAssistantDrawerOpen(true);
+      anchorX: Math.max(1, Math.min(99, ((event.clientX - orderRect.left) / orderRect.width) * 100)),
+      anchorY: Math.max(0, Math.min(100, ((event.clientY - orderRect.top) / orderRect.height) * 100)),
+      x: Math.max(12, Math.min(event.clientX + 14, window.innerWidth - 334)),
+      y: Math.max(80, Math.min(event.clientY + 14, window.innerHeight - 230)),
+    });
+    setAnnotationPointer(null);
   }
 
-  function updateAnnotation(id, patch) {
-    setAnnotations((items) => items.map((item) => item.id === id ? { ...item, ...patch, status: 'pending' } : item));
+  function editAnnotation(annotation, event) {
+    if (revising) return;
+    setAnnotationDraft({
+      ...annotation,
+      x: Math.max(12, Math.min((event?.clientX || window.innerWidth / 2) + 12, window.innerWidth - 334)),
+      y: Math.max(80, Math.min((event?.clientY || window.innerHeight / 2) + 12, window.innerHeight - 230)),
+    });
+  }
+
+  function saveAnnotationDraft() {
+    if (!annotationDraft || revising) return;
+    const instruction = annotationDraft.instruction.trim();
+    if (!instruction) {
+      setToast('请先填写修改要求');
+      return;
+    }
+    const nextAnnotation = {
+      id: annotationDraft.id || `annotation-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      sectionKey: annotationDraft.sectionKey,
+      label: outlineLabelMap.get(annotationDraft.sectionKey),
+      quote: annotationDraft.quote || '',
+      targetPath: annotationDraft.targetPath,
+      instruction,
+      anchorX: annotationDraft.anchorX,
+      anchorY: annotationDraft.anchorY,
+      status: 'pending',
+    };
+    invalidateRevisionPreview();
+    replaceAnnotations((items) => annotationDraft.id
+      ? items.map((item) => item.id === annotationDraft.id ? nextAnnotation : { ...item, status: 'pending' })
+      : [...items.map((item) => ({ ...item, status: 'pending' })), nextAnnotation]);
     setRetryRevision(null);
+    setAnnotationDraft(null);
+    window.getSelection?.()?.removeAllRanges?.();
   }
 
   function removeAnnotation(id) {
-    setAnnotations((items) => items.filter((item) => item.id !== id));
+    invalidateRevisionPreview();
+    replaceAnnotations((items) => items.filter((item) => item.id !== id).map((item) => ({ ...item, status: 'pending' })));
+    if (annotationDraft?.id === id) setAnnotationDraft(null);
     setRetryRevision(null);
   }
 
   function pendingAnnotations() {
-    return annotations.filter((item) => item.status !== 'review');
+    return annotationsRef.current.filter((item) => item.status !== 'review');
   }
 
   function buildAnnotationRevisionRequest() {
     const pending = pendingAnnotations();
-    if (!pending.length || pending.some((item) => !item.instruction.trim() || !outlineLabelMap.has(item.sectionKey))) return null;
+    if (!pending.length || pending.some((item) => !item.instruction.trim() || !outlineLabelMap.has(item.sectionKey) || !isAnnotationPathAllowed(item.sectionKey, item.targetPath, lessonRef.current))) return null;
     const sectionKeys = [...new Set(pending.map((item) => item.sectionKey))];
     const instruction = [
       '请仅修改下列批注对应的教案内容，保持未批注模块不变。',
-      ...pending.map((item, index) => `${index + 1}.【${outlineLabelMap.get(item.sectionKey)}】${item.quote ? `针对原文“${item.quote}”：` : ''}${item.instruction.trim()}`),
+      ...pending.map((item, index) => `${index + 1}.【${outlineLabelMap.get(item.sectionKey)}｜${item.targetPath}】针对原文“${item.quote}”：${item.instruction.trim()}`),
+      ...(feedback.trim() ? [`整体说明：${feedback.trim()}`] : []),
     ].join('\n');
-    return buildRevisionRequest(instruction, sectionKeys, pending.map((item) => item.id));
+    return buildRevisionRequest(instruction, sectionKeys, pending.map((item) => item.id), pending.map((item) => item.targetPath));
   }
 
   function submitAnnotations() {
@@ -607,11 +708,10 @@ export function LessonEditor({ path }) {
       setToast('批注对应的教案模块已变化，请重新选择修改位置');
       return;
     }
-    setAssistantSections(new Set([...request.standardKeys, ...request.customIds.map((id) => `custom:${id}`)]));
     void runRevision(request);
   }
 
-  function buildRevisionRequest(instruction, selectedKeys = [...effectiveAssistantSections], annotationIds = []) {
+  function buildRevisionRequest(instruction, selectedKeys = [], annotationIds = [], targetPaths = []) {
     const currentLesson = lessonRef.current;
     const currentCustomSectionIds = (currentLesson.custom_sections || []).map((item) => item.id);
     const safeSelectedKeys = filterRevisionSelection(selectedKeys, {
@@ -625,6 +725,7 @@ export function LessonEditor({ path }) {
       standardKeys,
       customIds,
       annotationIds,
+      targetPaths: [...new Set(targetPaths.filter((path) => typeof path === 'string'))],
       clientVersion: lessonVersionRef.current,
       idempotencyKey: revisionIdempotencyKey(),
       body: {
@@ -641,10 +742,11 @@ export function LessonEditor({ path }) {
       request.instruction,
       [...(request.standardKeys || []), ...(request.customIds || []).map((id) => `custom:${id}`)],
       request.annotationIds || [],
+      request.targetPaths || [],
     );
   }
 
-  async function runRevision(request, { appendUser = true } = {}) {
+  async function runRevision(request) {
     const runId = revisionRunRef.current + 1;
     revisionRunRef.current = runId;
     const abortController = new AbortController();
@@ -655,11 +757,6 @@ export function LessonEditor({ path }) {
     setRetryRevision(null);
     setRevisionStage('submitting');
     setRevising(true);
-    setChat((items) => [
-      ...items.filter((item) => item.role !== 'loading'),
-      ...(appendUser ? [{ role: 'user', text: request.instruction }] : []),
-      { role: 'loading', text: '正在处理修改任务' },
-    ]);
     let completedJobReceived = false;
     try {
       let createdJob;
@@ -709,10 +806,10 @@ export function LessonEditor({ path }) {
         throw new Error('原修改任务对应的模块已发生变化，请按当前选区重新提交。');
       }
       const result = revisionJobResult(job);
-      let revisedLesson = structuredClone(latestLesson);
+      let revisedSource = structuredClone(latestLesson);
       if (request.standardKeys.length) {
         if (!result.lessonPlan) throw new Error('修改任务已完成，但没有返回教案内容。');
-        revisedLesson = mergeSelectedSections(revisedLesson, normalizeLesson(result.lessonPlan), request.standardKeys);
+        revisedSource = mergeSelectedSections(revisedSource, normalizeLesson(result.lessonPlan), request.standardKeys);
       }
       if (request.customIds.length) {
         if (!Array.isArray(result.customSections)) throw new Error('修改任务已完成，但没有返回自定义模块内容。');
@@ -720,28 +817,40 @@ export function LessonEditor({ path }) {
         if (missingCustomIds.length) {
           throw new Error('修改任务已完成，但返回的自定义模块不完整，请重新提交。');
         }
-        revisedLesson.custom_sections = (revisedLesson.custom_sections || []).map((item) => {
+        revisedSource.custom_sections = (revisedSource.custom_sections || []).map((item) => {
           const changed = result.customSections.find((update) => update.id === item.id);
           return changed ? { ...item, title: changed.title || item.title, content: changed.content || item.content } : item;
         });
       }
-      updateLesson({ ...revisedLesson, id: latestLesson.id, updated_at: '刚刚' });
-      setChat((items) => [...items.filter((item) => item.role !== 'loading'), { role: 'assistant', text: '所选模块已按要求修改，其余模块保持不变。' }]);
-      setToast('所选模块已修改并保存');
+      const targetPaths = [...new Set(request.targetPaths || [])];
+      const requestScopeKeys = [...request.standardKeys, ...request.customIds.map((id) => `custom:${id}`)];
+      if (!targetPaths.length || targetPaths.some((path) => !requestScopeKeys.some((sectionKey) => isAnnotationPathAllowed(sectionKey, path, latestLesson)))) {
+        throw new Error('批注目标已失效，请重新选择具体内容。');
+      }
+      const candidateLesson = {
+        ...synchronizeAnnotationDerivedFields(mergeAnnotationTargets(latestLesson, revisedSource, targetPaths), targetPaths),
+        id: latestLesson.id,
+        updated_at: '刚刚',
+      };
+      replaceRevisionPreview({
+        baseLesson: structuredClone(latestLesson),
+        baseVersion: request.clientVersion,
+        candidateLesson,
+      });
+      setToast('修改版已生成，请在右侧对比后应用');
       if (request.annotationIds?.length) {
         const submittedIds = new Set(request.annotationIds);
-        setAnnotations((items) => items.map((item) => submittedIds.has(item.id) ? { ...item, status: 'review' } : item));
+        replaceAnnotations((items) => items.map((item) => submittedIds.has(item.id) ? { ...item, status: 'review' } : item));
       }
       setRetryRevision(null);
     } catch (error) {
       if (revisionRunRef.current !== runId) return;
       const message = error?.message || '本次修改未完成，请稍后重试。';
       const mode = revisionRetryMode(error, { completedJobReceived });
-      setFeedback(trackedRequest.instruction);
       setRetryRevision(mode === 'resume'
         ? { mode, request: trackedRequest }
         : { mode: 'resubmit', request: { ...trackedRequest, jobId: null, idempotencyKey: revisionIdempotencyKey() } });
-      setChat((items) => [...items.filter((item) => item.role !== 'loading'), { role: 'error', text: `本次修改未完成：${message}` }]);
+      setToast(`本次修改未完成：${message}`);
     } finally {
       if (revisionRunRef.current === runId) {
         setRevising(false);
@@ -750,12 +859,6 @@ export function LessonEditor({ path }) {
         activeRevisionRef.current = null;
       }
     }
-  }
-
-  function revise() {
-    const instruction = feedback.trim();
-    if (!instruction || revising || !hasEffectiveAssistantSections) return;
-    void runRevision(buildRevisionRequest(instruction));
   }
 
   function stopRevisionWait() {
@@ -768,11 +871,9 @@ export function LessonEditor({ path }) {
     setRevising(false);
     setRevisionStage('idle');
     if (request) {
-      setFeedback(request.instruction);
       setRetryRevision({ mode: 'resume', request });
     }
-    const message = '已停止在本页面等待，后台任务可能仍在运行。可点击“继续查询”获取结果。';
-    setChat((items) => [...items.filter((item) => item.role !== 'loading'), { role: 'assistant', text: message }]);
+    setToast('已停止等待，后台任务可能仍在运行，可继续查询结果');
   }
 
   function retryRevisionRequest() {
@@ -780,7 +881,7 @@ export function LessonEditor({ path }) {
     const previousRequest = retryRevision.request;
     if (previousRequest?.annotationIds?.length) {
       if (retryRevision.mode === 'resume' && previousRequest.clientVersion === lessonVersionRef.current) {
-        void runRevision(previousRequest, { appendUser: false });
+        void runRevision(previousRequest);
         return;
       }
       const currentAnnotationRequest = buildAnnotationRevisionRequest();
@@ -788,20 +889,18 @@ export function LessonEditor({ path }) {
         setToast('请确认所有待发送批注仍存在且已填写完整');
         return;
       }
-      void runRevision(currentAnnotationRequest, { appendUser: false });
+      void runRevision(currentAnnotationRequest);
       return;
     }
     if (retryRevision.mode === 'resume' && previousRequest && previousRequest.clientVersion === lessonVersionRef.current) {
-      void runRevision(previousRequest, { appendUser: false });
+      void runRevision(previousRequest);
       return;
     }
     if (previousRequest) {
-      void runRevision(rebuildRevisionRequest(previousRequest), { appendUser: false });
+      void runRevision(rebuildRevisionRequest(previousRequest));
       return;
     }
-    const instruction = feedback.trim();
-    if (!instruction || !hasEffectiveAssistantSections) return;
-    void runRevision(buildRevisionRequest(instruction));
+    setToast('原批注已变化，请重新发送当前批注');
   }
 
   async function submitTrainingCandidate() {
@@ -812,6 +911,31 @@ export function LessonEditor({ path }) {
     } catch {
       // 归档失败不影响教师保存与导出。
     }
+  }
+
+  function applyRevisionPreview() {
+    const preview = revisionPreviewRef.current;
+    if (!preview) return;
+    if (preview.baseVersion !== lessonVersionRef.current || JSON.stringify(preview.baseLesson) !== JSON.stringify(lessonRef.current)) {
+      invalidateRevisionPreview();
+      setToast('原版教案已发生变化，修改版已失效，请重新发送批注');
+      return;
+    }
+    const candidateLesson = structuredClone(preview.candidateLesson);
+    updateLesson(candidateLesson);
+    replaceRevisionPreview(null);
+    replaceAnnotations([]);
+    setFeedback('');
+    setAssistantEnabled(false);
+    setAnnotationDraft(null);
+    setAnnotationPointer(null);
+    setToast('修改版已应用并保存');
+  }
+
+  function discardRevisionPreview() {
+    if (!revisionPreviewRef.current) return;
+    invalidateRevisionPreview();
+    setToast('已放弃修改版，原教案保持不变');
   }
 
   function saveCurrent() {
@@ -829,8 +953,11 @@ export function LessonEditor({ path }) {
       setToast('手动编辑已完成并保存');
       return;
     }
+    invalidateRevisionPreview();
     setManualEditing(true);
     setAssistantEnabled(false);
+    setAnnotationDraft(null);
+    setAnnotationPointer(null);
   }
 
   function exportDoc() {
@@ -861,58 +988,61 @@ export function LessonEditor({ path }) {
 
   const editable = manualEditing && !revising;
   const pendingAnnotationItems = pendingAnnotations();
-  const allPendingAnnotationsReady = pendingAnnotationItems.length > 0 && pendingAnnotationItems.every((item) => item.instruction.trim() && outlineLabelMap.has(item.sectionKey));
+  const allPendingAnnotationsReady = pendingAnnotationItems.length > 0 && pendingAnnotationItems.every((item) => item.instruction.trim() && outlineLabelMap.has(item.sectionKey) && isAnnotationPathAllowed(item.sectionKey, item.targetPath, lesson));
 
   return (
     <div className="editor-shell">
       <header className="editor-topbar">
         <div className="editor-top-left"><button className="icon-button" onClick={() => navigate('/app')} aria-label="返回工作台"><ArrowLeft size={18} /></button><span className="editor-brand"><BookOpen size={18} /> {siteName}</span><i /></div>
         <div className="editor-history-tools"><button title="撤销上一步编辑" onClick={undo} disabled={revising || !historyRef.current.length}><Undo2 size={17} /><span>撤销</span></button><button title="恢复刚才撤销的编辑" onClick={redo} disabled={revising || !redoRef.current.length}><Redo2 size={17} /><span>重做编辑</span></button></div>
-        <div className="editor-top-actions"><button className="outline-drawer-trigger" onClick={() => { setAssistantDrawerOpen(false); setOutlineDrawerOpen(true); }} aria-label="打开教案大纲"><FileText size={17} /><span>大纲</span></button><button className="assistant-drawer-trigger" onClick={() => { setOutlineDrawerOpen(false); setAssistantDrawerOpen(true); }} aria-label="打开教案批注"><Bot size={17} /><span>批注</span></button><button className={`editor-mode-button${manualEditing ? ' is-active' : ''}`} onClick={toggleManualEditing} disabled={revising} aria-pressed={manualEditing} aria-label={manualEditing ? '完成手动编辑' : '编辑教案'}><Pencil size={17} /><span>{manualEditing ? '完成编辑' : '编辑'}</span></button><button onClick={() => setVersionsOpen(true)} disabled={revising} aria-label="版本历史" title="版本历史"><History size={17} /><span>版本历史</span></button><button className="editor-save-button" onClick={saveCurrent} disabled={revising} aria-label="保存教案"><CheckCircle2 size={17} /><span>保存</span></button><Button icon={Download} onClick={() => setExportOpen(true)} disabled={revising}>导出教案</Button></div>
+        <div className="editor-top-actions"><button className="outline-drawer-trigger" onClick={() => setOutlineDrawerOpen(true)} aria-label="打开教案大纲"><FileText size={17} /><span>大纲</span></button><button className={`annotation-mode-button${assistantEnabled ? ' is-active' : ''}`} onClick={toggleAnnotationMode} disabled={revising} aria-pressed={assistantEnabled} aria-label={assistantEnabled ? '退出注释模式' : '进入注释模式'}><MessageSquarePlus size={17} /><span>{assistantEnabled ? '正在注释' : '注释'}</span></button><button className={`editor-mode-button${manualEditing ? ' is-active' : ''}`} onClick={toggleManualEditing} disabled={revising} aria-pressed={manualEditing} aria-label={manualEditing ? '完成手动编辑' : '编辑教案'}><Pencil size={17} /><span>{manualEditing ? '完成编辑' : '编辑'}</span></button><button onClick={() => setVersionsOpen(true)} disabled={revising} aria-label="版本历史" title="版本历史"><History size={17} /><span>版本历史</span></button><button className="editor-save-button" onClick={saveCurrent} disabled={revising} aria-label="保存教案"><CheckCircle2 size={17} /><span>保存</span></button><Button icon={Download} onClick={() => setExportOpen(true)} disabled={revising}>导出教案</Button></div>
       </header>
 
       <div className="editor-layout">
         <aside className={`editor-leftbar ${outlineDrawerOpen ? 'is-open' : ''}`}>
           <header><button onClick={() => navigate('/app')} aria-label="返回工作台"><ArrowLeft size={17} /></button><b>教案大纲</b><button aria-label="新增教案模块" title="新增教案模块" onClick={() => { setOutlineDrawerOpen(false); setNewSectionOpen(true); }} disabled={revising}><Plus size={18} /></button><button className="outline-drawer-close" onClick={() => setOutlineDrawerOpen(false)} aria-label="关闭教案大纲"><X size={18} /></button></header>
-          <div className="mobile-editor-tools"><button type="button" onClick={undo} disabled={revising || !historyRef.current.length}><Undo2 size={16} />撤销</button><button type="button" onClick={redo} disabled={revising || !redoRef.current.length}><Redo2 size={16} />重做编辑</button><button type="button" className={`editor-mode-button${manualEditing ? ' is-active' : ''}`} onClick={toggleManualEditing} disabled={revising} aria-pressed={manualEditing}><Pencil size={16} />{manualEditing ? '完成编辑' : '编辑教案'}</button><button type="button" onClick={() => { setOutlineDrawerOpen(false); setVersionsOpen(true); }} disabled={revising}><History size={16} />版本历史</button><button type="button" onClick={() => { saveCurrent(); setOutlineDrawerOpen(false); }} disabled={revising}><CheckCircle2 size={16} />保存教案</button></div>
-          <nav aria-label="教案章节">{fullOutline.map(([key, label], index) => <div className="outline-sort-row" key={key}><button draggable={!revising} aria-current={selected === key ? 'location' : undefined} className={`outline-sort-item${selected === key ? ' active' : ''}${draggedOutlineKey === key ? ' is-dragging' : ''}${dragOverOutlineKey === key && draggedOutlineKey !== key ? ' is-drag-over' : ''}`} onDragStart={(event) => { setDraggedOutlineKey(key); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', key); }} onDragOver={(event) => { event.preventDefault(); setDragOverOutlineKey(key); event.dataTransfer.dropEffect = 'move'; }} onDrop={(event) => { event.preventDefault(); reorderOutline(key); }} onDragEnd={() => { setDraggedOutlineKey(null); setDragOverOutlineKey(null); }} onKeyDown={(event) => { if (!event.altKey || !['ArrowUp', 'ArrowDown'].includes(event.key)) return; event.preventDefault(); moveOutline(key, event.key === 'ArrowUp' ? -1 : 1); }} onClick={() => scrollTo(key)} title="拖动排序；也可按 Alt+↑/↓ 调整"><GripVertical className="outline-drag-handle" size={15} aria-hidden="true" /><span>{index + 1}</span>{label}<Check size={14} /></button><span className="outline-touch-controls" aria-label={`${label}排序`}><button type="button" onClick={() => moveOutline(key, -1)} disabled={revising || index === 0} aria-label={`上移${label}`}><ArrowUp size={13} /></button><button type="button" onClick={() => moveOutline(key, 1)} disabled={revising || index === fullOutline.length - 1} aria-label={`下移${label}`}><ArrowDown size={13} /></button></span></div>)}</nav>
+          <div className="mobile-editor-tools"><button type="button" onClick={undo} disabled={revising || !historyRef.current.length}><Undo2 size={16} />撤销</button><button type="button" onClick={redo} disabled={revising || !redoRef.current.length}><Redo2 size={16} />重做编辑</button><button type="button" className={`annotation-mode-button${assistantEnabled ? ' is-active' : ''}`} onClick={toggleAnnotationMode} disabled={revising} aria-pressed={assistantEnabled}><MessageSquarePlus size={16} />{assistantEnabled ? '正在注释' : '注释教案'}</button><button type="button" className={`editor-mode-button${manualEditing ? ' is-active' : ''}`} onClick={toggleManualEditing} disabled={revising} aria-pressed={manualEditing}><Pencil size={16} />{manualEditing ? '完成编辑' : '编辑教案'}</button><button type="button" onClick={() => { setOutlineDrawerOpen(false); setVersionsOpen(true); }} disabled={revising}><History size={16} />版本历史</button><button type="button" onClick={() => { saveCurrent(); setOutlineDrawerOpen(false); }} disabled={revising}><CheckCircle2 size={16} />保存教案</button></div>
+          <nav aria-label="教案章节">{fullOutline.map(([key, label], index) => <div className="outline-sort-row" key={key}><button data-outline-key={key} draggable={!revising} aria-current={selected === key ? 'location' : undefined} className={`outline-sort-item${selected === key ? ' active' : ''}${draggedOutlineKey === key ? ' is-dragging' : ''}${dragOverOutlineKey === key && draggedOutlineKey !== key ? ' is-drag-over' : ''}`} onDragStart={(event) => { setDraggedOutlineKey(key); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', key); }} onDragOver={(event) => { event.preventDefault(); setDragOverOutlineKey(key); event.dataTransfer.dropEffect = 'move'; }} onDrop={(event) => { event.preventDefault(); reorderOutline(key); }} onDragEnd={() => { setDraggedOutlineKey(null); setDragOverOutlineKey(null); }} onClick={() => scrollTo(key)} title="拖动排序"><GripVertical className="outline-drag-handle" size={15} aria-hidden="true" onPointerDown={(event) => beginOutlinePointerDrag(event, key)} onPointerMove={moveOutlinePointerDrag} onPointerUp={(event) => finishOutlinePointerDrag(event)} onPointerCancel={(event) => finishOutlinePointerDrag(event, true)} /><span>{index + 1}</span>{label}<Check size={14} /></button></div>)}</nav>
           <div className="source-materials"><button onClick={() => setSourcesOpen((value) => !value)} aria-expanded={sourcesOpen}><b>素材来源（{sourceItems.length}）</b><ChevronDown size={16} className={sourcesOpen ? 'open' : ''} /></button>{sourcesOpen ? <div className="source-material-list">{sourceItems.map((file, index) => <article key={`${file.name}-${index}`}><span className="source-thumb guide">{file.mark}</span><p><b title={file.name}>{file.name}</b><small>{file.detail}</small></p></article>)}{!sourceItems.length ? <p className="source-empty">当前教案没有素材记录。</p> : null}</div> : null}</div>
         </aside>
 
-        <main className="document-workspace">
+        <main className={`document-workspace${assistantEnabled ? ' is-annotation-mode' : ''}`}>
+          <div className={`document-comparison${assistantEnabled ? ' is-active' : ''}`}>
+          <section className="comparison-pane comparison-original">
+            {assistantEnabled ? <header className="comparison-pane-header"><span>原版教案</span><small>点击左侧教案正文添加注释</small></header> : null}
           <article className="lesson-document">
             <header className="document-header"><div><div className="document-title-line"><EditableText as="h1" value={title} editable={editable} multiline={false} aria-label="教案标题" onCommit={(value) => mutateLesson((next) => { next.metadata.title = value; })} />{editable ? <Pencil size={16} /> : null}</div><p><span>年级：<EditableText value={lesson.metadata?.grade} editable={editable} multiline={false} aria-label="年级" onCommit={(value) => mutateLesson((next) => { next.metadata.grade = value; })} /></span><span>学科：<EditableText value={lesson.metadata?.subject} editable={editable} multiline={false} aria-label="学科" onCommit={(value) => mutateLesson((next) => { next.metadata.subject = value; })} /></span><span>课时：<EditableText value={String(lesson.metadata?.duration_minutes || 45)} editable={editable} multiline={false} aria-label="课时分钟数" onCommit={(value) => mutateLesson((next) => { next.metadata.duration_minutes = Math.max(1, Number.parseInt(value, 10) || 45); })} /> 分钟</span></p><p className="document-meta-extra"><span>教材版本：<EditableText value={lesson.metadata?.textbook_edition || ''} editable={editable} multiline={false} aria-label="教材版本" onCommit={(value) => mutateLesson((next) => { next.metadata.textbook_edition = value; })} /></span><span>章节：<EditableText value={lesson.metadata?.chapter || ''} editable={editable} multiline={false} aria-label="章节名称" onCommit={(value) => mutateLesson((next) => { next.metadata.chapter = value; })} /></span></p></div></header>
             <nav className="lesson-workflow-nav" aria-label="教案知识点组卷工作流"><span className="active"><FileText size={16} /><b>1. 教案设计</b><small>当前步骤</small></span><button onClick={() => navigate(`/app/lesson/${lesson.id || 'current'}/knowledge`)}><Network size={16} /><b>2. 知识点图谱</b><small>提取与校验</small></button><button onClick={() => navigate('/app/papers')}><ScrollText size={16} /><b>3. 智能组卷</b><small>选题与导出</small></button></nav>
 
-            <div className="lesson-section-order" style={{ display: 'flex', flexDirection: 'column' }}>
-            <section id="lesson-objectives" className="document-section" style={{ order: outlineOrderMap.get('objectives') }}>
-              <SectionHeading number={displayedSectionNumber('objectives')} title="教学目标" onAnnotate={() => addAnnotation('objectives')} annotationCount={annotationCount('objectives')} disabled={revising} />
-              <div className="teaching-field-block"><b>章节内容概述</b><EditableText as="p" value={lesson.source_summary || ''} editable={editable} aria-label="章节内容概述" onCommit={(value) => mutateLesson((next) => { next.source_summary = value; })} /></div>
-              <div className="teaching-field-block"><b>核心素养</b><EditableList items={lesson.core_competencies || []} editable={editable} emptyText="当前教案暂未单列核心素养" onCommit={(index, value) => editArray('core_competencies', index, value)} /></div>
-              <ol className="objective-list">{(lesson.learning_objectives || []).map((item, index) => <li key={`${item.type}-${index}`}>
+            <div className={`lesson-section-order${assistantEnabled ? ' is-annotating' : ''}`} style={{ display: 'flex', flexDirection: 'column' }} onMouseMove={moveAnnotationPointer} onMouseLeave={() => setAnnotationPointer(null)} onClick={startAnnotation}>
+            <section id="lesson-objectives" data-section-key="objectives" className="document-section" style={{ order: outlineOrderMap.get('objectives') }}>
+              <SectionHeading number={displayedSectionNumber('objectives')} title="教学目标" />
+              <div className="teaching-field-block" data-annotation-path="source_summary"><b>章节内容概述</b><EditableText as="p" value={lesson.source_summary || ''} editable={editable} aria-label="章节内容概述" onCommit={(value) => mutateLesson((next) => { next.source_summary = value; })} /></div>
+              <div className="teaching-field-block" data-annotation-path="core_competencies"><b>核心素养</b><EditableList items={lesson.core_competencies || []} editable={editable} emptyText="当前教案暂未单列核心素养" onCommit={(index, value) => editArray('core_competencies', index, value)} /></div>
+              <ol className="objective-list">{(lesson.learning_objectives || []).map((item, index) => <li data-annotation-path={`learning_objectives[${index}]`} key={`${item.type}-${index}`}>
                 <EditableText as="span" value={objectiveTypeLabel(item.type)} editable={editable} multiline={false} aria-label={`第 ${index + 1} 项目标类型`} onCommit={(value) => mutateLesson((next) => { next.learning_objectives[index].type = value; })} />
                 <div><EditableText as="p" value={item.content} editable={editable} aria-label={`教学目标 ${index + 1}`} onCommit={(value) => mutateLesson((next) => { next.learning_objectives[index].content = value; })} /><p className="evidence-line"><b>达成证据</b><EditableText value={item.measurable_evidence || ''} editable={editable} aria-label={`第 ${index + 1} 项目标达成证据`} onCommit={(value) => mutateLesson((next) => { next.learning_objectives[index].measurable_evidence = value; })} /></p><SourceReferences references={item.source_refs} /></div>
               </li>)}</ol>
             </section>
 
-            <section id="lesson-learner" className="document-section" style={{ order: outlineOrderMap.get('learner') }}>
-              <SectionHeading number={displayedSectionNumber('learner')} title="学情分析" onAnnotate={() => addAnnotation('learner')} annotationCount={annotationCount('learner')} disabled={revising} />
-              <div className="teaching-field-block"><b>班级整体情况</b><EditableText as="p" value={lesson.metadata?.class_profile || ''} editable={editable} aria-label="班级整体情况" onCommit={(value) => mutateLesson((next) => { next.metadata.class_profile = value; })} /></div>
-              <div className="teaching-field-block"><b>班级学习特征</b><EditableText as="p" value={lesson.learner_analysis?.class_characteristics || ''} editable={editable} aria-label="班级学习特征" onCommit={(value) => mutateLesson((next) => { next.learner_analysis = next.learner_analysis || {}; next.learner_analysis.class_characteristics = value; })} /></div>
-              <div className="analysis-strip">{[['known', '已有基础'], ['challenge', '学习挑战'], ['strategy', '教学策略']].map(([key, label]) => <div key={key}><b>{label}</b><EditableText as="p" value={lesson.learner_analysis?.[key] || ''} editable={editable} onCommit={(value) => mutateLesson((next) => { next.learner_analysis = next.learner_analysis || {}; next.learner_analysis[key] = value; })} /></div>)}</div>
+            <section id="lesson-learner" data-section-key="learner" className="document-section" style={{ order: outlineOrderMap.get('learner') }}>
+              <SectionHeading number={displayedSectionNumber('learner')} title="学情分析" />
+              <div className="teaching-field-block" data-annotation-path="metadata.class_profile"><b>班级整体情况</b><EditableText as="p" value={lesson.metadata?.class_profile || ''} editable={editable} aria-label="班级整体情况" onCommit={(value) => mutateLesson((next) => { next.metadata.class_profile = value; })} /></div>
+              <div className="teaching-field-block" data-annotation-path="learner_analysis.class_characteristics"><b>班级学习特征</b><EditableText as="p" value={lesson.learner_analysis?.class_characteristics || ''} editable={editable} aria-label="班级学习特征" onCommit={(value) => mutateLesson((next) => { next.learner_analysis = next.learner_analysis || {}; next.learner_analysis.class_characteristics = value; })} /></div>
+              <div className="analysis-strip">{[['known', '已有基础'], ['challenge', '学习挑战'], ['strategy', '教学策略']].map(([key, label]) => <div data-annotation-path={`learner_analysis.${key}`} key={key}><b>{label}</b><EditableText as="p" value={lesson.learner_analysis?.[key] || ''} editable={editable} onCommit={(value) => mutateLesson((next) => { next.learner_analysis = next.learner_analysis || {}; next.learner_analysis[key] = value; })} /></div>)}</div>
             </section>
 
-            <section id="lesson-keypoints" className="document-section two-column-section" style={{ order: outlineOrderMap.get('keypoints') }}><div><SectionHeading number={displayedSectionNumber('keypoints')} title="教学重点" onAnnotate={() => addAnnotation('keypoints')} annotationCount={annotationCount('keypoints')} disabled={revising} /><ul>{(lesson.key_points || []).map((item, index) => <EditableText as="li" key={index} value={item} editable={editable} onCommit={(value) => editArray('key_points', index, value)} />)}</ul></div><div><div className="section-heading-spacer" /><h2>教学难点</h2><ul>{(lesson.difficult_points || []).map((item, index) => <EditableText as="li" key={index} value={item} editable={editable} onCommit={(value) => editArray('difficult_points', index, value)} />)}</ul></div></section>
+            <section id="lesson-keypoints" data-section-key="keypoints" className="document-section two-column-section" style={{ order: outlineOrderMap.get('keypoints') }}><div data-annotation-path="key_points"><SectionHeading number={displayedSectionNumber('keypoints')} title="教学重点" /><ul>{(lesson.key_points || []).map((item, index) => <EditableText as="li" key={index} value={item} editable={editable} onCommit={(value) => editArray('key_points', index, value)} />)}</ul></div><div data-annotation-path="difficult_points"><div className="section-heading-spacer" /><h2>教学难点</h2><ul>{(lesson.difficult_points || []).map((item, index) => <EditableText as="li" key={index} value={item} editable={editable} onCommit={(value) => editArray('difficult_points', index, value)} />)}</ul></div></section>
 
-            <section id="lesson-preparation" className="document-section" style={{ order: outlineOrderMap.get('preparation') }}>
-              <SectionHeading number={displayedSectionNumber('preparation')} title="教学准备" onAnnotate={() => addAnnotation('preparation')} annotationCount={annotationCount('preparation')} disabled={revising} />
-              <div className="preparation-grid">{[['teacher', '教师准备'], ['students', '学生准备'], ['materials', '材料']].map(([key, label]) => <div key={key}><b>{label}</b><EditableList items={lesson.preparation?.[key] || []} editable={editable} onCommit={(index, value) => editNestedArray('preparation', key, index, value)} /></div>)}</div>
-              <div className="teaching-field-block"><b>课堂安全与包容</b><EditableList items={lesson.safety_and_inclusion || []} editable={editable} emptyText="当前教案暂无额外安全与包容提示" onCommit={(index, value) => editArray('safety_and_inclusion', index, value)} /></div>
+            <section id="lesson-preparation" data-section-key="preparation" className="document-section" style={{ order: outlineOrderMap.get('preparation') }}>
+              <SectionHeading number={displayedSectionNumber('preparation')} title="教学准备" />
+              <div className="preparation-grid">{[['teacher', '教师准备'], ['students', '学生准备'], ['materials', '材料']].map(([key, label]) => <div data-annotation-path={`preparation.${key}`} key={key}><b>{label}</b><EditableList items={lesson.preparation?.[key] || []} editable={editable} onCommit={(index, value) => editNestedArray('preparation', key, index, value)} /></div>)}</div>
+              <div className="teaching-field-block" data-annotation-path="safety_and_inclusion"><b>课堂安全与包容</b><EditableList items={lesson.safety_and_inclusion || []} editable={editable} emptyText="当前教案暂无额外安全与包容提示" onCommit={(index, value) => editArray('safety_and_inclusion', index, value)} /></div>
             </section>
 
-            <section id="lesson-timeline" className="document-section" style={{ order: outlineOrderMap.get('timeline') }}>
-              <div className="timeline-heading"><SectionHeading number={displayedSectionNumber('timeline')} title="教学过程" onAnnotate={() => addAnnotation('timeline')} annotationCount={annotationCount('timeline')} disabled={revising} /><span><Clock3 size={14} /> 共 {totalMinutes} 分钟</span></div>
-              <div className="timeline-table"><div className="timeline-row timeline-head"><span>教学环节</span><span>时间</span><span>教师活动、讲解与提问</span><span>学生活动与学习反馈</span><span>参与目标与评价</span></div>{(lesson.timeline || []).map((item, index) => <div className="timeline-row" key={item.id || `${item.stage}-${index}`}>
+            <section id="lesson-timeline" data-section-key="timeline" className="document-section" style={{ order: outlineOrderMap.get('timeline') }}>
+              <div className="timeline-heading"><SectionHeading number={displayedSectionNumber('timeline')} title="教学过程" /><span><Clock3 size={14} /> 共 {totalMinutes} 分钟</span></div>
+              <div className="timeline-table"><div className="timeline-row timeline-head"><span>教学环节</span><span>时间</span><span>教师活动、讲解与提问</span><span>学生活动与学习反馈</span><span>参与目标与评价</span></div>{(lesson.timeline || []).map((item, index) => <div className="timeline-row" data-annotation-path={`timeline[${index}]`} key={item.id || `${item.stage}-${index}`}>
                 <span><EditableText as="b" value={item.stage} editable={editable} multiline={false} onCommit={(value) => mutateLesson((next) => { next.timeline[index].stage = value; })} /></span>
                 <span><small>第 <EditableText value={String(item.start_minute ?? 0)} editable={editable} multiline={false} aria-label={`${item.stage}开始分钟`} onCommit={(value) => mutateLesson((next) => { next.timeline[index].start_minute = Math.max(0, Number.parseInt(value, 10) || 0); })} /> 分钟开始</small><EditableText value={String(item.duration_minutes)} editable={editable} multiline={false} aria-label={`${item.stage}持续分钟`} onCommit={(value) => mutateLesson((next) => { next.timeline[index].duration_minutes = Math.max(1, Number.parseInt(value, 10) || 1); })} /> 分钟</span>
                 <span>
@@ -941,33 +1071,33 @@ export function LessonEditor({ path }) {
               {editable ? <button className="add-stage" onClick={addStage}><span>+</span> 添加教学环节</button> : null}
             </section>
 
-            <section id="lesson-interaction" className="document-section" style={{ order: outlineOrderMap.get('interaction') }}>
-              <SectionHeading number={displayedSectionNumber('interaction')} title="课堂互动与分层评价" onAnnotate={() => addAnnotation('interaction')} annotationCount={annotationCount('interaction')} disabled={revising} />
-              <div className="interaction-grid">{[['support', '基础支持'], ['standard', '常规任务'], ['challenge', '拓展挑战']].map(([key, label]) => <div key={key}><b>{label}</b><EditableList items={lesson.differentiation?.[key] || []} editable={editable} onCommit={(index, value) => editNestedArray('differentiation', key, index, value)} /></div>)}</div>
+            <section id="lesson-interaction" data-section-key="interaction" className="document-section" style={{ order: outlineOrderMap.get('interaction') }}>
+              <SectionHeading number={displayedSectionNumber('interaction')} title="课堂互动与分层评价" />
+              <div className="interaction-grid">{[['support', '基础支持'], ['standard', '常规任务'], ['challenge', '拓展挑战']].map(([key, label]) => <div data-annotation-path={`differentiation.${key}`} key={key}><b>{label}</b><EditableList items={lesson.differentiation?.[key] || []} editable={editable} onCommit={(index, value) => editNestedArray('differentiation', key, index, value)} /></div>)}</div>
               <h3 className="document-subheading">学习评价方案</h3>
-              <div className="assessment-grid">{[['diagnostic', '课前诊断'], ['formative', '过程评价'], ['summative', '总结评价'], ['success_criteria', '达成标准']].map(([key, label]) => <div key={key}><b>{label}</b><EditableList items={lesson.assessment_plan?.[key] || []} editable={editable} emptyText="暂未单列" onCommit={(index, value) => mutateLesson((next) => { next.assessment_plan = next.assessment_plan || {}; next.assessment_plan[key] = next.assessment_plan[key] || []; next.assessment_plan[key][index] = value; })} /></div>)}</div>
+              <div className="assessment-grid">{[['diagnostic', '课前诊断'], ['formative', '过程评价'], ['summative', '总结评价'], ['success_criteria', '达成标准']].map(([key, label]) => <div data-annotation-path={`assessment_plan.${key}`} key={key}><b>{label}</b><EditableList items={lesson.assessment_plan?.[key] || []} editable={editable} emptyText="暂未单列" onCommit={(index, value) => mutateLesson((next) => { next.assessment_plan = next.assessment_plan || {}; next.assessment_plan[key] = next.assessment_plan[key] || []; next.assessment_plan[key][index] = value; })} /></div>)}</div>
             </section>
 
-            <section id="lesson-board" className="document-section" style={{ order: outlineOrderMap.get('board') }}>
-              <SectionHeading number={displayedSectionNumber('board')} title="板书设计" onAnnotate={() => addAnnotation('board')} annotationCount={annotationCount('board')} disabled={revising} />
+            <section id="lesson-board" data-section-key="board" className="document-section" style={{ order: outlineOrderMap.get('board') }}>
+              <SectionHeading number={displayedSectionNumber('board')} title="板书设计" />
               {lesson.board_design_structured && (lesson.board_design_structured.layout_description || lesson.board_design_structured.sections?.length) ? <div className="structured-board">
-                <div className="teaching-field-block"><b>整体布局</b><EditableText as="p" value={lesson.board_design_structured.layout_description || ''} editable={editable} onCommit={(value) => editStructuredBoard((board) => { board.layout_description = value; })} /></div>
-                <div className="board-section-grid">{(lesson.board_design_structured.sections || []).map((section, index) => <article key={index}><p><b>区域标题</b><EditableText value={section.title || ''} editable={editable} multiline={false} onCommit={(value) => editStructuredBoard((board) => { board.sections[index].title = value; })} /></p><p><b>位置</b><EditableText value={section.position || ''} editable={editable} multiline={false} onCommit={(value) => editStructuredBoard((board) => { board.sections[index].position = value; })} /></p><EditableText as="div" className="board-section-content" value={section.content || ''} editable={editable} onCommit={(value) => editStructuredBoard((board) => { board.sections[index].content = value; })} /></article>)}</div>
-              </div> : <EditableText as="pre" className="board-preview" value={lesson.board_design || ''} editable={editable} onCommit={(value) => mutateLesson((next) => { next.board_design = value; })} />}
+                <div className="teaching-field-block" data-annotation-path="board_design_structured.layout_description"><b>整体布局</b><EditableText as="p" value={lesson.board_design_structured.layout_description || ''} editable={editable} onCommit={(value) => editStructuredBoard((board) => { board.layout_description = value; })} /></div>
+                <div className="board-section-grid">{(lesson.board_design_structured.sections || []).map((section, index) => <article data-annotation-path={`board_design_structured.sections[${index}]`} key={index}><p><b>区域标题</b><EditableText value={section.title || ''} editable={editable} multiline={false} onCommit={(value) => editStructuredBoard((board) => { board.sections[index].title = value; })} /></p><p><b>位置</b><EditableText value={section.position || ''} editable={editable} multiline={false} onCommit={(value) => editStructuredBoard((board) => { board.sections[index].position = value; })} /></p><EditableText as="div" className="board-section-content" value={section.content || ''} editable={editable} onCommit={(value) => editStructuredBoard((board) => { board.sections[index].content = value; })} /></article>)}</div>
+              </div> : <EditableText as="pre" className="board-preview" data-annotation-path="board_design" value={lesson.board_design || ''} editable={editable} onCommit={(value) => mutateLesson((next) => { next.board_design = value; })} />}
             </section>
 
-            <section id="lesson-homework" className="document-section" style={{ order: outlineOrderMap.get('homework') }}>
-              <SectionHeading number={displayedSectionNumber('homework')} title="课后作业" onAnnotate={() => addAnnotation('homework')} annotationCount={annotationCount('homework')} disabled={revising} />
-              <div className="homework-list">{(lesson.homework || []).map((item, index) => <div key={item.id || index}>
+            <section id="lesson-homework" data-section-key="homework" className="document-section" style={{ order: outlineOrderMap.get('homework') }}>
+              <SectionHeading number={displayedSectionNumber('homework')} title="课后作业" />
+              <div className="homework-list">{(lesson.homework || []).map((item, index) => <div data-annotation-path={`homework[${index}]`} key={item.id || index}>
                 <EditableText as="span" value={item.level || '课后任务'} editable={editable} multiline={false} onCommit={(value) => mutateLesson((next) => { next.homework[index].level = value; })} />
                 <div className="homework-content"><EditableText as="p" value={item.content} editable={editable} onCommit={(value) => mutateLesson((next) => { next.homework[index].content = value; })} /><div className="homework-meta"><p><b>建议用时</b><EditableText value={String(item.estimated_minutes || '')} editable={editable} multiline={false} aria-label={`第 ${index + 1} 项作业建议用时`} onCommit={(value) => mutateLesson((next) => { next.homework[index].estimated_minutes = Math.max(1, Number.parseInt(value, 10) || 1); })} /> 分钟</p><p><b>完成指导</b><EditableText value={item.answer_guidance || ''} editable={editable} onCommit={(value) => mutateLesson((next) => { next.homework[index].answer_guidance = value; })} /></p></div><SourceReferences references={item.source_refs} /></div>
               </div>)}</div>
-              <div className="teaching-field-block"><b>课后反思提示</b><EditableList items={lesson.reflection_prompts || []} editable={editable} emptyText="当前教案暂未设置课后反思提示" onCommit={(index, value) => editArray('reflection_prompts', index, value)} /></div>
+              <div className="teaching-field-block" data-annotation-path="reflection_prompts"><b>课后反思提示</b><EditableList items={lesson.reflection_prompts || []} editable={editable} emptyText="当前教案暂未设置课后反思提示" onCommit={(index, value) => editArray('reflection_prompts', index, value)} /></div>
             </section>
 
-            <section id="lesson-exercises" className="document-section exercises-section" style={{ order: outlineOrderMap.get('exercises') }}>
-              <div className="exercises-heading"><SectionHeading number={displayedSectionNumber('exercises')} title="习题与答案" onAnnotate={() => addAnnotation('exercises')} annotationCount={annotationCount('exercises')} disabled={revising} /><span>{exerciseCount} 道 · 含答案、解析与评分标准</span></div>
-              {(lesson.exercises || []).map((item, index) => <details className="exercise-item" key={item.id || index}><summary><span>{index + 1}</span><div><EditableText as="b" value={item.stem} editable={editable} onCommit={(value) => mutateLesson((next) => { next.exercises[index].stem = value; })} /><small><EditableText value={questionTypeLabel(item.type)} editable={editable} multiline={false} aria-label={`第 ${index + 1} 题题型`} onCommit={(value) => mutateLesson((next) => { next.exercises[index].type = value; })} /> · 难度 <EditableText value={String(item.difficulty || 1)} editable={editable} multiline={false} aria-label={`第 ${index + 1} 题难度`} onCommit={(value) => mutateLesson((next) => { next.exercises[index].difficulty = Math.min(5, Math.max(1, Number.parseInt(value, 10) || 1)); })} />/5 · 建议 <EditableText value={String(item.estimated_minutes || '')} editable={editable} multiline={false} aria-label={`第 ${index + 1} 题建议用时`} onCommit={(value) => mutateLesson((next) => { next.exercises[index].estimated_minutes = Math.max(1, Number.parseInt(value, 10) || 1); })} /> 分钟 · 知识点：<EditableText value={(item.knowledge_points || []).join('、')} editable={editable} multiline={false} aria-label={`第 ${index + 1} 题知识点`} onCommit={(value) => mutateLesson((next) => { next.exercises[index].knowledge_points = value.split(/[、,，]/).map((entry) => entry.trim()).filter(Boolean); })} /></small></div><ChevronDown size={17} /></summary><div className="exercise-answer">
+            <section id="lesson-exercises" data-section-key="exercises" className="document-section exercises-section" style={{ order: outlineOrderMap.get('exercises') }}>
+              <div className="exercises-heading"><SectionHeading number={displayedSectionNumber('exercises')} title="习题与答案" /><span>{exerciseCount} 道 · 含答案、解析与评分标准</span></div>
+              {(lesson.exercises || []).map((item, index) => <details className="exercise-item" data-annotation-path={`exercises[${index}]`} key={item.id || index}><summary><span>{index + 1}</span><div><EditableText as="b" value={item.stem} editable={editable} onCommit={(value) => mutateLesson((next) => { next.exercises[index].stem = value; })} /><small><EditableText value={questionTypeLabel(item.type)} editable={editable} multiline={false} aria-label={`第 ${index + 1} 题题型`} onCommit={(value) => mutateLesson((next) => { next.exercises[index].type = value; })} /> · 难度 <EditableText value={String(item.difficulty || 1)} editable={editable} multiline={false} aria-label={`第 ${index + 1} 题难度`} onCommit={(value) => mutateLesson((next) => { next.exercises[index].difficulty = Math.min(5, Math.max(1, Number.parseInt(value, 10) || 1)); })} />/5 · 建议 <EditableText value={String(item.estimated_minutes || '')} editable={editable} multiline={false} aria-label={`第 ${index + 1} 题建议用时`} onCommit={(value) => mutateLesson((next) => { next.exercises[index].estimated_minutes = Math.max(1, Number.parseInt(value, 10) || 1); })} /> 分钟 · 知识点：<EditableText value={(item.knowledge_points || []).join('、')} editable={editable} multiline={false} aria-label={`第 ${index + 1} 题知识点`} onCommit={(value) => mutateLesson((next) => { next.exercises[index].knowledge_points = value.split(/[、,，]/).map((entry) => entry.trim()).filter(Boolean); })} /></small></div><ChevronDown size={17} /></summary><div className="exercise-answer">
                 {item.options?.length ? <div className="exercise-options"><b>选项</b><ol type="A">{item.options.map((option, optionIndex) => <EditableText as="li" key={optionIndex} value={option} editable={editable} onCommit={(value) => mutateLesson((next) => { next.exercises[index].options[optionIndex] = value; })} />)}</ol></div> : null}
                 <p><b>参考答案</b><EditableText value={item.answer} editable={editable} onCommit={(value) => mutateLesson((next) => { next.exercises[index].answer = value; })} /></p>
                 <p><b>解析</b><EditableText value={item.explanation} editable={editable} onCommit={(value) => mutateLesson((next) => { next.exercises[index].explanation = value; })} /></p>
@@ -976,36 +1106,37 @@ export function LessonEditor({ path }) {
               </div></details>)}
             </section>
 
-            {(lesson.custom_sections || []).map((item, index) => { const sectionKey = `custom:${item.id}`; return <section id={`lesson-custom-${item.id}`} className="document-section custom-document-section" style={{ order: outlineOrderMap.get(sectionKey) }} key={item.id}><SectionHeading number={displayedSectionNumber(sectionKey)} title={item.title} editable={editable} onCommit={(value) => mutateLesson((next) => { next.custom_sections[index].title = value; })} onAnnotate={() => addAnnotation(sectionKey)} annotationCount={annotationCount(sectionKey)} disabled={revising} /><EditableText as="div" className="custom-section-content" value={item.content} editable={editable} onCommit={(value) => mutateLesson((next) => { next.custom_sections[index].content = value; })} /></section>; })}
+            {(lesson.custom_sections || []).map((item, index) => { const sectionKey = `custom:${item.id}`; return <section id={`lesson-custom-${item.id}`} data-section-key={sectionKey} className="document-section custom-document-section" style={{ order: outlineOrderMap.get(sectionKey) }} key={item.id}><SectionHeading number={displayedSectionNumber(sectionKey)} title={item.title} editable={editable} annotationPath={`custom_sections[${index}].title`} onCommit={(value) => mutateLesson((next) => { next.custom_sections[index].title = value; })} /><EditableText as="div" className="custom-section-content" data-annotation-path={`custom_sections[${index}].content`} value={item.content} editable={editable} onCommit={(value) => mutateLesson((next) => { next.custom_sections[index].content = value; })} /></section>; })}
+            {annotations.map((item, index) => <button key={item.id} type="button" className="annotation-pin" style={{ left: `${item.anchorX || 50}%`, top: `${item.anchorY || 0}%` }} onClick={(event) => { event.preventDefault(); event.stopPropagation(); editAnnotation(item, event); }} aria-label={`编辑注释 ${index + 1}`} title={`注释 ${index + 1}：${item.instruction}`}><MessageSquarePlus size={12} /><span>{index + 1}</span></button>)}
             </div>
             <footer className="document-footer"><span>{totalMinutes} 分钟课堂流程 · {exerciseCount} 道习题</span><span>最后保存：{lesson.updated_at || '刚刚'}</span></footer>
           </article>
+          </section>
+          {assistantEnabled ? <section className="comparison-pane comparison-revised"><header className="comparison-pane-header"><span>修改版</span>{revisionPreview ? <div><button type="button" onClick={discardRevisionPreview} disabled={revising}>放弃</button><button type="button" className="apply-revision-button" onClick={applyRevisionPreview} disabled={revising}><CheckCircle2 size={15} />应用修改</button></div> : <small>发送注释后在这里查看修改结果</small>}</header>{revisionPreview ? <iframe title="修改后的教案预览" srcDoc={lessonToHtml(revisionPreview.candidateLesson)} sandbox="" /> : <div className="revision-preview-empty"><MessageSquarePlus size={28} /><b>等待生成修改版</b><p>在左侧教案正文添加一个或多个注释，然后从底部发送。</p></div>}</section> : null}
+          </div>
         </main>
 
-        <aside className={`ai-panel ${assistantDrawerOpen ? 'is-open' : ''}`} aria-label="教案批注面板">
-          <header><div><MessageSquarePlus size={18} /><b>教案批注</b></div><div className="assistant-panel-actions"><label className="assistant-toggle"><input type="checkbox" checked={assistantEnabled} disabled={revising || manualEditing} onChange={(event) => { setAssistantEnabled(event.target.checked); if (event.target.checked) setManualEditing(false); }} /><span aria-hidden="true" /><em>{assistantEnabled ? '已开启' : '已关闭'}</em></label><button className="assistant-panel-close" onClick={() => setAssistantDrawerOpen(false)} aria-label="关闭教案批注面板"><X size={18} /></button></div></header>
-          {assistantEnabled ? <>
-            <section className="annotation-panel">
-              <div className="annotation-composer"><div><b>待发送批注</b><p>批注只会修改对应教案模块，不会触碰页面、网站设置或代码。</p></div><button type="button" onClick={() => addAnnotation(outlineLabelMap.has(selected) ? selected : fullOutline[0]?.[0])} disabled={revising || !fullOutline.length}><Plus size={16} />新增批注</button></div>
-              <div className="annotation-list">
-                {annotations.length ? annotations.map((item, index) => <article className={`annotation-card${item.status === 'review' ? ' is-review' : ''}`} key={item.id}>
-                  <header><span>批注 {index + 1} · {item.status === 'review' ? '待确认' : '待发送'}</span><button type="button" onClick={() => removeAnnotation(item.id)} disabled={revising} aria-label={`删除第 ${index + 1} 条批注`}><Trash2 size={15} /></button></header>
-                  <label><span>修改位置</span><select value={item.sectionKey} disabled={revising} onChange={(event) => updateAnnotation(item.id, { sectionKey: event.target.value, label: outlineLabelMap.get(event.target.value), quote: '' })}>{fullOutline.map(([key, label]) => <option value={key} key={key}>{label}</option>)}</select></label>
-                  {item.quote ? <blockquote><b>引用原文</b><p>{item.quote}</p></blockquote> : <p className="annotation-empty">未引用具体文字，将修改整个“{outlineLabelMap.get(item.sectionKey)}”模块。</p>}
-                  <label><span>修改要求</span><textarea value={item.instruction} disabled={revising} maxLength={800} placeholder="说明这里要怎样修改，例如：提高题目难度，并增加一道开放题。" onChange={(event) => updateAnnotation(item.id, { instruction: event.target.value })} /></label>
-                </article>) : <div className="annotation-empty"><MessageSquarePlus size={20} /><p>点击教案各模块标题旁的“批注”，可一次添加多条修改要求。</p></div>}
-              </div>
-              {annotations.length ? <div className="annotation-submit"><span>{pendingAnnotationItems.length ? `${pendingAnnotationItems.filter((item) => item.instruction.trim()).length}/${pendingAnnotationItems.length} 条待发送批注已填写` : '已应用的批注正在等待确认'}</span><Button size="sm" icon={Send} onClick={submitAnnotations} disabled={revising || !allPendingAnnotationsReady}>发送全部待发送批注</Button></div> : null}
-            </section>
-            <div className="chat-thread" aria-live="polite">{chat.map((item, index) => <div key={index} className={`chat-message ${item.role}`}><span>{item.role === 'user' ? '我' : item.role === 'loading' ? <LoaderCircle className="spin" size={16} /> : <Bot size={16} />}</span><div>{item.role === 'loading' ? <div className="revision-progress"><b>{revisionStageLabels[revisionStage] || '正在处理修改任务'}</b><p>已等待 {revisionElapsed} 秒，页面会在任务完成后自动应用结果。</p><button type="button" onClick={stopRevisionWait}>停止等待</button></div> : <p>{item.text}</p>}</div></div>)}</div>
-            {retryRevision && !revising ? <div className="ai-composer"><div><Button variant="ghost" size="sm" icon={RotateCcw} onClick={retryRevisionRequest}>{retryRevision.mode === 'resume' ? '继续查询' : '重新提交'}</Button></div></div> : null}
-          </> : <div className="manual-edit-hint"><Pencil size={20} /><b>{manualEditing ? '正在手动编辑' : '教案当前为只读状态'}</b><p>{manualEditing ? '完成修改后，请点击页面顶部“完成编辑”。' : '需要手动修改时点击顶部“编辑”；需要定向调整时，在对应模块点击“批注”。'}</p></div>}
-        </aside>
-        {assistantDrawerOpen ? <button className="assistant-drawer-scrim" aria-label="关闭助教面板" onClick={() => setAssistantDrawerOpen(false)} /> : null}
         {outlineDrawerOpen ? <button className="outline-drawer-scrim" aria-label="关闭教案大纲" onClick={() => setOutlineDrawerOpen(false)} /> : null}
       </div>
 
-      <Modal open={newSectionOpen} onClose={() => { if (!revising) setNewSectionOpen(false); }} title="新增教案模块" description="新模块会加入教案大纲、正文和助教模块选择。" footer={<><Button variant="ghost" onClick={() => setNewSectionOpen(false)} disabled={revising}>取消</Button><Button icon={Plus} onClick={addCustomSection} disabled={revising || !newSectionTitle.trim()}>添加模块</Button></>}><label className="new-section-field"><span>模块名称</span><input value={newSectionTitle} disabled={revising} onChange={(event) => setNewSectionTitle(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !revising) addCustomSection(); }} placeholder="例如：跨学科拓展" maxLength={30} /></label></Modal>
+      {assistantEnabled && annotationPointer && !annotationDraft ? <span className="annotation-pointer" style={{ left: annotationPointer.x, top: annotationPointer.y }} aria-hidden="true"><MessageSquarePlus size={15} /></span> : null}
+
+      {assistantEnabled && annotationDraft ? <div className="annotation-popover" style={{ left: annotationDraft.x, top: annotationDraft.y }} role="dialog" aria-label={`编辑${annotationDraft.label}注释`} onClick={(event) => event.stopPropagation()}>
+        <header><span><MessageSquarePlus size={15} />{annotationDraft.id ? '编辑注释' : '添加注释'}</span><button type="button" onClick={() => setAnnotationDraft(null)} aria-label="取消注释"><X size={15} /></button></header>
+        <p>{annotationDraft.label}{annotationDraft.quote ? ` · “${annotationDraft.quote}”` : ''}</p>
+        <div><textarea autoFocus value={annotationDraft.instruction} maxLength={800} placeholder="说明这里要怎样修改…" onChange={(event) => setAnnotationDraft((current) => ({ ...current, instruction: event.target.value }))} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') saveAnnotationDraft(); }} /><button type="button" onClick={saveAnnotationDraft} disabled={!annotationDraft.instruction.trim()} aria-label="保存注释"><Check size={17} /></button></div>
+      </div> : null}
+
+      {assistantEnabled ? <div className="annotation-dock" aria-label="注释发送栏">
+        <div className="annotation-chip-list">{annotations.map((item, index) => <span className={`annotation-chip${item.status === 'review' ? ' is-review' : ''}`} key={item.id}><button type="button" onClick={(event) => editAnnotation(item, event)} disabled={revising}><MessageSquarePlus size={13} />注释 {index + 1}</button><button type="button" onClick={() => removeAnnotation(item.id)} disabled={revising} aria-label={`删除注释 ${index + 1}`}><Trash2 size={12} /></button></span>)}</div>
+        {revising ? <div className="annotation-dock-status" aria-live="polite"><LoaderCircle className="spin" size={16} /><span>{revisionStageLabels[revisionStage] || '正在生成修改版'} · {revisionElapsed} 秒</span><button type="button" onClick={stopRevisionWait}>停止</button></div> : <>
+          {retryRevision ? <button type="button" className="annotation-retry" onClick={retryRevisionRequest}><RotateCcw size={15} />{retryRevision.mode === 'resume' ? '继续查询' : '重试'}</button> : null}
+          <input value={feedback} maxLength={500} placeholder={annotations.length ? '补充整体要求（选填）' : '先点击左侧教案内容添加注释'} disabled={!annotations.length} onChange={(event) => { invalidateRevisionPreview(); setFeedback(event.target.value); }} onKeyDown={(event) => { if (event.key === 'Enter' && allPendingAnnotationsReady) submitAnnotations(); }} />
+          <button type="button" className="annotation-send" onClick={submitAnnotations} disabled={!allPendingAnnotationsReady} aria-label="发送全部注释"><Send size={17} /></button>
+        </>}
+      </div> : null}
+
+      <Modal open={newSectionOpen} onClose={() => { if (!revising) setNewSectionOpen(false); }} title="新增教案模块" description="新模块会加入教案大纲和教案正文，也可以像其他内容一样添加注释。" footer={<><Button variant="ghost" onClick={() => setNewSectionOpen(false)} disabled={revising}>取消</Button><Button icon={Plus} onClick={addCustomSection} disabled={revising || !newSectionTitle.trim()}>添加模块</Button></>}><label className="new-section-field"><span>模块名称</span><input value={newSectionTitle} disabled={revising} onChange={(event) => setNewSectionTitle(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !revising) addCustomSection(); }} placeholder="例如：跨学科拓展" maxLength={30} /></label></Modal>
 
       <Modal open={versionsOpen} onClose={() => setVersionsOpen(false)} title="版本历史" description="选择历史版本只会打开预览，不会新增版本；确认保存前也不会替换原来的当前版本。">
         <div className="version-list"><button className="current" type="button" disabled><span>v{currentVersion}.0</span><div><b>{returnSnapshot ? '正在预览' : '当前版本'}</b><p>{title}</p><small>刚刚 · 当前教师</small></div><CheckCircle2 size={18} /></button>{returnSnapshot ? <button type="button" className="return-version" onClick={returnToCurrentSnapshot} disabled={revising}><span>返回</span><div><b>打开历史版本前的版本</b><p>{returnSnapshot.metadata?.title || returnSnapshot.metadata?.chapter || '之前的教案版本'}</p><small>始终保留 · 点击返回</small></div><RotateCcw size={17} /></button> : null}{[...historyRef.current].reverse().map((snapshot, index) => <button type="button" key={`${historyVersion}-${index}`} onClick={() => restoreSnapshot(snapshot)} disabled={revising}><span>v{Math.max(1, currentVersion - index - 1)}.0</span><div><b>历史版本</b><p>{snapshot.metadata?.title || snapshot.metadata?.chapter || '教案快照'}</p><small>本次会话 · 点击打开</small></div><RotateCcw size={17} /></button>)}{!historyRef.current.length && !returnSnapshot ? <p className="version-empty">当前会话还没有历史修改。</p> : null}</div>
