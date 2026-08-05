@@ -257,6 +257,26 @@ const mockUpstream = createServer(async (request, response) => {
       { op: 'replace', path: `/exercises/${index}/answer`, valueJson: JSON.stringify(`${exercise.answer}（五星难度答案）`) },
       { op: 'replace', path: `/exercises/${index}/explanation`, valueJson: JSON.stringify(`${exercise.explanation}（五星难度解析）`) },
     ]);
+  } else if (inputText.includes('FORCE_PATCH_RAW_CUSTOM_STRING')) {
+    targetedOperations = targetedCustomSections.map((section) => ({
+      op: 'replace',
+      path: `/customSections/${encodeLessonPatchPointerSegment(section.id)}/content`,
+      valueJson: '未加 JSON 引号但应安全接受的自定义模块正文。',
+    }));
+  } else if (inputText.includes('FORCE_PATCH_RAW_STRING')) {
+    targetedOperations = [{
+      op: 'replace',
+      path: '/exercises/0/stem',
+      valueJson: '未加 JSON 引号但应安全接受的中文题干。',
+    }];
+  } else if (inputText.includes('FORCE_PATCH_RAW_OBJECT')) {
+    targetedOperations = [{ op: 'replace', path: '/preparation', valueJson: 'teacher: [教师准备]' }];
+  } else if (inputText.includes('FORCE_PATCH_RAW_ARRAY')) {
+    targetedOperations = [{ op: 'replace', path: '/keyPoints', valueJson: '重点一、重点二' }];
+  } else if (inputText.includes('FORCE_PATCH_RAW_NUMBER')) {
+    targetedOperations = [{ op: 'replace', path: '/exercises/0/difficulty', valueJson: '五星' }];
+  } else if (inputText.includes('FORCE_PATCH_BOOLEAN_FOR_STRING')) {
+    targetedOperations = [{ op: 'replace', path: '/sourceSummary', valueJson: 'true' }];
   } else if (inputText.includes('FORCE_PATCH_OUT_OF_SCOPE')) {
     targetedOperations = [{ op: 'replace', path: '/generationMeta/promptVersion', valueJson: JSON.stringify('attacker') }];
   } else if (inputText.includes('FORCE_PATCH_PROTOTYPE_PATH')) {
@@ -1377,6 +1397,80 @@ try {
     }
   }
 
+  const rawStringRevisionCookie = await registerRevisionTestUser(
+    client,
+    'revision-raw-string-value@example.com',
+    currentPrivacyPolicyUpdatedAt,
+  );
+  const rawStringRevisionCreated = await client.json('/api/ai/revision-jobs', {
+    method: 'POST',
+    cookie: rawStringRevisionCookie,
+    headers: { 'Idempotency-Key': 'revision-raw-string-value-0001' },
+    body: {
+      lessonPlan: structuredClone(baseLessonPlan),
+      sectionKeys: ['exercises'],
+      customSections: [],
+      feedback: 'FORCE_PATCH_RAW_STRING',
+    },
+  });
+  assert.equal(rawStringRevisionCreated.status, 202);
+  const rawStringRevisionJob = await waitForRevisionJob(
+    client,
+    rawStringRevisionCookie,
+    rawStringRevisionCreated.body.data.job.id,
+  );
+  assert.equal(
+    rawStringRevisionJob.status,
+    'completed',
+    `未加 JSON 引号的字符串字段应兼容：${JSON.stringify(rawStringRevisionJob.error || null)}`,
+  );
+  assert.equal(
+    rawStringRevisionJob.data.lessonPlan.exercises[0].stem,
+    '未加 JSON 引号但应安全接受的中文题干。',
+  );
+  assert.deepEqual(
+    rawStringRevisionJob.data.lessonPlan.exercises[0].answer,
+    baseLessonPlan.exercises[0].answer,
+    '字符串兼容不得改写同一对象内的其他字段',
+  );
+  for (const field of Object.keys(baseLessonPlan)) {
+    if (field !== 'exercises') {
+      assert.deepEqual(
+        rawStringRevisionJob.data.lessonPlan[field],
+        baseLessonPlan[field],
+        `字符串兼容不得改写 ${field}`,
+      );
+    }
+  }
+
+  const rawCustomRevisionCreated = await client.json('/api/ai/revision-jobs', {
+    method: 'POST',
+    cookie: rawStringRevisionCookie,
+    headers: { 'Idempotency-Key': 'revision-raw-custom-string-value-0001' },
+    body: {
+      lessonPlan: structuredClone(baseLessonPlan),
+      sectionKeys: [],
+      customSections: [{ id: 'raw_custom', title: '自定义模块', content: '修改前正文。' }],
+      feedback: 'FORCE_PATCH_RAW_CUSTOM_STRING',
+    },
+  });
+  assert.equal(rawCustomRevisionCreated.status, 202);
+  const rawCustomRevisionJob = await waitForRevisionJob(
+    client,
+    rawStringRevisionCookie,
+    rawCustomRevisionCreated.body.data.job.id,
+  );
+  assert.equal(
+    rawCustomRevisionJob.status,
+    'completed',
+    `自定义模块未加 JSON 引号的正文应兼容：${JSON.stringify(rawCustomRevisionJob.error || null)}`,
+  );
+  assert.equal(
+    rawCustomRevisionJob.data.customSections[0].content,
+    '未加 JSON 引号但应安全接受的自定义模块正文。',
+  );
+  assert.deepEqual(rawCustomRevisionJob.data.lessonPlan, baseLessonPlan);
+
   const customOnlyCreated = await client.json('/api/ai/revision-jobs', {
     method: 'POST',
     cookie: combinationCookie,
@@ -1636,6 +1730,7 @@ try {
     await registerRevisionTestUser(client, 'revision-patch-validation-a@example.com', currentPrivacyPolicyUpdatedAt),
     await registerRevisionTestUser(client, 'revision-patch-validation-b@example.com', currentPrivacyPolicyUpdatedAt),
     await registerRevisionTestUser(client, 'revision-patch-validation-c@example.com', currentPrivacyPolicyUpdatedAt),
+    await registerRevisionTestUser(client, 'revision-patch-validation-d@example.com', currentPrivacyPolicyUpdatedAt),
   ];
   const patchValidationCases = [
     ['out-of-scope', 'keypoints', 'FORCE_PATCH_OUT_OF_SCOPE', 'AI_REVISION_SCOPE_VIOLATION', []],
@@ -1648,6 +1743,10 @@ try {
     ['object-add', 'learner', 'FORCE_PATCH_OBJECT_ADD', 'AI_REVISION_SCOPE_VIOLATION', []],
     ['structured-unknown', 'preparation', 'FORCE_PATCH_STRUCTURED_UNKNOWN', 'AI_REVISION_SCOPE_VIOLATION', []],
     ['structured-type', 'preparation', 'FORCE_PATCH_STRUCTURED_TYPE', 'AI_REVISION_SCOPE_VIOLATION', []],
+    ['raw-object', 'preparation', 'FORCE_PATCH_RAW_OBJECT', 'AI_INVALID_OUTPUT', []],
+    ['raw-array', 'keypoints', 'FORCE_PATCH_RAW_ARRAY', 'AI_INVALID_OUTPUT', []],
+    ['raw-number', 'exercises', 'FORCE_PATCH_RAW_NUMBER', 'AI_INVALID_OUTPUT', []],
+    ['boolean-for-string', 'objectives', 'FORCE_PATCH_BOOLEAN_FOR_STRING', 'AI_REVISION_SCOPE_VIOLATION', []],
     ['expanded-limit', 'keypoints', 'FORCE_PATCH_EXPANDED_LIMIT', 'AI_INVALID_OUTPUT', []],
     ['insert-extra-field', 'homework', 'FORCE_PATCH_INSERT_EXTRA_FIELD', 'AI_INVALID_OUTPUT', []],
     ['custom-unchanged', null, 'FORCE_CUSTOM_UNCHANGED', 'AI_REVISION_NO_CHANGE', [{ id: 'custom_guard', title: '安全扩展', content: '原有中文内容。' }]],

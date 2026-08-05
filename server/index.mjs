@@ -4423,7 +4423,13 @@ function applySingleLessonPatchOperation(root, operation, segments) {
     try {
       value = JSON.parse(operation.valueJson);
     } catch {
-      throw new HttpError(502, 'AI_INVALID_OUTPUT', 'AI 增量操作的 valueJson 不是有效 JSON');
+      if (!lessonPatchTargetsExistingString(parent, finalSegment, operation)
+        || operation.valueJson.trim() === '') {
+        throw new HttpError(502, 'AI_INVALID_OUTPUT', 'AI 增量操作的 valueJson 不是有效 JSON');
+      }
+      // 部分兼容接口会把字符串字段的新正文直接放进 valueJson，而没有再加一层 JSON 引号。
+      // 仅对已存在字符串字段的 replace 做该兼容；数组、对象、数值、布尔值及 add 仍须是严格 JSON。
+      value = operation.valueJson;
     }
     assertSafeLessonPatchValue(value);
   }
@@ -4468,6 +4474,21 @@ function applySingleLessonPatchOperation(root, operation, segments) {
     return changes;
   }
   return 0;
+}
+
+function lessonPatchTargetsExistingString(parent, finalSegment, operation) {
+  if (operation.op !== 'replace') return false;
+  if (Array.isArray(parent)) {
+    if (!/^(0|[1-9]\d*)$/u.test(finalSegment)) return false;
+    const index = Number(finalSegment);
+    return Number.isSafeInteger(index)
+      && index < parent.length
+      && typeof parent[index] === 'string';
+  }
+  return Boolean(parent)
+    && typeof parent === 'object'
+    && Object.hasOwn(parent, finalSegment)
+    && typeof parent[finalSegment] === 'string';
 }
 
 function applyLessonPatchValueDiff(current, next, replaceCurrent) {
