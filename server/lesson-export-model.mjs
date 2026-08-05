@@ -473,12 +473,26 @@ function textArray(value) {
 }
 
 function numberValue(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string' && value.trim() === '') return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
 
 function cleanText(value) {
-  return value === null || value === undefined ? '' : String(value).trim();
+  if (value === null || value === undefined) return '';
+  let output = '';
+  for (const character of String(value)) {
+    const codePoint = character.codePointAt(0);
+    const validXmlCharacter = codePoint === 0x09
+      || codePoint === 0x0a
+      || codePoint === 0x0d
+      || (codePoint >= 0x20 && codePoint <= 0xd7ff)
+      || (codePoint >= 0xe000 && codePoint <= 0xfffd)
+      || (codePoint >= 0x10000 && codePoint <= 0x10ffff);
+    if (validXmlCharacter) output += character;
+  }
+  return output.trim();
 }
 
 function record(value) {

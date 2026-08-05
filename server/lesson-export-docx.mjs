@@ -443,13 +443,14 @@ function addExercises(children, data) {
     if (clean(item.stem)) questionContent.push(bodyParagraph(item.stem, 120, true));
     array(item.options).forEach((option, optionIndex) => {
       const label = optionIndex < 26 ? String.fromCharCode(65 + optionIndex) : String(optionIndex + 1);
+      const optionText = removeCurrentOptionLabel(option, label);
       questionContent.push(new Paragraph({
         style: 'LessonBody',
         indent: { left: 420, hanging: 0 },
         spacing: { before: 0, after: 70, line: 300, lineRule: LineRuleType.AUTO },
         children: [
           new TextRun({ text: `${label}. `, font: FONT_SANS, size: 20, bold: true, color: COLORS.accentDark }),
-          new TextRun({ text: clean(option), font: FONT_SANS, size: 20, color: COLORS.body }),
+          new TextRun({ text: optionText, font: FONT_SANS, size: 20, color: COLORS.body }),
         ],
       }));
     });
@@ -752,9 +753,18 @@ function hasContent(value) {
 
 function clean(value) {
   if (value === null || value === undefined) return '';
-  return String(value)
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
-    .trim();
+  let sanitized = '';
+  for (const character of String(value)) {
+    const codePoint = character.codePointAt(0);
+    const isXml10Character = codePoint === 0x09
+      || codePoint === 0x0A
+      || codePoint === 0x0D
+      || (codePoint >= 0x20 && codePoint <= 0xD7FF)
+      || (codePoint >= 0xE000 && codePoint <= 0xFFFD)
+      || (codePoint >= 0x10000 && codePoint <= 0x10FFFF);
+    if (isXml10Character && codePoint !== 0x7F) sanitized += character;
+  }
+  return sanitized.trim();
 }
 
 function joinTruthy(values, separator) {
@@ -762,8 +772,24 @@ function joinTruthy(values, separator) {
 }
 
 function numberOrNull(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string' && value.trim() === '') return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function removeCurrentOptionLabel(value, label) {
+  const text = clean(value);
+  const expectedLabel = String(label);
+  if (text.slice(0, expectedLabel.length).toLocaleUpperCase('en-US') !== expectedLabel.toLocaleUpperCase('en-US')) {
+    return text;
+  }
+  const remainder = text.slice(expectedLabel.length);
+  if (!remainder) return '';
+  const punctuation = remainder.match(/^\s*[.．、:：)）]\s*/);
+  if (punctuation) return remainder.slice(punctuation[0].length);
+  if (/^\s+/.test(remainder)) return remainder.trimStart();
+  return text;
 }
 
 function array(value) {

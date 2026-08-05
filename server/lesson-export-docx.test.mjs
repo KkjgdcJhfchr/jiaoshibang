@@ -93,6 +93,52 @@ for (const text of collectLessonExportTexts(model)) {
 assert.ok(documentXml.includes('&amp;'), '特殊字符 & 应由 OOXML 转义');
 assert.ok(documentXml.includes('&lt;完整导出&gt;'), '特殊字符 < > 应由 OOXML 转义');
 
+const invalidXmlCharacters = `\u0000\u000B\uFFFE\uFFFF\uD800高\uDC00低`;
+const boundaryLesson = structuredClone(sampleLesson);
+boundaryLesson.metadata.title = `边界标题${invalidXmlCharacters}保留🙂`;
+boundaryLesson.timeline = [structuredClone(sampleLesson.timeline[0])];
+boundaryLesson.exercises = [{
+  ...structuredClone(sampleLesson.exercises[0]),
+  options: [
+    { label: 'A', content: `甲${invalidXmlCharacters}保留🚀` },
+    { label: 'B.', content: '乙' },
+    { label: 'C、', content: '丙' },
+    { label: 'D．', content: '丁' },
+  ],
+}];
+const boundaryModel = buildLessonExportModel(boundaryLesson);
+const boundaryTimeline = boundaryModel.sections.find((section) => section.kind === 'timeline');
+const boundaryExercises = boundaryModel.sections.find((section) => section.kind === 'exercises');
+boundaryTimeline.data.stages[0].startMinute = null;
+boundaryTimeline.data.stages[0].durationMinutes = undefined;
+boundaryExercises.data.items[0].difficulty = ' \t ';
+boundaryExercises.data.items[0].estimatedMinutes = null;
+
+const boundaryEntries = unzipEntries(await generateLessonDocx(boundaryModel));
+const boundaryDocumentXml = boundaryEntries.get('word/document.xml')?.toString('utf8');
+assert.ok(boundaryDocumentXml, '边界用例 DOCX 缺少 word/document.xml');
+const boundaryVisibleText = extractWordText(boundaryDocumentXml);
+assert.doesNotMatch(
+  boundaryVisibleText,
+  /0—0 分钟|共 0 分钟|难度 0\/5|建议 0 分钟/,
+  'null、undefined 或空白数值不得伪造为 0',
+);
+assert.ok(boundaryVisibleText.includes('A. 甲高低保留🚀'), '选项 A 应只保留一个标签');
+assert.ok(boundaryVisibleText.includes('B. 乙'), '选项 B 应只保留一个标签');
+assert.ok(boundaryVisibleText.includes('C. 丙'), '选项 C 应只保留一个标签');
+assert.ok(boundaryVisibleText.includes('D. 丁'), '选项 D 应只保留一个标签');
+assert.doesNotMatch(
+  boundaryVisibleText,
+  /A\.\s*A(?:\s|[.．、:：)）])|B\.\s*B(?:\s|[.．、:：)）])|C\.\s*C(?:\s|[.．、:：)）])|D\.\s*D(?:\s|[.．、:：)）])/i,
+  '模型已带当前选项标签时不得再次添加',
+);
+assert.ok(boundaryVisibleText.includes('边界标题高低保留🙂'), '合法的补充平面字符必须保留');
+assert.doesNotMatch(boundaryVisibleText, /\uFFFD/, '孤立代理项必须删除而不是写成替换字符');
+for (const [name, contents] of boundaryEntries) {
+  if (!/\.(?:xml|rels)$/i.test(name)) continue;
+  assertXml10CodePoints(contents.toString('utf8'), name);
+}
+
 console.log('lesson export DOCX tests passed');
 
 function unzipEntries(zip) {
@@ -177,4 +223,25 @@ function extractTopLevelElements(xml, tagName) {
     }
   }
   return output;
+}
+
+function assertXml10CodePoints(xml, name) {
+  for (const character of String(xml)) {
+    const codePoint = character.codePointAt(0);
+    assertXml10CodePoint(codePoint, name);
+  }
+  for (const reference of String(xml).matchAll(/&#(?:x([0-9a-f]+)|(\d+));/gi)) {
+    const codePoint = Number.parseInt(reference[1] || reference[2], reference[1] ? 16 : 10);
+    assertXml10CodePoint(codePoint, `${name} 的字符引用`);
+  }
+}
+
+function assertXml10CodePoint(codePoint, name) {
+  const valid = codePoint === 0x09
+    || codePoint === 0x0A
+    || codePoint === 0x0D
+    || (codePoint >= 0x20 && codePoint <= 0xD7FF)
+    || (codePoint >= 0xE000 && codePoint <= 0xFFFD)
+    || (codePoint >= 0x10000 && codePoint <= 0x10FFFF);
+  assert.ok(valid, `${name} 含 XML 1.0 非法码点 U+${codePoint.toString(16).toUpperCase().padStart(4, '0')}`);
 }

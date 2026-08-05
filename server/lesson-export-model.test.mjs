@@ -200,6 +200,31 @@ assert.deepEqual(
   '只有元数据、没有正文的教案必须拒绝导出',
 );
 assert.equal(validateLessonExportInput({ key_points: ['有效正文'] }), null, '包含正文的教案应通过输入校验');
+
+const edgeCaseModel = buildLessonExportModel({
+  key_points: ['边界输入'],
+  timeline: [{ stage: '未填写时间的环节', start_minute: null, duration_minutes: '   ' }],
+  exercises: [{
+    stem: '边界题目',
+    difficulty: null,
+    estimated_minutes: '',
+    options: [{ label: 'A', content: '对象选项甲' }, { key: 'B', text: '对象选项乙' }],
+  }],
+  custom_sections: [{ id: 'invalid-xml', title: '非法字符过滤', content: `前\uFFFE中\uFFFF后\uD800尾` }],
+});
+const edgeTimeline = edgeCaseModel.sections.find((section) => section.kind === 'timeline').data.stages[0];
+const edgeExercise = edgeCaseModel.sections.find((section) => section.kind === 'exercises').data.items[0];
+assert.equal(edgeTimeline.startMinute, null, '缺失的环节开始时间不得伪造为 0');
+assert.equal(edgeTimeline.durationMinutes, null, '空白的环节时长不得伪造为 0');
+assert.equal(edgeExercise.difficulty, null, '缺失的难度不得伪造为 0');
+assert.equal(edgeExercise.estimatedMinutes, null, '空白的建议时长不得伪造为 0');
+assert.deepEqual(edgeExercise.options, ['A 对象选项甲', 'B 对象选项乙']);
+assert.equal(
+  edgeCaseModel.sections.find((section) => section.key === 'custom:invalid-xml').data.content,
+  '前中后尾',
+  '导出模型必须过滤 XML 1.0 禁止的码点和孤立代理项',
+);
+
 const oversizedCustomSections = {
   custom_sections: Array.from({ length: 51 }, (_, index) => ({
     id: `custom-${index}`,

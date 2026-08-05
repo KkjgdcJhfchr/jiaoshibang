@@ -181,11 +181,13 @@ function renderPreparation(data = {}) {
 }
 
 function renderTimeline(data = {}) {
-  return `<div class="timeline-stack">${array(data.stages).map((stage, index) => `
+  return `<div class="timeline-stack">${array(data.stages).map((stage, index) => {
+    const timing = timelineTiming(stage);
+    return `
     <table class="stage-card">
       <thead><tr><th><div class="stage-header">
         <div><span>环节 ${index + 1}</span><h3>${formatText(stage.stage || `教学环节 ${index + 1}`)}</h3></div>
-        <p><b>${numberOrZero(stage.startMinute)}—${numberOrZero(stage.startMinute) + numberOrZero(stage.durationMinutes)} 分钟</b><small>共 ${numberOrZero(stage.durationMinutes)} 分钟</small></p>
+        ${timing}
       </div></th></tr></thead>
       <tbody>
         <tr><td>${visible(stage.engagementGoal) ? `<div class="goal-banner"><b>参与目标</b>${formatText(stage.engagementGoal)}</div>` : ''}<div class="stage-grid">
@@ -198,7 +200,8 @@ function renderTimeline(data = {}) {
           <div>${detailGroup('备用策略', textBlock(stage.fallbackStrategy))}${renderSourceRefs(stage.sourceRefs)}</div>
         </div></td></tr>
       </tbody>
-    </table>`).join('')}</div>`;
+    </table>`;
+  }).join('')}</div>`;
 }
 
 function renderQuestions(stage) {
@@ -254,7 +257,10 @@ function renderHomework(data = {}) {
 function renderExercises(data = {}) {
   return `<div class="exercise-list">${array(data.items).map((item, index) => `<article class="exercise-card">
     <header><span>${index + 1}</span><div><h3>${formatText(item.stem)}</h3><p>${formatText(item.type || '习题')}${visible(item.difficulty) ? ` · 难度 ${numberOrZero(item.difficulty)}/5` : ''}${visible(item.estimatedMinutes) ? ` · 建议 ${numberOrZero(item.estimatedMinutes)} 分钟` : ''}${array(item.knowledgePoints).length ? ` · 知识点：${item.knowledgePoints.map(formatText).join('、')}` : ''}</p></div></header>
-    ${array(item.options).length ? `<div class="options">${item.options.map((option, optionIndex) => `<p><b>${String.fromCharCode(65 + optionIndex)}</b>${formatText(option)}</p>`).join('')}</div>` : ''}
+    ${array(item.options).length ? `<div class="options">${item.options.map((option, optionIndex) => {
+      const display = exerciseOption(option, optionIndex);
+      return `<p><b>${formatText(display.label)}</b>${formatText(display.content)}</p>`;
+    }).join('')}</div>` : ''}
     <div class="answer-grid">${visible(item.answer) ? labelDetail('参考答案', item.answer) : ''}${visible(item.explanation) ? labelDetail('解析', item.explanation) : ''}${visible(item.scoringRubric) ? labelDetail('评分标准', item.scoringRubric) : ''}</div>
     ${renderSourceRefs(item.sourceRefs)}
   </article>`).join('')}</div>`;
@@ -324,6 +330,33 @@ function escapeAttribute(value) {
 function numberOrZero(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : 0;
+}
+
+function numberOrNull(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string' && value.trim() === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function timelineTiming(stage) {
+  const start = numberOrNull(stage?.startMinute);
+  const duration = numberOrNull(stage?.durationMinutes);
+  if (start !== null && duration !== null) {
+    return `<p><b>${start}—${start + duration} 分钟</b><small>共 ${duration} 分钟</small></p>`;
+  }
+  if (duration !== null) return `<p><b>共 ${duration} 分钟</b></p>`;
+  if (start !== null) return `<p><b>第 ${start} 分钟开始</b></p>`;
+  return '';
+}
+
+function exerciseOption(option, optionIndex) {
+  const fallbackLabel = optionIndex < 26 ? String.fromCharCode(65 + optionIndex) : String(optionIndex + 1);
+  const text = String(option ?? '').trim();
+  const match = text.match(/^([A-Z]|\d+)(?:\s+|[.．、:：)）]\s*)([\s\S]+)$/i);
+  return match
+    ? { label: match[1].toUpperCase(), content: match[2].trim() }
+    : { label: fallbackLabel, content: text };
 }
 
 function visible(value) {

@@ -30,6 +30,22 @@ assert.match(html, /\.stage-card thead \{[^}]*display: table-header-group;/);
 assert.match(html, /\.stage-card tbody > tr \{[^}]*break-inside: avoid-page;[^}]*page-break-inside: avoid;/);
 assert.match(html, /\.exercise-card \{[^}]*break-inside: avoid-page;[^}]*page-break-inside: avoid;/);
 
+const edgeModel = buildLessonExportModel({
+  key_points: ['边界输入'],
+  timeline: [{ stage: '未填写时间的环节', start_minute: null, duration_minutes: '' }],
+  exercises: [{
+    stem: '对象选项题',
+    difficulty: null,
+    estimated_minutes: ' ',
+    options: [{ label: 'A', content: '对象选项甲' }, { label: 'B', content: '对象选项乙' }],
+  }],
+});
+const edgeHtml = renderLessonPdfHtml(edgeModel);
+assert.doesNotMatch(edgeHtml, /0—0 分钟|难度 0\/5|建议 0 分钟/, '缺失数值不得伪造为 0');
+assert.match(edgeHtml, /<p><b>A<\/b>对象选项甲<\/p>/);
+assert.match(edgeHtml, /<p><b>B<\/b>对象选项乙<\/p>/);
+assert.doesNotMatch(edgeHtml, /<b>A<\/b>\s*A(?:[.．、:：)）]|\s)+对象选项甲/, '选项标签不得重复');
+
 for (const text of collectLessonExportTexts(model)) {
   const expected = htmlTextFragment(text);
   assert.ok(
